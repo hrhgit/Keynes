@@ -103,9 +103,11 @@ public:
     // in ACTIVE. It must be a subset of implemented_domain_mask(); requesting a
     // domain with no POD handler is rejected. The default asks for everything,
     // which is the pre-per-domain behaviour.
+    using PrepareOpeningDisplay = std::function<bool(std::shared_ptr<const RuntimeCommit>)>;
     bool start(RuntimeSimulationMode mode, bool graph_coverage_complete,
                int64_t initial_day, double speed_days_per_second, bool paused,
-               uint32_t requested_authority_mask = RUNTIME_ALL_DOMAIN_MASK);
+               uint32_t requested_authority_mask = RUNTIME_ALL_DOMAIN_MASK,
+               const PrepareOpeningDisplay &prepare_opening = {});
     // Compatibility overload for existing callers. A boolean coverage hint
     // is always an ACTIVE request; it never proves authority by itself.
     bool start(bool graph_coverage_complete, int64_t initial_day,

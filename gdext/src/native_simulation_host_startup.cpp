@@ -42,7 +42,8 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
                                   int64_t initial_day,
                                   double speed_days_per_second,
                                   bool paused,
-                                  uint32_t requested_authority_mask) {
+                                  uint32_t requested_authority_mask,
+                                  const PrepareOpeningDisplay &prepare_opening) {
     // Validate before consuming a prepared restore or changing world state.
     if (inline_daily_mode() && mode == RuntimeSimulationMode::SHADOW) return false;
     if (!_worker_returned->load(std::memory_order_acquire)) return false;
@@ -166,8 +167,8 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     const int64_t restored_environment_day = restore_pending
         ? _pending_restore_bundle.environment_day : start_day;
     if (restore_pending) {
-        _executor_pending_commands =
-            std::move(_pending_restore_bundle.pending_commands);
+        // Keep the archive intact until its opening frame has passed validation.
+        _executor_pending_commands = _pending_restore_bundle.pending_commands;
     } else {
         // Commands still in ingress are accepted work too. Drain before the
         // transport is reinitialized, preserving their original identities.
@@ -713,7 +714,6 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
         return false;
     }
-    _has_pending_restore = false;
     if (restore_pending && !_economy_pod_authority.restore_command_continuation(
             _pending_restore_bundle.economy_command_bytes, ecp2_apply_error)) {
         set_fault(ecp2_apply_error.c_str());
@@ -738,10 +738,34 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         set_fault("runtime_bundle_player_confirmation_invalid");
         return false;
     }
-    _pending_restore_bundle = RuntimeSaveBundle{};
     for (auto &character : _fault_code) character.store('\0', std::memory_order_relaxed);
     if (!install_era_advancement_setup()) return false;
     player_confirmation_block(start_day);
+    if (wanted == RUNTIME_ALL_DOMAIN_MASK && modifier_candidate_ready && country_candidate_ready) {
+        static std::atomic<uint64_t> next_display_session{1};
+        _modifier_display_session = next_display_session.fetch_add(1, std::memory_order_relaxed);
+        auto commit = std::make_shared<RuntimeCommit>(*std::atomic_load(&_latest_commit));
+        auto tail = commit->day_tail ? std::make_shared<RuntimeDayTail>(*commit->day_tail)
+                                     : std::make_shared<RuntimeDayTail>();
+        auto country = std::make_shared<RuntimeCountryPodSnapshot>();
+        if (!_country_pod_authority.snapshot(*country, compatibility_error)) {
+            set_fault(compatibility_error.c_str());
+            return false;
+        }
+        tail->country.snapshot = std::move(country);
+        tail->ideology = latest_ideology_read_view();
+        capture_modifier_display(*tail, nullptr);
+        commit->day_tail = std::move(tail);
+        std::shared_ptr<const RuntimeCommit> opening = std::move(commit);
+        if (prepare_opening && !prepare_opening(opening)) {
+            set_fault("modifier_opening_frame_invalid");
+            _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
+            return false;
+        }
+        std::atomic_store(&_latest_commit, opening);
+    }
+    _has_pending_restore = false;
+    _pending_restore_bundle = RuntimeSaveBundle{};
     return launch_executor(paused);
 }
 

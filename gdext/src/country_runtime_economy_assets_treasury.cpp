@@ -280,13 +280,25 @@ int64_t NativeCountryRuntime::transfer_good_from_market(int64_t country_handle, 
         -1, -1);
 }
 
-bool NativeCountryRuntime::copy_economy_snapshot(EconomySnapshot &out) const {
+bool NativeCountryRuntime::copy_economy_snapshot(EconomySnapshot &out, bool retain_tax_policy) const {
     if (!economy_available()) return false;
     // Pin one immutable Country commit for the whole economic freeze. The
     // legacy store stops advancing as soon as the worker owns Country.
     const auto worker = _simulation_host != nullptr &&
         _simulation_host->domain_is_worker_authoritative(RuntimeDomainId::COUNTRY)
         ? _simulation_host->country_asset_snapshot() : nullptr;
+    out.tax_policy_country.reset();
+    if (retain_tax_policy) {
+        out.tax_policy_country = worker;
+        if (!worker) {
+            // Before Country hands off, these rows come from its bootstrap store.
+            // Capture that same store without touching live Effect or Modifier peers.
+            auto local = std::make_shared<RuntimeCountryPodSnapshot>();
+            std::string error;
+            if (!export_pod_snapshot(*local, error, false)) return false;
+            out.tax_policy_country = std::move(local);
+        }
+    }
     const auto &_cell_country_slot = worker ? worker->cell_country_slot : this->_cell_country_slot;
     const auto &_country_technologies = worker ? worker->country_technologies : this->_country_technologies;
     const auto &_country_research_signals = worker

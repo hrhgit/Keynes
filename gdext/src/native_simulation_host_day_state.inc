@@ -62,6 +62,8 @@
     std::atomic<uint64_t> _generation{0};
     // Slow readers can keep this commit while the worker publishes a new one.
     std::shared_ptr<const RuntimeCommit> _latest_commit;
+    uint64_t _modifier_display_session = 0;
+    void capture_modifier_display(RuntimeDayTail &tail, const RuntimeDayTail *previous) const;
     // One executor owns this until the sealed day publishes. A peer wait can
     // leave later stages finished while an earlier stage still needs its ACK.
     struct DayProgress {

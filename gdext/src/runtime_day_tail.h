@@ -20,6 +20,7 @@ struct RuntimeEraRewardView;
 struct RuntimeNarrativeView;
 struct RuntimeGoldenSnapshot;
 struct RuntimeModifierPodSnapshot;
+class EconomyFrozenTaxView;
 struct RuntimeEraAdvancementView;
 struct RuntimeIdeologyReadView;
 struct RuntimeGdpDisplay;
@@ -72,7 +73,9 @@ struct RuntimeDayTail {
     std::shared_ptr<const RuntimeClimateSnapshot> climate;
     RuntimeCountryReadView country;
     std::shared_ptr<const RuntimeGdpDisplay> gdp;
+    uint64_t modifier_session = 0;
     std::shared_ptr<const RuntimeModifierPodSnapshot> modifier;
+    std::shared_ptr<const EconomyFrozenTaxView> frozen_tax;
     RuntimeCellLutFrame cell_luts;
     std::vector<RuntimeNotice> notices;
     int32_t military_trail_cells = 0;

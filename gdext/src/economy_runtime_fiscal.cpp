@@ -22,176 +22,83 @@ void NativeEconomyRuntime::record_cohort_fiscal(int32_t slot,
     }
 }
 
-int32_t NativeEconomyRuntime::frozen_tax_rate(int32_t cell, int32_t kind,
-                                               int32_t item) const {
-    if (kind < 0 || kind >= CountryApi::TAX_KIND_COUNT ||
-        (_epoch_active_tax_mask & static_cast<uint8_t>(1U << kind)) == 0)
-        return 0;
-    if (cell < 0 || cell >= static_cast<int32_t>(_epoch_cell_country.size()) ||
-        item < 0) return 0;
-    if (!_epoch_cell_active_tax_mask.empty() &&
-        (_epoch_cell_active_tax_mask[static_cast<size_t>(cell)] &
-         static_cast<uint8_t>(1U << kind)) == 0)
-        return 0;
-    const int32_t country = _epoch_cell_country[static_cast<size_t>(cell)];
-    if (country < 0 || country >= _epoch_country_count) return 0;
-    const std::vector<int32_t> *rates = nullptr;
-    size_t item_count = 0;
+template<bool WantMode, bool Settlement>
+int32_t NativeEconomyRuntime::frozen_tax_value(int32_t cell, int32_t kind, int32_t item) const {
+    constexpr int32_t inactive = WantMode ? CountryApi::TAX_MODE_PERCENT_BP : 0;
+    if (kind < 0 || kind >= CountryApi::TAX_KIND_COUNT || item < 0 ||
+        cell < 0 || static_cast<size_t>(cell) >= _epoch_cell_country.size()) return inactive;
+    if constexpr (Settlement) {
+        const auto mask = static_cast<uint8_t>(1U << kind);
+        if ((_epoch_active_tax_mask & mask) == 0 || (!_epoch_cell_active_tax_mask.empty() &&
+            (_epoch_cell_active_tax_mask[cell] & mask) == 0)) return inactive;
+    }
+    const int32_t country = _epoch_cell_country[cell];
+    if (country < 0 || country >= _epoch_country_count) return inactive;
+    const std::vector<int32_t> *national;
+    size_t count;
     switch (kind) {
         case CountryApi::TAX_INCOME:
-            rates = &_epoch_income_tax_rates;
-            item_count = _profession_ids.size();
+            national = WantMode ? &_epoch_income_tax_modes : &_epoch_income_tax_rates;
+            count = _profession_ids.size();
             break;
         case CountryApi::TAX_CONSUMPTION:
-            rates = &_epoch_consumption_tax_rates;
-            item_count = _good_ids.size();
+            national = WantMode ? &_epoch_consumption_tax_modes : &_epoch_consumption_tax_rates;
+            count = _good_ids.size();
             break;
         case CountryApi::TAX_BUSINESS:
-            rates = &_epoch_business_tax_rates;
-            item_count = _building_types.size();
+            national = WantMode ? &_epoch_business_tax_modes : &_epoch_business_tax_rates;
+            count = _building_types.size();
             break;
         case CountryApi::TAX_IMPORT:
-            rates = &_epoch_import_tax_rates;
-            item_count = _good_ids.size();
+            national = WantMode ? &_epoch_import_tax_modes : &_epoch_import_tax_rates;
+            count = _good_ids.size();
             break;
         case CountryApi::TAX_EXPORT:
-            rates = &_epoch_export_tax_rates;
-            item_count = _good_ids.size();
+            national = WantMode ? &_epoch_export_tax_modes : &_epoch_export_tax_rates;
+            count = _good_ids.size();
             break;
         default:
-            return 0;
+            return inactive;
     }
-    const size_t index = static_cast<size_t>(country) * item_count +
-        static_cast<size_t>(item);
-    if (item >= static_cast<int32_t>(item_count) || index >= rates->size())
-        return 0;
-    if (_epoch_has_cell_tax_policies &&
-        cell < static_cast<int32_t>(
-            _epoch_cell_compiled_tax_policy.size())) {
-        const uint32_t compiled_id =
-            _epoch_cell_compiled_tax_policy[static_cast<size_t>(cell)];
-        if (compiled_id > 0 &&
-            compiled_id < _epoch_compiled_cell_tax_policies.size()) {
-            const CompiledCellTaxPolicy &compiled =
-                _epoch_compiled_cell_tax_policies[compiled_id];
-            const int32_t slice_begin =
-                compiled.override_begin[static_cast<size_t>(kind)];
-            const int32_t slice_end =
-                compiled.override_end[static_cast<size_t>(kind)];
-            for (int32_t cursor = slice_begin; cursor < slice_end; ++cursor) {
-                const CompiledCellTaxOverride &entry =
-                    _epoch_compiled_cell_tax_overrides[
-                        static_cast<size_t>(cursor)];
-                if (entry.item == item) return entry.rate;
-                if (entry.item > item) break;
-            }
-            const int32_t row_id =
-                compiled.default_row_ids[static_cast<size_t>(kind)];
-            if (row_id >= 0 && row_id < static_cast<int32_t>(
-                    _epoch_compiled_cell_tax_default_rows.size())) {
-                const CompiledCellTaxDefaultRow &row =
-                    _epoch_compiled_cell_tax_default_rows[
-                        static_cast<size_t>(row_id)];
-                if (item < row.count) {
-                    const size_t local_index =
-                        static_cast<size_t>(row.offset + item);
-                    if (local_index <
-                        _epoch_compiled_cell_tax_default_rates.size())
-                        return _epoch_compiled_cell_tax_default_rates[
-                            local_index];
-                }
+    const size_t index = static_cast<size_t>(country) * count + static_cast<size_t>(item);
+    if (static_cast<size_t>(item) >= count || index >= national->size()) return inactive;
+    const auto local = _epoch_has_cell_tax_policies &&
+        static_cast<size_t>(cell) < _epoch_cell_compiled_tax_policy.size()
+        ? _epoch_cell_compiled_tax_policy[cell] : 0;
+    if (local > 0 && local < _epoch_compiled_cell_tax_policies.size()) {
+        const auto &policy = _epoch_compiled_cell_tax_policies[local];
+        for (int32_t i = policy.override_begin[kind]; i < policy.override_end[kind]; ++i) {
+            const auto &entry = _epoch_compiled_cell_tax_overrides[i];
+            if (entry.item == item) return WantMode ? entry.mode : entry.rate;
+            if (entry.item > item) break;
+        }
+        const int32_t row_id = policy.default_row_ids[kind];
+        if (row_id >= 0 && static_cast<size_t>(row_id) < _epoch_compiled_cell_tax_default_rows.size()) {
+            const auto &row = _epoch_compiled_cell_tax_default_rows[row_id];
+            if (item < row.count) {
+                const auto &defaults = WantMode ? _epoch_compiled_cell_tax_default_modes :
+                                                  _epoch_compiled_cell_tax_default_rates;
+                const size_t offset = static_cast<size_t>(row.offset + item);
+                if (offset < defaults.size()) return defaults[offset];
+                if constexpr (WantMode) return row.base_mode;
             }
         }
     }
-    return (*rates)[index];
+    return (*national)[index];
 }
 
-int32_t NativeEconomyRuntime::frozen_tax_mode(int32_t cell, int32_t kind,
-                                               int32_t item) const {
-    if (kind < 0 || kind >= CountryApi::TAX_KIND_COUNT ||
-        (_epoch_active_tax_mask & static_cast<uint8_t>(1U << kind)) == 0)
-        return CountryApi::TAX_MODE_PERCENT_BP;
-    if (cell < 0 || cell >= static_cast<int32_t>(_epoch_cell_country.size()) ||
-        item < 0)
-        return CountryApi::TAX_MODE_PERCENT_BP;
-    if (!_epoch_cell_active_tax_mask.empty() &&
-        (_epoch_cell_active_tax_mask[static_cast<size_t>(cell)] &
-         static_cast<uint8_t>(1U << kind)) == 0)
-        return CountryApi::TAX_MODE_PERCENT_BP;
-    const int32_t country = _epoch_cell_country[static_cast<size_t>(cell)];
-    if (country < 0 || country >= _epoch_country_count)
-        return CountryApi::TAX_MODE_PERCENT_BP;
-    const std::vector<int32_t> *modes = nullptr;
-    size_t item_count = 0;
-    switch (kind) {
-        case CountryApi::TAX_INCOME:
-            modes = &_epoch_income_tax_modes;
-            item_count = _profession_ids.size();
-            break;
-        case CountryApi::TAX_CONSUMPTION:
-            modes = &_epoch_consumption_tax_modes;
-            item_count = _good_ids.size();
-            break;
-        case CountryApi::TAX_BUSINESS:
-            modes = &_epoch_business_tax_modes;
-            item_count = _building_types.size();
-            break;
-        case CountryApi::TAX_IMPORT:
-            modes = &_epoch_import_tax_modes;
-            item_count = _good_ids.size();
-            break;
-        case CountryApi::TAX_EXPORT:
-            modes = &_epoch_export_tax_modes;
-            item_count = _good_ids.size();
-            break;
-        default:
-            return CountryApi::TAX_MODE_PERCENT_BP;
-    }
-    const size_t index = static_cast<size_t>(country) * item_count +
-        static_cast<size_t>(item);
-    if (item >= static_cast<int32_t>(item_count) || modes == nullptr ||
-        index >= modes->size())
-        return CountryApi::TAX_MODE_PERCENT_BP;
-    if (_epoch_has_cell_tax_policies &&
-        cell < static_cast<int32_t>(
-            _epoch_cell_compiled_tax_policy.size())) {
-        const uint32_t compiled_id =
-            _epoch_cell_compiled_tax_policy[static_cast<size_t>(cell)];
-        if (compiled_id > 0 &&
-            compiled_id < _epoch_compiled_cell_tax_policies.size()) {
-            const CompiledCellTaxPolicy &compiled =
-                _epoch_compiled_cell_tax_policies[compiled_id];
-            const int32_t slice_begin =
-                compiled.override_begin[static_cast<size_t>(kind)];
-            const int32_t slice_end =
-                compiled.override_end[static_cast<size_t>(kind)];
-            for (int32_t cursor = slice_begin; cursor < slice_end; ++cursor) {
-                const CompiledCellTaxOverride &entry =
-                    _epoch_compiled_cell_tax_overrides[
-                        static_cast<size_t>(cursor)];
-                if (entry.item == item) return entry.mode;
-                if (entry.item > item) break;
-            }
-            const int32_t row_id =
-                compiled.default_row_ids[static_cast<size_t>(kind)];
-            if (row_id >= 0 && row_id < static_cast<int32_t>(
-                    _epoch_compiled_cell_tax_default_rows.size())) {
-                const CompiledCellTaxDefaultRow &row =
-                    _epoch_compiled_cell_tax_default_rows[
-                        static_cast<size_t>(row_id)];
-                if (item < row.count) {
-                    const size_t local_index =
-                        static_cast<size_t>(row.offset + item);
-                    if (local_index <
-                        _epoch_compiled_cell_tax_default_modes.size())
-                        return _epoch_compiled_cell_tax_default_modes[
-                            local_index];
-                    return row.base_mode;
-                }
-            }
-        }
-    }
-    return (*modes)[index];
+int32_t NativeEconomyRuntime::frozen_tax_rate(int32_t cell, int32_t kind, int32_t item) const {
+    return frozen_tax_value<false, true>(cell, kind, item);
+}
+
+int32_t NativeEconomyRuntime::frozen_tax_mode(int32_t cell, int32_t kind, int32_t item) const {
+    return frozen_tax_value<true, true>(cell, kind, item);
+}
+
+std::pair<int32_t, int32_t> NativeEconomyRuntime::applicable_frozen_tax(
+        int32_t cell, int32_t kind, int32_t item) const {
+    return {frozen_tax_value<false, false>(cell, kind, item),
+            frozen_tax_value<true, false>(cell, kind, item)};
 }
 
 int64_t NativeEconomyRuntime::fiscal_escrow_total() const {

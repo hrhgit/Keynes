@@ -426,6 +426,17 @@ RuntimeDayPlan NativeSimulationHost::build_day_plan(
 }
 
 
+void NativeSimulationHost::capture_modifier_display(
+        RuntimeDayTail &tail, const RuntimeDayTail *previous) const {
+    if (!_modifier_pod_configured) return;
+    const auto &modifier = _modifier_pod_authority.snapshot();
+    const auto old = previous ? previous->modifier : nullptr;
+    tail.modifier_session = _modifier_display_session;
+    tail.modifier = old && old->generation == modifier.generation &&
+        old->committed_day == modifier.committed_day && old->state_hash == modifier.state_hash
+        ? old : std::make_shared<const RuntimeModifierPodSnapshot>(modifier);
+}
+
 void NativeSimulationHost::publish_day(
         int64_t from_day, int64_t day,
         const RuntimeDayCommit &day_commit,
@@ -516,12 +527,9 @@ void NativeSimulationHost::publish_day(
     if (_world_environment) {
         if (!_executor_day_tail) _executor_day_tail = std::make_shared<RuntimeDayTail>();
         _executor_day_tail->country = country_worker_read_view(0);
-        if (_modifier_pod_configured) {
-            const auto &modifier = _modifier_pod_authority.snapshot();
-            const auto old = previous && previous->day_tail ? previous->day_tail->modifier : nullptr;
-            _executor_day_tail->modifier = old && old->generation == modifier.generation
-                ? old : std::make_shared<const RuntimeModifierPodSnapshot>(modifier);
-        }
+        capture_modifier_display(*_executor_day_tail, previous ? previous->day_tail.get() : nullptr);
+        if (_economy_production_runtime)
+            _executor_day_tail->frozen_tax = economy_api::frozen_tax_view(*_economy_production_runtime);
         auto climate = std::make_shared<RuntimeClimateSnapshot>();
         capture_climate_display(*climate);
         climate->generation = _climate_writeback_sequence.fetch_add(1, std::memory_order_relaxed) + 1;

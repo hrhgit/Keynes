@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <deque>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -167,7 +168,7 @@ public:
     // projection. This method is a main-thread capture boundary; the
     // returned snapshot contains no Godot values or string references.
     bool export_pod_snapshot(RuntimeCountryPodSnapshot &out,
-                             std::string &error) const;
+                             std::string &error, bool include_peer_inputs = true) const;
     // Main-thread capture of the numeric technology/research catalog. This
     // is deliberately separate from export_pod_snapshot so a worker can
     // reject a missing or stale catalog before accepting commands.
@@ -214,8 +215,14 @@ public:
     godot::Dictionary treasury_snapshot(int64_t handle) const;
     godot::Dictionary research_snapshot(int64_t handle) const;
     godot::Dictionary research_signal_snapshot(int64_t handle) const;
-    godot::Dictionary tax_policy_snapshot(int64_t handle) const;
-    godot::Dictionary cell_tax_policy_snapshot(int32_t cell) const;
+    // The composition root supplies one immutable source for a presentation query.
+    struct TaxRead {
+        std::function<bool(uint64_t, int32_t, int32_t, int32_t, int32_t &, int32_t &)> frozen_rate;
+        std::function<double(uint64_t, const std::string &, int32_t)> modifier_value;
+        uint64_t policy_version = 0;
+    };
+    godot::Dictionary tax_policy_snapshot(int64_t handle, const TaxRead *read = nullptr) const;
+    godot::Dictionary cell_tax_policy_snapshot(int32_t cell, const TaxRead *read = nullptr) const;
     godot::PackedInt32Array cell_country_snapshot() const;
     int64_t state_hash() const;
     int64_t state_hash_v3_compat() const;
@@ -234,7 +241,7 @@ public:
     // Narrow native economy bridge. These methods never allocate and never
     // resolve strings. Frozen cycles use copy_economy_snapshot(); direct
     // transfers validate generation-bearing handles.
-    bool copy_economy_snapshot(EconomySnapshot &out) const;
+    bool copy_economy_snapshot(EconomySnapshot &out, bool retain_tax_policy = false) const;
     // Static catalog handoff for Economy's one-time configuration. Keep this
     // out of the per-epoch EconomySnapshot so the domain table is not copied
     // every day.
@@ -475,6 +482,9 @@ public:
 
 private:
 #include "country_runtime_command_state.h"
+    bool effective_tax_for_display(const TaxRead *read, uint64_t handle, int32_t cell,
+        int32_t kind, int32_t item, const char *kind_key, const std::string &item_key,
+        int32_t base, int32_t &mode, int32_t &rate) const;
 #include "country_runtime_operations.h"
 #include "country_runtime_state.h"
 };

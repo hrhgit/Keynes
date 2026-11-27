@@ -2,6 +2,7 @@
 #include "economy_cost_probe.h"
 #include "economy_effect_forward.h"
 #include "economy_runtime.h"
+#include "economy_host_port.h"
 #include "economy_hash.h"
 #include "runtime_switch_registry.h"
 #include "economy_graph_kernels.h"
@@ -109,7 +110,7 @@ double elapsed_ms(const Clock::time_point &start) {
 
 
 bool NativeEconomyRuntime::capture_country_epoch(
-        std::string &error, bool *out_pending_city_factors) {
+        std::string &error, bool *out_pending_city_factors, int64_t freeze_day) {
     auto phase_started = Clock::now();
     const auto record_phase = [&](const char *name) {
         const auto now = Clock::now();
@@ -127,7 +128,9 @@ bool NativeEconomyRuntime::capture_country_epoch(
         return false;
     }
     CountryReadView::Snapshot snapshot;
-    if (!country_reads().copy_economy_snapshot(snapshot) ||
+    const bool retain_tax_policy = freeze_day >= 0 && _simulation_host &&
+        _simulation_host->publishes_modifier_tax_frames();
+    if (!country_reads().copy_economy_snapshot(snapshot, retain_tax_policy) ||
         snapshot.cell_country_slot.size() != static_cast<size_t>(_cell_count.get()) ||
         snapshot.country_handles.size() != static_cast<size_t>(snapshot.country_count) ||
         (!snapshot.country_capital_cells.empty() &&
@@ -570,6 +573,8 @@ bool NativeEconomyRuntime::capture_country_epoch(
     _epoch_begin_building_factor_ms = elapsed_ms(building_factor_started);
     refresh_epoch_development();
     record_phase("country_capture.building_factors_and_development");
+    if (retain_tax_policy)
+        publish_frozen_tax_view(freeze_day, std::move(snapshot.tax_policy_country));
     return true;
 }
 

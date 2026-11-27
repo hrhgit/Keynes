@@ -11,6 +11,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <tuple>
 
 namespace pk {
 
@@ -132,6 +133,7 @@ struct RuntimeModifierPodBucket {
     double sum_add = 0.0;
     double product_factor = 1.0;
     uint32_t active_count = 0;
+    auto key() const { return std::tie(domain, scope, stat_id, scope_id); }
 };
 
 struct RuntimeModifierPodSnapshot {

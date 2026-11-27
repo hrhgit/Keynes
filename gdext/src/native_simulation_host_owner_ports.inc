@@ -36,6 +36,7 @@
         return _economy_input_requested_day.load(std::memory_order_acquire);
     }
     bool economy_worker_owns_execution() const noexcept override;
+    bool publishes_modifier_tax_frames() const noexcept override;
     std::unique_lock<std::mutex> try_lock_economy_input_capture() {
         return std::unique_lock<std::mutex>(
             _economy_authority_boundary_mutex, std::try_to_lock);

@@ -37,6 +37,8 @@
 | Economy（含 Family 家族子模块、人物、建筑） | `gdext/src/economy_*`、`gdext/src/runtime_economy_*`、`gdext/src/trade_visual_cache.*` | `gdext/src/economy_api.h`；它调用宿主走 `gdext/src/economy_host_port.h` | `gdext/src/native_simulation_host_economy.cpp`、`gdext/src/world_ext_economy*.cpp` | ECP2、PKEC | `Project/project-keynes/scripts/economy/economy_facade.gd`、`Project/project-keynes/scripts/economy/economy_catalog.gd` | `Project/project-keynes/tests/economy`、`Project/project-keynes/tests/family`、`Project/project-keynes/tests/building` | project-keynes-economy-runtime、project-keynes-family-runtime |
 | Events | `gdext/src/runtime_events_authority.*` | 无接口头；Trigger 经已提交视图读取 | `gdext/src/world_ext_events.cpp` | PKSR 内的 events_bytes | `Project/project-keynes/scripts/narrative` | `Project/project-keynes/tests/game` 下的 narrative 用例 | — |
 
+Modifier 的 `ModifierReadView` 定义在 `gdext/src/modifier_api.h`，引用提交中的普通桶、配置目录和可选的派生地块层。Economy 的 `EconomyFrozenTaxView` 来自实际税期，保留当时的国家税策；两者随整图提交交给税率查询。
+
 整图启动时，`gdext/src/world_ext_simulation_host_section_launch.inc` 把 Effect、Trigger、Ideology 的规则对象交给执行器。日尾分别由 `gdext/src/native_simulation_host_effect.cpp`、`gdext/src/native_simulation_host_trigger_delivery.cpp`、`gdext/src/native_simulation_host_ideology_projection.cpp` 更新并随日发布。世界重建回归在 `Project/project-keynes/tests/runtime/runtime_world_rules_rebuild_test.gd`。
 
 Family 在 Economy 的 `FAMILY_COMMIT` 运行。阶段分派在 `gdext/src/economy_graph_stage_dispatch.cpp`，家族提交在 `gdext/src/economy_runtime_commit_execution_lineage.cpp`，状态由 `gdext/src/runtime_economy_state.h` 组合。存档随 Economy 的 ECP2；专项用例在 `Project/project-keynes/tests/family`，对应 skill 为 project-keynes-family-runtime。

@@ -31,7 +31,7 @@ namespace pk {
 using namespace godot;
 
 bool NativeCountryRuntime::export_pod_snapshot(
-        RuntimeCountryPodSnapshot &out, std::string &error) const {
+        RuntimeCountryPodSnapshot &out, std::string &error, bool include_peer_inputs) const {
     out = RuntimeCountryPodSnapshot{};
     error.clear();
     if (!_configured || !_bootstrapped || _mode == MODE_OFF) {
@@ -151,7 +151,7 @@ bool NativeCountryRuntime::export_pod_snapshot(
     out.research_cost_factor.assign(out.country_count, 1.0);
     out.research_efficiency.assign(
         static_cast<size_t>(out.country_count) * 4u, 1.0);
-    if (_modifier_runtime != nullptr && modifier_api::configured(*_modifier_runtime)) {
+    if (include_peer_inputs && _modifier_runtime != nullptr && modifier_api::configured(*_modifier_runtime)) {
         static constexpr const char *EFFICIENCY_STATS[4] = {
             "country.research.agriculture_efficiency",
             "country.research.engineering_efficiency",
@@ -187,7 +187,7 @@ bool NativeCountryRuntime::export_pod_snapshot(
             const uint64_t bit = uint64_t{1} << (technology % 64u);
             if ((out.country_pending_technologies[word] & bit) == 0) continue;
             uint8_t flags = 0;
-            if (_effect_runtime_enabled && _effect_runtime != nullptr) {
+            if (include_peer_inputs && _effect_runtime_enabled && _effect_runtime != nullptr) {
                 const uint64_t target = make_handle(static_cast<int32_t>(slot));
                 const uint64_t effect_id = ((target & 0x00007fffffffffffULL) << 16U) +
                     static_cast<uint64_t>(technology + 1u);
@@ -206,7 +206,7 @@ bool NativeCountryRuntime::export_pod_snapshot(
                     effect_acked);
                 if (effect_acked) flags |= COUNTRY_PEER_EFFECT_FIRE_ACKED;
             }
-            if (_modifier_runtime != nullptr && modifier_api::configured(*_modifier_runtime) &&
+            if (include_peer_inputs && _modifier_runtime != nullptr && modifier_api::configured(*_modifier_runtime) &&
                 technology < _technology_modifier_definition_keys.size() &&
                 !_technology_modifier_definition_keys[technology].empty() &&
                 modifier_api::has_technology_effect(*_modifier_runtime,

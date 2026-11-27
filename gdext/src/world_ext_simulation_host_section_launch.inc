@@ -409,17 +409,27 @@ Dictionary DCWorldExt::start_runtime_worker(const Dictionary &config) {
         owns_rule_adapters ? static_cast<NativeCountryRuntime *>(_country_runtime) : nullptr,
         owns_rule_adapters ? static_cast<TriggerRuntime *>(_trigger_runtime) : nullptr,
         owns_rule_adapters ? static_cast<NativeIdeologyRuntime *>(_ideology_runtime) : nullptr);
+    std::shared_ptr<const RuntimeCommit> opening_display;
+    std::shared_ptr<ModifierReadView> opening_modifiers;
+    const auto prepare_opening = [&](std::shared_ptr<const RuntimeCommit> commit) {
+        opening_display = std::move(commit);
+        opening_modifiers = prepare_modifier_display(*opening_display, opening_display->day_tail->modifier_session);
+        return opening_modifiers != nullptr;
+    };
     if (!_runtime_host->start(mode, complete, day, speed, paused,
-                              requested_authority_mask)) {
+                              requested_authority_mask, prepare_opening)) {
         out["ok"] = false;
         out["pending"] = false;
-        out["code"] = "runtime_worker_start_failed";
+        out["code"] = opening_display && !opening_modifiers
+            ? "modifier_opening_frame_invalid" : "runtime_worker_start_failed";
         out["thread_report"] = runtime_report_to_dictionary(_runtime_host->report(), _runtime_host.get());
         return out;
     }
-    // A DCWorldExt instance may be reused for a second world after the prior
-    // worker has stopped.  Do not let the new run expose the previous world's
-    // commit or visual intents through the main-thread cache.
+    if (opening_display) {
+        accept_modifier_display(*opening_display, std::move(opening_modifiers));
+        _display_country_snapshot = opening_display->day_tail->country.snapshot;
+        _display_country_day = opening_display->header.committed_day;
+    }
     // A restore start is granted immediately; make the main-thread peers see
     // that grant now rather than on a runtime-graph pulse that may not run.
     sync_runtime_domain_ownership();

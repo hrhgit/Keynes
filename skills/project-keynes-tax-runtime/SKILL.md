@@ -33,6 +33,10 @@ Read [runtime-contract.md](references/runtime-contract.md) for formulas, dense l
 ordering, behavior, persistence, UI, tests, or performance work. Treat current source and the
 repository document as final truth; update this skill when either contract changes.
 
+## 显示读源
+
+全国、地块和综合面板的税率使用最近领取的整图提交。实际税期从 `EconomyFrozenTaxView` 读取结算时的整数税率、计税方式和同一份税策。开局及读档首帧使用本次会话的 Country 和 Modifier 只读帧。显式同步及部分授权保持原读路。
+
 ## Classify the requested change
 
 State which boundaries change before coding:

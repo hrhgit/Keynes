@@ -89,6 +89,13 @@ TESTS = (
     "tests/runtime/runtime_world_rules_rebuild_test.gd",
     "tests/runtime/runtime_modifier_pod_test.gd",
     "tests/runtime/modifier_same_day_reapply_test.gd",
+    "tests/runtime/modifier_tax_frame_test.gd",
+    "tests/runtime/late_effect_tax_frame_test.gd",
+    "tests/runtime/modifier_tax_frame_lifecycle_test.gd",
+    "tests/runtime/modifier_tax_frame_annex_test.gd",
+    "tests/runtime/modifier_tax_frame_rejection_test.gd",
+    "tests/runtime/modifier_opening_rejection_test.gd",
+    "tests/runtime/unoccupied_cell_tax_policy_test.gd",
     "tests/runtime/runtime_inline_coordinator_save_test.gd",
     "tests/runtime/startup_save_boundary_test.gd",
     "tests/runtime/economy_settlement_save_boundary_test.gd",
@@ -320,7 +327,7 @@ def main() -> int:
     logs = args.log_dir or Path(tempfile.mkdtemp(prefix="keynes-regression-logs-"))
     logs = logs.resolve()
     logs.mkdir(parents=True, exist_ok=True)
-    for guard in ("check_size_ratchet.py", "check_cpp_deps.py", "check_cross_domain_inventory.py", "check_runtime_advancers.py", "check_runtime_switches.py", "check_committed_views.py", "check_save_contracts.py", "check_module_contracts.py", "check_resolve_apply.py", "check_module_api.py", "check_skill_mirrors.py", "check_module_map.py", "world_ext_bindings.py", "check_world_ext_bindings.py", "check_script_native_access.py", "test_architecture_guards.py", "test_regression_evidence.py"):
+    for guard in ("check_size_ratchet.py", "check_cpp_deps.py", "check_cross_domain_inventory.py", "check_runtime_advancers.py", "check_runtime_switches.py", "check_committed_views.py", "check_save_contracts.py", "check_module_contracts.py", "check_resolve_apply.py", "check_module_api.py", "check_skill_mirrors.py", "check_module_map.py", "world_ext_bindings.py", "check_world_ext_bindings.py", "check_script_native_access.py", "test_architecture_guards.py", "test_tax_committed_view.py", "test_regression_evidence.py"):
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci" / guard)], check=False)
         if result.returncode:
             return result.returncode

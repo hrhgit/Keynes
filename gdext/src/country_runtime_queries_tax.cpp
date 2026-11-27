@@ -1,7 +1,6 @@
 #include "country_runtime.h"
 #include "country_runtime_internal.h"
 #include "country_runtime_queries_peer_reads.inc"
-#include "country_host_port.h"
 
 #include <algorithm>
 #include <array>
@@ -27,11 +26,32 @@ namespace pk {
 
 using namespace godot;
 
-Dictionary NativeCountryRuntime::tax_policy_snapshot(int64_t handle) const {
+bool NativeCountryRuntime::effective_tax_for_display(
+        const TaxRead *read, uint64_t handle, int32_t cell, int32_t kind, int32_t item,
+        const char *kind_key, const std::string &item_key, int32_t base,
+        int32_t &mode, int32_t &rate) const {
+    if (read && read->frozen_rate) return read->frozen_rate(handle, cell, kind, item, rate, mode);
+    rate = base;
+    if (mode != TAX_MODE_PERCENT_BP || (!read && !_modifier_runtime)) return true;
+    const std::string key = std::string("country.tax.") + kind_key + "." + item_key + ".rate_bp";
+    double value;
+    if (read) {
+        value = read->modifier_value(handle, key, base);
+    } else {
+        const int32_t stat = modifier_api::stat_id_for_key(*_modifier_runtime, key);
+        if (stat < 0) return true;
+        value = modifier_api::effective_value(*_modifier_runtime, ModifierApi::COUNTRY, stat, handle, 0, base);
+    }
+    rate = static_cast<int32_t>(std::clamp<int64_t>(std::lround(value), TAX_RATE_MIN_BP, TAX_RATE_MAX_BP));
+    return true;
+}
+
+Dictionary NativeCountryRuntime::tax_policy_snapshot(int64_t handle, const TaxRead *read) const {
     int32_t slot = -1;
     if (!validate_handle(static_cast<uint64_t>(handle), slot))
         return fail("country_handle_invalid");
 
+    bool complete = true;
     PackedInt32Array defaults;
     PackedInt32Array default_modes;
     defaults.resize(TAX_KIND_COUNT);
@@ -65,30 +85,16 @@ Dictionary NativeCountryRuntime::tax_policy_snapshot(int64_t handle) const {
                 static_cast<size_t>(slot) * count + item;
             const int32_t raw = values[index];
             const int32_t raw_mode = modes[index];
-            const int32_t mode = raw_mode == TAX_MODE_INHERIT
+            int32_t mode = raw_mode == TAX_MODE_INHERIT
                 ? default_modes[kind] : raw_mode;
             const int32_t base_value = raw == TAX_RATE_INHERIT
                 ? defaults[kind] : raw;
+            int32_t effective_value = base_value;
+            if (!effective_tax_for_display(read, handle, -1, kind, item, kind_key, item_ids[item], base_value, mode, effective_value))
+                complete = false;
             rates.set(item, base_value);
             assessment_modes.set(item, mode);
-            absolute_amounts.set(
-                item, mode == TAX_MODE_ABSOLUTE ? base_value : 0);
-            int32_t effective_value = base_value;
-            if (mode == TAX_MODE_PERCENT_BP &&
-                _modifier_runtime != nullptr &&
-                item < static_cast<int32_t>(item_ids.size())) {
-                const std::string stat_key = std::string("country.tax.") +
-                    kind_key + "." + item_ids[item] + ".rate_bp";
-                const int32_t stat_id =
-                    modifier_api::stat_id_for_key(*_modifier_runtime, stat_key);
-                if (stat_id >= 0) {
-                    effective_value = static_cast<int32_t>(std::clamp<int64_t>(
-                        std::lround(modifier_api::effective_value(*_modifier_runtime,
-                            ModifierApi::COUNTRY, stat_id,
-                            static_cast<uint64_t>(handle), 0, base_value)),
-                        TAX_RATE_MIN_BP, TAX_RATE_MAX_BP));
-                }
-            }
+            absolute_amounts.set(item, mode == TAX_MODE_ABSOLUTE ? base_value : 0);
             effective_rates.set(item, effective_value);
             rates_percent.set(
                 item,
@@ -120,7 +126,7 @@ Dictionary NativeCountryRuntime::tax_policy_snapshot(int64_t handle) const {
     Dictionary out;
     out["ok"] = true;
     out["country_handle"] = handle;
-    out["policy_version"] = static_cast<int64_t>(_tax_policy_version);
+    out["policy_version"] = static_cast<int64_t>(read && read->frozen_rate ? read->policy_version : _tax_policy_version);
     out["catalog_hash"] = static_cast<int64_t>(catalog_hash());
     PackedInt32Array defaults_percent;
     defaults_percent.resize(TAX_KIND_COUNT);
@@ -156,15 +162,16 @@ Dictionary NativeCountryRuntime::tax_policy_snapshot(int64_t handle) const {
                                _country_export_tax_overrides,
                                _country_export_tax_mode_overrides);
     out["tariffs_active"] = false;
-    return out;
+    return complete ? out : fail("country_tax_policy_frame_invalid");
 }
 
-Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell) const {
+Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell, const TaxRead *read) const {
     if (!_bootstrapped || cell < 0 || cell >= _cell_count)
         return fail("country_cell_tax_cell_invalid");
     const int32_t slot = _cell_country_slot[static_cast<size_t>(cell)];
     if (slot < 0) return fail("country_cell_tax_unowned");
     const uint64_t handle = make_handle(slot);
+    bool complete = true;
     const CellTaxPolicy &policy = cell_tax_policy(
         _cell_tax_policy_ids[static_cast<size_t>(cell)]);
 
@@ -270,6 +277,14 @@ Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell) const {
             local_item_rates.set(item, local_item
                 ? policy.overrides[local_cursor].rate : 0);
             has_local_item.set(item, local_item ? 1 : 0);
+            // For an older policy with a mode-only local default, the fiscal
+            // compiler uses zero as its base. Its frozen rows also carry the
+            // actual assessment mode of every inherited or overridden item.
+            if (read && read->frozen_rate && !local_item && local_default == TAX_RATE_INHERIT &&
+                    local_default_mode != TAX_MODE_INHERIT) base_value = 0;
+            int32_t effective_value = base_value;
+            if (!effective_tax_for_display(read, handle, cell, kind, item, kind_key, ids[item], base_value, mode, effective_value))
+                complete = false;
             final_base_rates.set(item, base_value);
             assessment_modes.set(item, mode);
             absolute_amounts.set(
@@ -283,23 +298,6 @@ Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell) const {
                       ? "country_item" : "country_default"));
             source_scopes.set(item, source);
 
-            int32_t effective_value = base_value;
-            if (mode == TAX_MODE_PERCENT_BP &&
-                _modifier_runtime != nullptr) {
-                const std::string stat_key = std::string("country.tax.") +
-                    kind_key + "." + ids[static_cast<size_t>(item)] +
-                    ".rate_bp";
-                const int32_t stat_id =
-                    modifier_api::stat_id_for_key(*_modifier_runtime, stat_key);
-                if (stat_id >= 0) {
-                    effective_value = static_cast<int32_t>(
-                        std::clamp<int64_t>(std::lround(
-                            modifier_api::effective_value(*_modifier_runtime,
-                                ModifierApi::COUNTRY, stat_id, handle,
-                                0, base_value)), TAX_RATE_MIN_BP,
-                            TAX_RATE_MAX_BP));
-                }
-            }
             effective_rates.set(item, effective_value);
         }
         Dictionary result;
@@ -355,7 +353,7 @@ Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell) const {
     out["country_id"] = _countries.stable_id[static_cast<size_t>(slot)].c_str();
     out["country_name"] = String::utf8(
         _countries.display_name[static_cast<size_t>(slot)].c_str());
-    out["policy_version"] = static_cast<int64_t>(_tax_policy_version);
+    out["policy_version"] = static_cast<int64_t>(read && read->frozen_rate ? read->policy_version : _tax_policy_version);
     PackedInt32Array country_defaults_percent, local_defaults_percent;
     country_defaults_percent.resize(TAX_KIND_COUNT);
     local_defaults_percent.resize(TAX_KIND_COUNT);
@@ -385,7 +383,7 @@ Dictionary NativeCountryRuntime::cell_tax_policy_snapshot(int32_t cell) const {
     out["import"] = make_kind(TAX_IMPORT, "import");
     out["export"] = make_kind(TAX_EXPORT, "export");
     out["tariffs_active"] = false;
-    return out;
+    return complete ? out : fail("country_tax_policy_frame_invalid");
 }
 
 } // namespace pk

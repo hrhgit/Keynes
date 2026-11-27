@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace pk {
+struct RuntimeCountryPodSnapshot;
 // Borrowed read queries. Each callback preserves the owner getter's authority
 // and timing; neither owner nor callback table may be outlived. No writes,
 // Godot values, serialization, or authority selection belong to the consumer.
@@ -54,6 +56,7 @@ public:
     };
 
     struct Snapshot {
+        std::shared_ptr<const RuntimeCountryPodSnapshot> tax_policy_country;
         std::vector<int32_t> cell_country_slot;
         std::vector<uint64_t> country_handles;
         // Country capital cells (PKCN v16). Consumers must treat -1 as "unset".
@@ -87,7 +90,7 @@ public:
     };
 
     struct Queries {
-        bool (*copy_economy_snapshot)(const void *, Snapshot &);
+        bool (*copy_economy_snapshot)(const void *, Snapshot &, bool);
         int64_t (*total_cash)(const void *);
         int64_t (*cash_for_slot)(const void *, int32_t);
         int64_t (*total_good)(const void *, int32_t);
@@ -205,8 +208,8 @@ public:
         return _queries.research_procurement_policy(_owner, slot, enabled, remaining_points);
     }
 
-    bool copy_economy_snapshot(Snapshot &out) const {
-        return _queries.copy_economy_snapshot(_owner, out);
+    bool copy_economy_snapshot(Snapshot &out, bool retain_tax_policy = false) const {
+        return _queries.copy_economy_snapshot(_owner, out, retain_tax_policy);
     }
 
 private:

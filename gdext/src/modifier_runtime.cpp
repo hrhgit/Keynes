@@ -1,4 +1,5 @@
 #include "modifier_runtime.h"
+#include "modifier_value_query.h"
 #include "simulation_math.h"
 
 #include "country_api.h"

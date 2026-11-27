@@ -50,6 +50,9 @@ namespace pk { struct RuntimeResourceDisplayPatch; }
 namespace pk {
 
 class NativeSimulationHost;
+class ModifierReadView;
+class ModifierReadCatalog;
+class EconomyFrozenTaxView;
 class EffectInstanceForwarder;
 class NativeCountryRuntime;
 class NativeEconomyRuntime;

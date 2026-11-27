@@ -53,6 +53,7 @@ Dictionary DCWorldExt::configure_modifiers(const Dictionary &catalog,
     const bool pod_ok = runtime->export_pod_catalog(pod_catalog, pod_error) &&
         _runtime_host->configure_modifier_pod(pod_catalog, pod_error);
     if (pod_ok) {
+        _modifier_read_catalog = runtime->make_read_catalog(_runtime_host->modifier_pod_catalog_hash());
         std::vector<std::pair<uint64_t, int32_t>> key_hashes;
         runtime->export_definition_key_hashes(key_hashes);
         _runtime_host->set_modifier_definition_key_hashes(key_hashes);

@@ -1,5 +1,7 @@
 #include "world_ext.h"
 #include "runtime_day_tail.h"
+#include "economy_api.h"
+#include "modifier_api.h"
 #include "country_ai_core.h"
 #include "country_runtime.h"
 #include "effect_runtime.h"
@@ -31,6 +33,22 @@ Dictionary country_unavailable() {
     out["ok"] = false;
     out["reason"] = "country_runtime_unavailable";
     return out;
+}
+
+NativeCountryRuntime::TaxRead published_tax_values(const ModifierReadView &modifier, const EconomyFrozenTaxView *frozen) {
+    NativeCountryRuntime::TaxRead read;
+    if (frozen) {
+        read.policy_version = frozen->policy_version;
+        read.frozen_rate = [frozen](uint64_t handle, int32_t cell, int32_t kind, int32_t item,
+                                    int32_t &rate, int32_t &mode) {
+            return frozen->lookup(handle, cell, kind, item, rate, mode);
+        };
+    } else {
+        read.modifier_value = [&modifier](uint64_t handle, const std::string &key, int32_t base) {
+            return modifier.effective_value(ModifierApi::COUNTRY, modifier.stat_id_for_key(key), handle, 0, base);
+        };
+    }
+    return read;
 }
 
 } // namespace
@@ -165,6 +183,16 @@ NativeCountryRuntime *DCWorldExt::country_query_runtime() const {
     const auto snapshot = tail && tail->country.snapshot
         ? tail->country.snapshot : _runtime_host->country_asset_snapshot();
     if (!snapshot) return source;
+    auto *view = country_query_runtime_from_snapshot(snapshot);
+    if (!view) view = country_runtime_from(_country_query_runtime);
+    view->mirror_era_reward_reference(source->era_reward_reference_pod());
+    return view;
+}
+
+NativeCountryRuntime *DCWorldExt::country_query_runtime_from_snapshot(
+        const std::shared_ptr<const RuntimeCountryPodSnapshot> &snapshot) const {
+    auto *source = country_runtime_from(_country_runtime);
+    if (!source || !snapshot) return nullptr;
     if (_country_query_runtime == nullptr)
         _country_query_runtime = new NativeCountryRuntime(*source);
     auto *view = country_runtime_from(_country_query_runtime);
@@ -201,9 +229,9 @@ NativeCountryRuntime *DCWorldExt::country_query_runtime() const {
                     static_cast<int64_t>(snapshot->cell_count),
                     static_cast<int64_t>(snapshot->technology_count)));
             }
+            return nullptr;
         }
     }
-    view->mirror_era_reward_reference(source->era_reward_reference_pod());
     return view;
 }
 
@@ -249,20 +277,55 @@ bool DCWorldExt::has_completed_country_technology(
             handle, technology_id);
 }
 
+NativeCountryRuntime *DCWorldExt::country_query_runtime_for_tax() const {
+    if (!_runtime_host || _runtime_host->control_state().mode == RuntimeSimulationMode::OFF)
+        return country_runtime_from(_country_runtime);
+    return country_query_runtime();
+}
+
+const NativeCountryRuntime *DCWorldExt::published_tax_country() const {
+    // Keep the policy which supplied the frozen rates, including its local
+    // overrides. The ordinary Country replica may advance between UI takes.
+    const auto &snapshot = _frozen_tax_view ? _frozen_tax_view->country : _modifier_read_country;
+    if (!_modifier_read_view || !snapshot || !_country_runtime) return nullptr;
+    if (_country_query_snapshot == snapshot) return country_runtime_from(_country_query_runtime);
+    if (_tax_query_snapshot != snapshot) {
+        if (!_tax_query_runtime)
+            _tax_query_runtime = std::make_unique<NativeCountryRuntime>(*country_runtime_from(_country_runtime));
+        if (!_tax_query_runtime->apply_committed_read_snapshot(*snapshot)) return nullptr;
+        _tax_query_snapshot = snapshot;
+    }
+    return _tax_query_runtime.get();
+}
+
 Dictionary DCWorldExt::get_country_tax_policy_snapshot(int64_t handle) const {
-    return _country_runtime == nullptr ? country_unavailable()
-        : country_query_runtime()->tax_policy_snapshot(handle);
+    if (uses_published_modifier_tax()) {
+        const auto *country = published_tax_country();
+        if (!country) return country_unavailable();
+        const auto read = published_tax_values(*_modifier_read_view, _frozen_tax_view.get());
+        return country->tax_policy_snapshot(handle, &read);
+    }
+    return _country_runtime ? country_query_runtime_for_tax()->tax_policy_snapshot(handle) : country_unavailable();
 }
 
 Dictionary DCWorldExt::get_country_cell_tax_policy_snapshot(int cell_idx) const {
-    return _country_runtime == nullptr ? country_unavailable()
-        : country_query_runtime()->cell_tax_policy_snapshot(cell_idx);
+    if (uses_published_modifier_tax()) {
+        const auto *country = published_tax_country();
+        if (!country) return country_unavailable();
+        const auto read = published_tax_values(*_modifier_read_view, _frozen_tax_view.get());
+        return country->cell_tax_policy_snapshot(cell_idx, &read);
+    }
+    return _country_runtime ? country_query_runtime_for_tax()->cell_tax_policy_snapshot(cell_idx) : country_unavailable();
 }
 
 Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
                                                 int section_mask) const {
     if (_country_runtime == nullptr) return country_unavailable();
-    NativeCountryRuntime *runtime = country_query_runtime();
+    const bool fiscal = (section_mask & 2) != 0;
+    const bool published_fiscal = fiscal && uses_published_modifier_tax();
+    const auto *runtime = published_fiscal ? country_query_runtime_from_snapshot(_display_country_snapshot)
+        : (fiscal ? country_query_runtime_for_tax() : country_query_runtime());
+    if (!runtime) return country_unavailable();
     Dictionary summary = runtime->country_summary(handle);
     if (!static_cast<bool>(summary.get("ok", false))) return summary;
 
@@ -281,7 +344,8 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
     out["country_generation"] = static_cast<int64_t>(runtime->generation());
     out["country_state_version"] = summary.get("state_version", 0);
     out["revision"] = summary.get("state_version", 0);
-    out["published_day"] = runtime->report().get("last_committed_day", -1);
+    out["published_day"] = published_fiscal ? Variant(_display_country_day)
+                                             : runtime->report().get("last_committed_day", -1);
     out["summary"] = summary;
 
     Dictionary revisions;
@@ -304,7 +368,7 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
         country["technology_ids"] = runtime->completed_technology_ids(handle);
         out["country_snapshot"] = country;
         out["treasury"] = runtime->treasury_snapshot(handle);
-        out["tax_policy"] = runtime->tax_policy_snapshot(handle);
+        out["tax_policy"] = get_country_tax_policy_snapshot(handle);
         out["fiscal"] = get_country_fiscal_snapshot(handle);
         Dictionary trade = get_country_trade_snapshot(
             handle, String("summary"), 0, 1);

@@ -27,6 +27,29 @@ namespace godot { class Dictionary; class Array; class PackedInt32Array; class P
 namespace pk {
 
 class NativeEconomyRuntime;
+
+// Immutable rates and policy inputs from one Economy tax freeze. Cell -1 selects
+// the national row, which also exists for active countries without territory.
+class EconomyFrozenTaxView {
+public:
+    using PolicySnapshot = struct RuntimeCountryPodSnapshot;
+    int64_t sample_day = -1;
+    uint64_t policy_version = 0;
+    std::shared_ptr<const PolicySnapshot> country;
+    bool lookup(uint64_t country_handle, int32_t cell, int32_t kind, int32_t item,
+                int32_t &rate, int32_t &mode) const;
+
+private:
+    friend class NativeEconomyRuntime;
+    static constexpr size_t KIND_COUNT = 5;
+    struct LocalValue { int32_t item, rate, mode; };
+    std::array<std::vector<int32_t>, KIND_COUNT> national_rates, national_modes;
+    std::array<size_t, KIND_COUNT> item_counts{};
+    std::vector<uint64_t> country_handles;
+    std::vector<uint32_t> cell_policy;
+    std::vector<std::array<std::vector<LocalValue>, KIND_COUNT>> local_differences;
+};
+
 struct RuntimeGdpCell;
 struct NarrativeCellView;
 struct NarrativeUnrestRow;
@@ -498,6 +521,8 @@ struct EconomyApi {
 // Free-function entry points for peers. Grouped by consumer; add new ones next
 // to their consumer and keep each a one-line forward in economy_api.cpp.
 namespace economy_api {
+
+std::shared_ptr<const EconomyFrozenTaxView> frozen_tax_view(const NativeEconomyRuntime &economy);
 
 // Modifier: family/ideology entity-handle validation.
 bool valid_family_effect_entity_handle(const NativeEconomyRuntime &economy,

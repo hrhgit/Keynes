@@ -1,6 +1,5 @@
 int32_t ModifierRuntime::stat_id(const std::string &key) const {
-    const auto it = _stat_ids.find(key);
-    return it == _stat_ids.end() ? -1 : it->second;
+    return modifier_query::stat_id(_stat_ids.get(), key);
 }
 
 double ModifierRuntime::stat_clamp_max(const char *key, double fallback) const {
@@ -177,7 +176,7 @@ bool ModifierRuntime::compile_catalog(const Dictionary &catalog,
     _stats = std::move(stats);
     _definitions = std::move(definitions);
     _terms = std::move(terms);
-    _stat_ids = std::move(stat_ids);
+    _stat_ids = std::make_shared<const modifier_query::StatIds>(std::move(stat_ids));
     _definition_ids = std::move(definition_ids);
     _catalog_hash = hash;
     _legacy_catalog_hash_without_tax = legacy_hash;
@@ -293,7 +292,7 @@ bool ModifierRuntime::pod_projection_self_test(std::string &error) {
         error = "modifier_projection_continuation_not_installed";
         return false;
     }
-    return true;
+    return read_view_self_test(error);
 }
 
 bool ModifierRuntime::apply_pod_snapshot(const RuntimeModifierPodSnapshot &snapshot,

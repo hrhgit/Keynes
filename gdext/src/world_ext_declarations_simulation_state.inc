@@ -105,6 +105,14 @@
     void attach_country_ai_to_host();
     void push_country_ai_family_preferences();
     NativeCountryRuntime *country_query_runtime() const;
+    NativeCountryRuntime *country_query_runtime_from_snapshot(
+        const std::shared_ptr<const RuntimeCountryPodSnapshot> &snapshot) const;
+    std::shared_ptr<const RuntimeCountryPodSnapshot> _display_country_snapshot;
+    int64_t _display_country_day = -1;
+    NativeCountryRuntime *country_query_runtime_for_tax() const;
+    const NativeCountryRuntime *published_tax_country() const;
+    mutable std::shared_ptr<const RuntimeCountryPodSnapshot> _tax_query_snapshot;
+    mutable std::unique_ptr<NativeCountryRuntime> _tax_query_runtime;
     mutable void *_country_query_runtime = nullptr;
     mutable std::shared_ptr<const RuntimeCountryPodSnapshot> _country_query_snapshot;
     void                                     *_modifier_runtime       = nullptr;
