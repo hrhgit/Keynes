@@ -86,10 +86,20 @@
         group.last_wages_due = group.last_base_wages_due;
     }
     thread_local std::vector<int32_t> payroll_owners;
+    thread_local std::vector<int32_t> settlement_owner_slots;
+    thread_local std::vector<int32_t> settlement_owner_signatures;
     payroll_owners.clear();
+    settlement_owner_slots.assign(end - begin, -1);
+    settlement_owner_signatures.assign(end - begin, -1);
     for (int32_t g = begin; g < end; ++g) {
-        if (buildings_store().group_units[g] > 0 && building_available(cell, buildings_store().type_id[g], true))
-            payroll_owners.push_back(buildings_store().owner_signature_id[g]);
+        const auto group = building_view(static_cast<size_t>(g));
+        if (group.count <= 0 || !building_available(cell, group.type_id, true)) continue;
+        const int32_t slot = building_settlement_owner_slot(group);
+        const int32_t signature = slot < 0 ? group.owner_signature_id
+            : static_cast<int32_t>(population_store().signature_id[slot]);
+        settlement_owner_slots[g - begin] = slot;
+        settlement_owner_signatures[g - begin] = signature;
+        payroll_owners.push_back(signature);
     }
     std::sort(payroll_owners.begin(), payroll_owners.end());
     payroll_owners.erase(std::unique(payroll_owners.begin(), payroll_owners.end()),
@@ -141,16 +151,15 @@
         retention_owner_by_signature[signature] = static_cast<int32_t>(owner);
         retention_signature_stamp[signature] = retention_generation;
     }
-    // Each payroll owner's groups in ascending group order: exactly the groups
-    // a full `owner_signature_id == owner` scan of [begin, end) would visit.
-    // Group ownership is not mutated anywhere in production.
+    // Group budgets by the same settlement account used by production. Two
+    // lots drawing on one cohort must share its cash and retention targets.
     thread_local std::vector<int32_t> owner_group_offsets;
     thread_local std::vector<int32_t> owner_groups;
     thread_local std::vector<int32_t> group_payroll_owner;
     owner_group_offsets.assign(payroll_owners.size() + 1, 0);
     group_payroll_owner.assign(static_cast<size_t>(std::max(0, end - begin)), -1);
     for (int32_t g = begin; g < end; ++g) {
-        const int32_t signature = buildings_store().owner_signature_id[g];
+        const int32_t signature = settlement_owner_signatures[g - begin];
         const auto it = std::lower_bound(payroll_owners.begin(), payroll_owners.end(), signature);
         if (it == payroll_owners.end() || *it != signature) continue;
         const int32_t owner = static_cast<int32_t>(it - payroll_owners.begin());
@@ -203,12 +212,12 @@
     for (int32_t g = begin; g < end; ++g) {
         const auto group = building_view(static_cast<size_t>(g));
         if (group.cell != cell || group.count <= 0) continue;
-        if (group.owner_signature_id < 0 ||
-            group.owner_signature_id >= static_cast<int32_t>(_signatures.size()) ||
-            retention_signature_stamp[group.owner_signature_id] != retention_generation)
+        const int32_t signature = settlement_owner_signatures[g - begin];
+        if (signature < 0 || signature >= static_cast<int32_t>(_signatures.size()) ||
+            retention_signature_stamp[signature] != retention_generation)
             continue;
         const size_t owner_index = static_cast<size_t>(
-            retention_owner_by_signature[group.owner_signature_id]);
+            retention_owner_by_signature[signature]);
         const BuildingType &type = _building_types[group.type_id];
         for (int32_t i = 0; i < type.output_count; ++i) {
             const int32_t good = _building_outputs[type.output_begin + i].good_id;

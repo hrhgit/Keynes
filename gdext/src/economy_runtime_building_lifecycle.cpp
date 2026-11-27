@@ -66,15 +66,16 @@ int64_t NativeEconomyRuntime::building_mobility_days(int32_t cell) const {
 
 void NativeEconomyRuntime::review_expired_building_vacancy(int32_t g) {
     const auto group = building_view(static_cast<size_t>(g));
-    if (group.filled_owner >= group.count ||
-        group.severe_loss_cycles < _building_severe_loss_cycles.get()) return;
+    if (group.vacant_buildings <= 0 ||
+        group.owner_vacancy_cycles < _building_severe_loss_cycles.get()) return;
     auto &review = _building_lifecycle[g];
     review.retirement = BuildingLifecycleReview::Retirement::Vacancy;
-    review.vacant_buildings = group.count - group.filled_owner;
+    review.vacant_buildings = group.vacant_buildings;
 }
 
 void NativeEconomyRuntime::observe_building_employment(
-        int32_t begin, int32_t end, bool mobility_due) {
+        int32_t begin, int32_t end, bool mobility_due,
+        const std::vector<int64_t> &owner_targets) {
     using Employment = BuildingLifecycleReview::Employment;
     const int32_t vacancy_limit = _building_severe_loss_cycles.get();
     for (int32_t g = begin; g < end; ++g) {
@@ -84,24 +85,29 @@ void NativeEconomyRuntime::observe_building_employment(
         if (!reopening) review.employment = Employment::None;
         const auto view = building_view(static_cast<size_t>(g));
         if (view.count <= 0 || view.operating_state != 0) continue;
-        const BuildingType &type = _building_types[view.type_id];
-        if (type.owner_slots_per_building <= 0) continue;
+        const int64_t owner_target = std::min(view.count, owner_targets[g - begin]);
+        if (owner_target <= 0) continue;
         auto group = building_at(static_cast<size_t>(g));
-        if (group.filled_owner >= group.count) {
-            // A reopened facility first has to execute with its actual roster.
-            if (!reopening) {
-                group.severe_loss_cycles = 0;
-                group.recovery_failed_reviews = 0;
-            }
+        const int64_t vacancy = std::max<int64_t>(0, owner_target - group.filled_owner);
+        if (vacancy == 0) {
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
+            group.recovery_failed_reviews = 0;
             continue;
         }
-        const bool already_expired = group.severe_loss_cycles >= vacancy_limit;
+        if (reopening && !mobility_due) {
+            // An incumbent can take a seat today. Wait for the unemployment
+            // hiring window before treating any remaining seats as unfilled.
+            continue;
+        }
+        const bool already_expired = group.owner_vacancy_cycles >= vacancy_limit;
+        group.vacant_buildings = vacancy;
         if (already_expired && mobility_due) review_expired_building_vacancy(g);
-        group.severe_loss_cycles = static_cast<uint16_t>(std::min(
-            vacancy_limit, static_cast<int32_t>(group.severe_loss_cycles) + 1));
+        group.owner_vacancy_cycles = static_cast<uint16_t>(std::min(
+            vacancy_limit, static_cast<int32_t>(group.owner_vacancy_cycles) + 1));
         // The first suspension still precedes any retirement review. Once
         // reviewed, a partially staffed producer can use its existing seats.
-        if (group.severe_loss_cycles >= vacancy_limit &&
+        if (group.owner_vacancy_cycles >= vacancy_limit &&
             (!already_expired || group.filled_owner == 0)) {
             group.operating_state = 1;
             group.pending_operating_state = 255;
@@ -119,13 +125,7 @@ void NativeEconomyRuntime::finish_building_reopenings(
         if (review.employment != Employment::Reopen) continue;
         review.employment = Employment::None;
         auto group = building_at(static_cast<size_t>(g));
-        if (group.last_output > 0 || group.last_resource_generated > 0) {
-            if (group.filled_owner >= group.count) {
-                group.severe_loss_cycles = 0;
-                group.recovery_failed_reviews = 0;
-            }
-            continue;
-        }
+        if (group.last_output > 0 || group.last_resource_generated > 0) continue;
         if (group.operating_state != 1) {
             group.operating_state = 1;
             ++result.reopening_suspensions;
@@ -233,6 +233,8 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
         0, group.merchant_debt_premium - premium_bad);
     _investment_employment_cells.push_back(group.cell);
     group.count -= retire_count;
+    group.vacant_buildings = std::max<int64_t>(0, group.vacant_buildings - retire_count);
+    if (group.vacant_buildings == 0) group.owner_vacancy_cycles = 0;
     const int64_t owner_capacity = saturating_mul(
         group.count, type.owner_slots_per_building, _saturation_count);
     group.filled_owner = std::min<int64_t>(group.filled_owner, owner_capacity);

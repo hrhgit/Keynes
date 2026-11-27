@@ -462,18 +462,19 @@
                 !positive_self_employment &&
                 realized_after_tax_margin <= _building_severe_loss_threshold_q16.get();
             if (realized_severe_loss) {
-                // A realized operating loss already consumes this review.
-                _building_lifecycle[group_index].employment =
-                    BuildingLifecycleReview::Employment::None;
                 const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
                 group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
                     threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
                 if (group.severe_loss_cycles >= threshold) {
+                    _building_lifecycle[group_index].employment =
+                        BuildingLifecycleReview::Employment::None;
                     group.operating_state = 1;
                     group.recovery_cycles = 0;
                     suspended_now = true;
                     invalidate_cell_monetary_units(group.cell);
                 }
+            } else if (settled_production) {
+                group.severe_loss_cycles = 0;
             }
             group.pending_operating_state = 255;
             group.recovery_cooldown_cycles = 0;

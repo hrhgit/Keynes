@@ -42,6 +42,8 @@ RuntimeEconomyBuildingStore::RuntimeEconomyBuildingStore()
       purchase_intent_capacity_q16(changes, {{4, 35}, "building.purchase_intent_capacity_q16", EconomyFieldEncoding::I64, 8}),
       realized_profit_margin_q16(changes, {{4, 36}, "building.realized_profit_margin_q16", EconomyFieldEncoding::I32, 4}),
       severe_loss_cycles(changes, {{4, 37}, "building.severe_loss_cycles", EconomyFieldEncoding::U16, 2}),
+      owner_vacancy_cycles(changes, {{4, 80}, "building.owner_vacancy_cycles", EconomyFieldEncoding::U16, 2}),
+      vacant_buildings(changes, {{4, 81}, "building.vacant_buildings", EconomyFieldEncoding::I64, 8}),
       recovery_cycles(changes, {{4, 38}, "building.recovery_cycles", EconomyFieldEncoding::U16, 2}),
       operating_state(changes, {{4, 39}, "building.operating_state", EconomyFieldEncoding::U8, 1}),
       pending_operating_state(changes, {{4, 40}, "building.pending_operating_state", EconomyFieldEncoding::U8, 1}),
@@ -125,6 +127,8 @@ RuntimeEconomyBuildingStore &RuntimeEconomyBuildingStore::operator=(const Runtim
     purchase_intent_capacity_q16.assign(other.purchase_intent_capacity_q16.values());
     realized_profit_margin_q16.assign(other.realized_profit_margin_q16.values());
     severe_loss_cycles.assign(other.severe_loss_cycles.values());
+    owner_vacancy_cycles.assign(other.owner_vacancy_cycles.values());
+    vacant_buildings.assign(other.vacant_buildings.values());
     recovery_cycles.assign(other.recovery_cycles.values());
     operating_state.assign(other.operating_state.values());
     pending_operating_state.assign(other.pending_operating_state.values());
@@ -210,6 +214,8 @@ RuntimeEconomyBuildingStore &RuntimeEconomyBuildingStore::operator=(RuntimeEcono
     purchase_intent_capacity_q16.move_from(other.purchase_intent_capacity_q16);
     realized_profit_margin_q16.move_from(other.realized_profit_margin_q16);
     severe_loss_cycles.move_from(other.severe_loss_cycles);
+    owner_vacancy_cycles.move_from(other.owner_vacancy_cycles);
+    vacant_buildings.move_from(other.vacant_buildings);
     recovery_cycles.move_from(other.recovery_cycles);
     operating_state.move_from(other.operating_state);
     pending_operating_state.move_from(other.pending_operating_state);
@@ -318,6 +324,8 @@ void RuntimeEconomyBuildingStore::clear() noexcept {
     purchase_intent_capacity_q16.clear();
     realized_profit_margin_q16.clear();
     severe_loss_cycles.clear();
+    owner_vacancy_cycles.clear();
+    vacant_buildings.clear();
     recovery_cycles.clear();
     operating_state.clear();
     pending_operating_state.clear();
@@ -401,6 +409,8 @@ bool RuntimeEconomyBuildingStore::shape_valid(
           column_size(purchase_intent_capacity_q16, groups) &&
           column_size(realized_profit_margin_q16, groups) &&
           column_size(severe_loss_cycles, groups) &&
+          column_size(owner_vacancy_cycles, groups) &&
+          column_size(vacant_buildings, groups) &&
           column_size(recovery_cycles, groups) &&
           column_size(operating_state, groups) &&
           column_size(pending_operating_state, groups) &&
@@ -450,11 +460,24 @@ bool RuntimeEconomyBuildingStore::shape_valid(
     }
     uint32_t role_sum = 0;
     for (size_t i = 0; i < groups; ++i) {
+        if (!valid_vacancy_history(group_units[i], owner_vacancy_cycles[i],
+                vacant_buildings[i])) return false;
         if (role_count[i] < 0) return false;
         if (role_begin[i] != static_cast<int32_t>(role_sum)) return false;
         role_sum += static_cast<uint32_t>(role_count[i]);
     }
     return role_sum == expected_roles;
+}
+
+void RuntimeEconomyBuildingStore::remove_units(size_t group, int64_t count) {
+    group_units.write_scalar(group, group_units[group] - count);
+    const int64_t remaining_vacancy = std::max<int64_t>(0, vacant_buildings[group] - count);
+    vacant_buildings.write_scalar(group, remaining_vacancy);
+    if (remaining_vacancy == 0) owner_vacancy_cycles.write_scalar(group, 0);
+}
+
+namespace {
+constexpr uint32_t kBuildingVacancyWireVersion = 1;
 }
 
 template <typename Sink>
@@ -540,6 +563,15 @@ void RuntimeEconomyBuildingStore::visit_wire(Sink &out) const {
         append_pod(out, pending_merchant_debt_premium[i]);
         append_pod(out, pending_merchant_debt_term_cycles_left[i]);
         append_pod(out, pending_sponsor_family_handle[i]);
+    }
+    // Optional versioned trailer. Its absence carries no vacancy evidence.
+    if (std::any_of(owner_vacancy_cycles.begin(), owner_vacancy_cycles.end(),
+            [](uint16_t cycles) { return cycles != 0; })) {
+        append_pod(out, kBuildingVacancyWireVersion);
+        for (size_t g = 0; g < groups; ++g) {
+            append_pod(out, owner_vacancy_cycles[g]);
+            append_pod(out, vacant_buildings[g]);
+        }
     }
 }
 
@@ -693,6 +725,28 @@ bool RuntimeEconomyBuildingStore::load_wire(
             return false;
         }
         pending_sponsor_family_handle.push_back(v_u64);
+    }
+    if (p == end) {
+        owner_vacancy_cycles.assign(expected_groups, 0);
+        vacant_buildings.assign(expected_groups, 0);
+    } else {
+        uint32_t version = 0;
+        if (!read_pod(p, end, version) || version != kBuildingVacancyWireVersion ||
+            static_cast<uint64_t>(expected_groups) * 10u != static_cast<size_t>(end - p)) {
+            clear();
+            return false;
+        }
+        for (uint32_t g = 0; g < expected_groups; ++g) {
+            uint16_t cycles = 0;
+            int64_t vacant = 0;
+            if (!read_pod(p, end, cycles) || !read_pod(p, end, vacant) ||
+                !valid_vacancy_history(group_units[g], cycles, vacant)) {
+                clear();
+                return false;
+            }
+            owner_vacancy_cycles.push_back(cycles);
+            vacant_buildings.push_back(vacant);
+        }
     }
     if (p != end) {
         clear();

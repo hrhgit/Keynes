@@ -217,6 +217,7 @@ bool NativeEconomyRuntime::run_building_employment_cell(
 #include "economy_runtime_building_employment_vacancy_candidates.inc"
 #include "economy_runtime_building_employment_hire_and_employee_mobility.inc"
 #include "economy_runtime_building_employment_owner_reallocation.inc"
+        observe_building_employment(first, last, mobility_days > 0, group_owner_target);
     }
     int64_t local_owner = 0;
     int64_t local_employee = 0;
@@ -296,7 +297,6 @@ bool NativeEconomyRuntime::run_building_employment_cell(
                  SUBJECT_BUILDING_GROUP, cell, first, last - first,
                  local_owner, local_employee, local_unemployed, last - first,
                  event_legs.empty() ? nullptr : &event_legs);
-    observe_building_employment(first, last, mobility_days > 0);
     EconomyCostProbe::record("employment.cell_hire", _current_day.get(),
                              elapsed_ms(employment_hire_started));
     EconomyCostProbe::record("employment.hire_ownerjob", _current_day.get(),

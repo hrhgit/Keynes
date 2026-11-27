@@ -428,6 +428,8 @@
             append_le<int64_t>(payload, group.last_observed_capacity_days_q16);
             append_le<int64_t>(payload, group.last_quoted_market_receipt);
             append_le<int64_t>(payload, group.last_quoted_operating_cost);
+            append_le<uint16_t>(payload, group.owner_vacancy_cycles);
+            append_le<int64_t>(payload, group.vacant_buildings);
             if (group.last_maintenance_cost != maintenance_from_operating_cost(
                     group.last_operating_cost, group.last_input_cost, group.last_wages_due)) {
                 maintenance_exceptions.emplace_back(

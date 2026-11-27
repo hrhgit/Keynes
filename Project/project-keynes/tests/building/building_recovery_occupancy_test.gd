@@ -103,14 +103,15 @@ func _test_vacant_looms(label: String, applicants: int, mobility_q16: int,
 	var pool_row := _row_for_signature(pool, unemployed)
 	print("vacancy opening ", label, {
 		"state": suspended.get("operating_state"), "seats": suspended.get("filled_owner"),
-		"vacancy_streak": suspended.get("severe_loss_cycles"),
+		"vacancy_streak": suspended.get("owner_vacancy_cycles"),
 		"pool": _snapshot_i64(pool, "populations", pool_row),
 		"pool_cash": _snapshot_i64(pool, "funds_by_cohort", pool_row),
 	})
 	_expect(label + ": an actual opening vacancy suspends both lots",
 		_balanced(opening) and _sum_i64(suspended.group_counts) == 2
 		and (suspended.operating_state as PackedByteArray).count(1) == looms.size()
-		and (suspended.severe_loss_cycles as PackedInt32Array).count(1) == looms.size())
+		and (suspended.owner_vacancy_cycles as PackedInt32Array).count(1) == looms.size()
+		and (suspended.severe_loss_cycles as PackedInt32Array).count(0) == looms.size())
 	if applicants > 0:
 		_expect(label + ": both applicants are present for the next review",
 			_snapshot_i64(pool, "populations", pool_row) == applicants
@@ -126,7 +127,7 @@ func _test_vacant_looms(label: String, applicants: int, mobility_q16: int,
 	print("vacancy review ", label, {
 		"approval": review.get("recovery_approved"), "retired": review.get("recovery_liquidated_buildings"),
 		"count": lots.get("group_counts"), "seats": lots.get("filled_owner"),
-		"vacancy_streak": lots.get("severe_loss_cycles"),
+		"vacancy_streak": lots.get("owner_vacancy_cycles"),
 		"pool": _snapshot_i64(remaining, "populations", remaining_pool),
 		"margin": lots.get("last_margin_gap_q16"),
 	})
@@ -139,6 +140,7 @@ func _test_vacant_looms(label: String, applicants: int, mobility_q16: int,
 		_expect(label + ": actual full staffing preserves both looms and clears the streak",
 			_snapshot_i64(lots, "group_counts", 0) == 2
 			and int(review.get("recovery_liquidated_buildings", -1)) == 0
+			and _snapshot_i64(lots, "owner_vacancy_cycles", 0) == 0
 			and _snapshot_i64(lots, "severe_loss_cycles", 0) == 0
 			and _snapshot_i64(lots, "last_output", 0) > 0)
 	else:

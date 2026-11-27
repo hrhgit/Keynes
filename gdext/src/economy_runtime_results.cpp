@@ -13,6 +13,22 @@ thread_local NativeEconomyRuntime::MarketResult *
 thread_local std::vector<int32_t> *
     NativeEconomyRuntime::_staging_touched_sink = nullptr;
 
+void NativeEconomyRuntime::BuildingPlanResult::reset() {
+    ok = true;
+    error.clear();
+    changes.clear();
+    cohort_lookups = {};
+    saturation_count = 0;
+    merchant_credit_budget = 0;
+    merchant_credit_committed = 0;
+    recovery_candidates = 0;
+    recovery_approved = 0;
+    loss_suspended_building_groups = 0;
+    unprofitable_building_groups = 0;
+    utilization_sum_q16 = 0;
+    worker_ms = 0.0;
+}
+
 void NativeEconomyRuntime::MarketResult::reset() {
     ok = true;
     market = -1;

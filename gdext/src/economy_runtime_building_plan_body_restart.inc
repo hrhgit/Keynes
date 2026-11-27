@@ -187,18 +187,17 @@
             }
             const bool offer_jobs = physical_requirements_met &&
                 recovery_profit_margin >= _building_restart_margin_q16.get();
-            if (offer_jobs && (building_mobility_days(group.cell) > 0 ||
-                    group.filled_owner >= group.count)) {
-                // Open jobs only when the normal matching stage can try them
-                // or the lot is already staffed. The purchase is settled by
-                // production against actual balances after hiring.
+            if (offer_jobs) {
+                // Incumbent owners and employees can move even when hiring
+                // from unemployment is off-cycle. Let employment match both
+                // paths, then settle purchases against the resulting balances.
                 group.operating_state = 0;
                 group.pending_operating_state = 255;
                 _building_lifecycle[group_index].employment =
                     BuildingLifecycleReview::Employment::Reopen;
                 invalidate_cell_monetary_units(group.cell);
                 ++_recovery_approved;
-            } else if (!offer_jobs) {
+            } else {
                 review_expired_building_vacancy(group_index);
                 auto &review = _building_lifecycle[group_index];
                 // Preserve the review of executable but unprofitable lots.

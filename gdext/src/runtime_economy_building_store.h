@@ -52,6 +52,8 @@ struct RuntimeEconomyBuildingStore {
     EconomyTrackedColumn<int64_t> purchase_intent_capacity_q16;
     EconomyTrackedColumn<int32_t> realized_profit_margin_q16;
     EconomyTrackedColumn<uint16_t> severe_loss_cycles;
+    EconomyTrackedColumn<uint16_t> owner_vacancy_cycles;
+    EconomyTrackedColumn<int64_t> vacant_buildings;
     EconomyTrackedColumn<uint16_t> recovery_cycles;
     EconomyTrackedColumn<uint8_t> operating_state;
     EconomyTrackedColumn<uint8_t> pending_operating_state;
@@ -117,6 +119,10 @@ struct RuntimeEconomyBuildingStore {
     }
     bool shape_valid(uint32_t expected_groups, uint32_t expected_pending,
                      uint32_t expected_roles) const noexcept;
+    void remove_units(size_t group, int64_t count);
+    static bool valid_vacancy_history(int64_t units, uint16_t cycles, int64_t vacant) {
+        return vacant >= 0 && vacant <= units && (cycles == 0) == (vacant == 0);
+    }
     void append_wire(std::vector<uint8_t> &out) const;
     bool load_wire(const uint8_t *data, size_t size, uint32_t expected_groups,
                    uint32_t expected_pending, uint32_t expected_roles);
@@ -124,6 +130,7 @@ struct RuntimeEconomyBuildingStore {
     uint64_t mix_wire_hash(uint64_t hash) const noexcept;
 
 private:
+    friend class EconomyInvariantProbe;
     template <typename Sink> void visit_wire(Sink &out) const;
     // Canonical field traversal uses the same bindings as the writers.
     template<class Visitor> void visit_registered_columns(Visitor &&visit) const {
@@ -164,6 +171,8 @@ private:
         visit(purchase_intent_capacity_q16);
         visit(realized_profit_margin_q16);
         visit(severe_loss_cycles);
+        visit(owner_vacancy_cycles);
+        visit(vacant_buildings);
         visit(recovery_cycles);
         visit(operating_state);
         visit(pending_operating_state);

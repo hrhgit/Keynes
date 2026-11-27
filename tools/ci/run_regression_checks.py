@@ -112,6 +112,7 @@ TESTS = (
     "tests/building/building_runtime_test.gd",
     "tests/building/building_recovery_occupancy_test.gd",
     "tests/building/building_lifecycle_test.gd",
+    "tests/building/building_lifecycle_disjoint_test.gd",
     "tests/building/building_tombstone_restore_test.gd",
     "tests/economy/economy_test_bootstrap_test.gd",
     "tests/economy/bootstrap_catalog_contract_test.gd",
@@ -228,6 +229,9 @@ EXPECTED_ERRORS = {
 def fixture_errors(name: str, lines: list[str]) -> list[str]:
     expected = list(EXPECTED_ERRORS.get(name, ()))
     declarations = []
+    if name == "building_lifecycle_disjoint_test":
+        if lines.count("building lifecycle disjoint calendars: 0 failures") != 1:
+            declarations.append("expected exactly one successful disjoint building calendar summary")
     if name == "economy_stratum_save_restore_test":
         success_pattern = r"=== stratum save roundtrip: [1-9][0-9]* checks, 0 failures ==="
         if sum(bool(re.fullmatch(success_pattern, line)) for line in lines) != 1:
@@ -342,8 +346,11 @@ def main() -> int:
     before_files = untracked(ROOT)
 
     def test(script: str) -> bool:
-        return run_check(args.godot, Path(script).stem, ["--script", f"res://{script}"], logs,
-                         check_artifacts=False)
+        name = Path(script).stem
+        extra_env = {"PK_ECONOMY_TRACK_B_MOBILITY_SPREAD": "4"} if (
+            name == "building_lifecycle_disjoint_test") else None
+        return run_check(args.godot, name, ["--script", f"res://{script}"], logs,
+                         extra_env=extra_env, check_artifacts=False)
 
     def tool(name: str, script: str, *arguments: str) -> bool:
         return timed_run(name, [sys.executable, str(ROOT / "tools/ci" / script), "--godot", args.godot,

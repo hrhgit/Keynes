@@ -344,6 +344,20 @@
                 error = "save_building_fact_quote_payload_truncated";
                 return false;
             }
+            if (_restore.schema_version >= 66) {
+                if (!read_le(bytes, cursor, group.owner_vacancy_cycles) ||
+                    !read_le(bytes, cursor, group.vacant_buildings) ||
+                    group.owner_vacancy_cycles > _building_severe_loss_cycles.get() ||
+                    !RuntimeEconomyBuildingStore::valid_vacancy_history(
+                        group.count, group.owner_vacancy_cycles, group.vacant_buildings)) {
+                    error = "save_building_vacancy_history_invalid";
+                    return false;
+                }
+            } else {
+                // Old saves combined losses and vacancies. Neither history can
+                // be inferred from a closed group's released jobs.
+                group.severe_loss_cycles = 0;
+            }
             // A collapsed lot stays in the store as count == 0 until the prune
             // pass drops its identity; the row itself still carries the cell,
             // type and owner key, so rejecting zero here made a legally written

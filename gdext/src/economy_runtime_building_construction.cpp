@@ -4,6 +4,53 @@ namespace pk {
 
 using namespace godot;
 
+int64_t NativeEconomyRuntime::construction_material_required(
+        int64_t quantity, int32_t cost_factor_q16,
+                                        int64_t &saturation) {
+    return std::max<int64_t>(1, mul_div_sat(
+        quantity, std::max(1, cost_factor_q16), Q16_ONE, saturation));
+}
+
+int64_t NativeEconomyRuntime::construction_material_physical(
+        int64_t required, int32_t efficiency_q16,
+                                        int64_t &saturation) {
+    const int32_t efficiency = std::max(1, efficiency_q16);
+    int64_t physical = mul_div_sat(required, Q16_ONE, efficiency, saturation);
+    if (mul_div_sat(physical, efficiency, Q16_ONE, saturation) < required)
+        physical = saturating_add(physical, 1, saturation);
+    return physical;
+}
+
+int64_t NativeEconomyRuntime::construction_material_capacity(
+        int32_t type_id, int32_t cost_factor_q16,
+        const std::vector<int64_t> &stock, int64_t ceiling) const {
+    const BuildingType &type = _building_types[type_id];
+    int64_t saturation = 0;
+    for (int32_t edge = type.construction_begin;
+            edge < type.construction_begin + type.construction_count; ++edge) {
+        const int64_t required = construction_material_required(
+            _building_construction_goods[edge].quantity, cost_factor_q16, saturation);
+        int64_t edge_capacity = 0;
+        for (int32_t c = _building_construction_candidate_offsets[edge];
+                c < _building_construction_candidate_offsets[edge + 1]; ++c) {
+            const auto &candidate = _building_construction_candidates[c];
+            const int64_t physical = construction_material_physical(
+                required, candidate.efficiency_q16, saturation);
+            if (saturation != 0 || physical <= 0) return ceiling;
+            if (candidate.good_id < 0 || static_cast<size_t>(candidate.good_id) >= stock.size())
+                continue;
+            // One substitute must cover the entire edge of each building. A
+            // later edge may share those shelves, so this is an upper bound.
+            edge_capacity += std::min(ceiling - edge_capacity,
+                stock[candidate.good_id] / physical);
+            if (edge_capacity == ceiling) break;
+        }
+        ceiling = std::min(ceiling, edge_capacity);
+        if (ceiling == 0) break;
+    }
+    return ceiling;
+}
+
 bool NativeEconomyRuntime::plan_construction_materials(
         int32_t cell, int32_t type_id, int64_t count, int32_t cost_factor_q16,
         ConstructionMaterialPlan &plan,
@@ -69,7 +116,6 @@ bool NativeEconomyRuntime::plan_construction_materials(
         plan.quantities.push_back(quantity);
     };
     GoodsBill construction_bill;
-    const int32_t cost_factor = std::max<int32_t>(1, cost_factor_q16);
     for (int64_t unit = 0; unit < count; ++unit) {
         for (int32_t group_index = 0; group_index < type.construction_count;
              ++group_index) {
@@ -79,8 +125,8 @@ bool NativeEconomyRuntime::plan_construction_materials(
                 _building_construction_candidate_offsets[group];
             const int32_t candidate_end =
                 _building_construction_candidate_offsets[group + 1];
-            const int64_t required = std::max<int64_t>(1, mul_div_sat(
-                preferred.quantity, cost_factor, Q16_ONE, sat));
+            const int64_t required = construction_material_required(
+                preferred.quantity, cost_factor_q16, sat);
             if (split_candidates) {
                 int64_t remaining = required;
                 for (int32_t pass = 0; pass < 2 && remaining > 0; ++pass) {
@@ -160,15 +206,8 @@ bool NativeEconomyRuntime::plan_construction_materials(
                 const ConstructionCandidate &candidate =
                     _building_construction_candidates[candidate_index];
                 if (!construction_candidate_available(candidate.good_id)) continue;
-                int64_t physical = mul_div_sat(required, Q16_ONE,
-                    std::max<int32_t>(1, candidate.efficiency_q16),
-                    sat);
-                if (mul_div_sat(physical,
-                        std::max<int32_t>(1, candidate.efficiency_q16),
-                        Q16_ONE, sat) < required) {
-                    physical = saturating_add(physical, 1,
-                        sat);
-                }
+                const int64_t physical = construction_material_physical(
+                    required, candidate.efficiency_q16, sat);
                 if (candidate.good_id < 0 || candidate.good_id >=
                         static_cast<int32_t>(virtual_stock->size()) ||
                     (*virtual_stock)[static_cast<size_t>(candidate.good_id)] <
@@ -578,7 +617,7 @@ bool NativeEconomyRuntime::apply_demolish_command(const Command &cmd, int32_t ow
     }
     const int64_t before = buildings_store().group_units[group_id];
     record_annual_event(cell, AnnualMetric::REMOVED, count);
-    buildings_store().group_units.write_scalar(group_id, buildings_store().group_units[group_id] - (count));
+    buildings_store().remove_units(group_id, count);
     _building_handle_index_clean = false;
     std::vector<EventLeg> event_legs;
     if (trace_detail_for_cell(cell)) {

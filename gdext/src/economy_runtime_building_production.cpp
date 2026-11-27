@@ -23,6 +23,29 @@ double elapsed_ms(const Clock::time_point &start) {
 }
 } // namespace
 
+int32_t NativeEconomyRuntime::building_settlement_owner_slot(BuildingGroupConstRef group) const {
+    const int32_t canonical = find_cohort_slot(group.cell, group.owner_signature_id);
+    if (canonical >= 0 || group.filled_owner <= 0 || group.owner_signature_id < 0 ||
+        static_cast<size_t>(group.owner_signature_id) >= _signatures.size()) return canonical;
+    const BuildingType &type = _building_types[group.type_id];
+    if (type.kind == 2 || type.kind == 3) return canonical;
+
+    // Employment fills owner seats by profession across ethnicities. If the
+    // registered cohort is absent, settle with an actual working owner of
+    // that profession, in signature order. The building identity stays fixed.
+    const int32_t profession = _signatures[group.owner_signature_id].profession_id;
+    int32_t selected = -1;
+    population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
+        const uint32_t signature = population_store().signature_id[slot];
+        if (signature >= _signatures.size() ||
+            _signatures[signature].profession_id != profession ||
+            population_store().owner_employed[slot] <= 0) return;
+        if (selected < 0 || signature < population_store().signature_id[selected])
+            selected = slot;
+    });
+    return selected;
+}
+
 void NativeEconomyRuntime::commit_bio_introduce(int32_t cell, int32_t bit) {
     if (cell < 0 || bit < 0 || bit >= 32) return;
     const uint64_t key = (uint64_t(uint32_t(cell)) << 8) | uint32_t(bit);

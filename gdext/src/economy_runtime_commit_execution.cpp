@@ -141,6 +141,8 @@ NativeEconomyRuntime::advance_building_commit_chunk(
             group.pending_operating_state = 255;
             group.recovery_cooldown_cycles = 0;
             group.severe_loss_cycles = 0;
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
             group.recovery_cycles = 0;
             group.recovery_failed_reviews = 0;
         }

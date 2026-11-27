@@ -19,7 +19,7 @@
                     _climate_capacity_sum_q16,
                     group.last_climate_capacity_q16, _saturation_count);
             }
-            const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
+            const int32_t owner_slot = settlement_owner_slots[g - begin];
             if (owner_slot < 0) continue;
             int64_t workforce_capacity_q16 = Q16_ONE;
             const int64_t owner_slots = saturating_mul(

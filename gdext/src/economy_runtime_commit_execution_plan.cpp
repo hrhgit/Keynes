@@ -158,6 +158,7 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
     for (int32_t task = 0; task < task_count; ++task) {
         const BuildingPlanResult &task_result =
             _building_plan_results_scratch[task];
+        merge_economy_worker_changes(task_result.changes);
         merge_cohort_lookup_counts(task_result.cohort_lookups);
         _building_plan_worker_cpu_ms += task_result.worker_ms;
         _saturation_count += task_result.saturation_count;

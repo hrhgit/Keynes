@@ -274,6 +274,7 @@
     struct BuildingPlanResult {
         bool ok = true;
         std::string error;
+        EconomyWorkerChanges changes;
         CohortLookupCounts cohort_lookups;
         int64_t saturation_count = 0;
         int64_t merchant_credit_budget = 0;
@@ -285,9 +286,7 @@
         int64_t utilization_sum_q16 = 0;
         double worker_ms = 0.0;
 
-        void reset() {
-            *this = {};
-        }
+        void reset();
     };
 
     struct CompletedEpochPerf {

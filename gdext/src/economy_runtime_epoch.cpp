@@ -240,6 +240,8 @@ bool NativeEconomyRuntime::start_epoch(int64_t day_index, std::string &error) {
                      g < _building_cell_offsets[cell + 1]; ++g) {
                     const auto group = building_view(static_cast<size_t>(g));
                     if (group.count > 0 && (group.operating_state != 0 ||
+                            group.owner_vacancy_cycles >=
+                                std::min(2, _building_severe_loss_cycles.get()) ||
                             group.severe_loss_cycles >=
                                 std::min(2, _building_severe_loss_cycles.get()))) {
                         needs_lifecycle_review = true;

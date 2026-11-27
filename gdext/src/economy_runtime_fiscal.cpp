@@ -322,8 +322,7 @@ void NativeEconomyRuntime::settle_absolute_daily_taxes_for_cell(
         if (value == 0) continue;
         const int64_t units = saturating_mul(
             static_cast<int64_t>(group.count), days, saturation_count);
-        const int32_t owner_slot =
-            find_cohort_slot(cell, group.owner_signature_id);
+        const int32_t owner_slot = building_settlement_owner_slot(group);
         if (value > 0) {
             const int64_t assessed = saturating_mul(
                 units, static_cast<int64_t>(value), saturation_count);

@@ -3,6 +3,7 @@ extends "res://tests/building/building_runtime_test.gd"
 const BUILDINGS_DOMAIN := 1 << 5
 const OWNED_DOMAIN := 1 << 17
 const BUILDINGS_SECTION := 5
+const PKEC_BUILDING_VACANCY_OFFSET := 327
 const OWNER_MOBILITY_BLOCK := 10
 const FIXTURE_SEED := 297
 
@@ -54,6 +55,7 @@ func _run() -> void:
 	_expect("source reaches a save boundary", bool(captured.get("ok", false)))
 	if not bool(captured.get("ok", false)):
 		return
+	_test_corrupt_vacancy_history(source, captured.bytes)
 	var legacy := _legacy_archive(captured.bytes)
 	_expect("legacy archive encodes a zero group before two live groups", not legacy.is_empty())
 	if legacy.is_empty():
@@ -138,6 +140,26 @@ func _mobility_payload(wire: PackedByteArray) -> PackedByteArray:
 	return wire.slice(block + 8, block + 8 + wire.decode_u32(block + 4))
 
 
+func _test_corrupt_vacancy_history(ext: Object, wire: PackedByteArray) -> void:
+	var buildings := _domain_offset(wire, BUILDINGS_DOMAIN) + 8
+	_expect("vacancy archive uses versioned building records",
+		buildings >= 8 and wire.decode_u16(buildings + 4) == 66)
+	if buildings < 8 or wire.decode_u16(buildings + 4) != 66:
+		return
+	var vacancy := buildings + 16 + PKEC_BUILDING_VACANCY_OFFSET
+	for values in [Vector2i(1, 2), Vector2i(65535, 1), Vector2i(1, 0)]:
+		var invalid := wire.duplicate()
+		invalid.encode_u16(vacancy, values.x)
+		invalid.encode_s64(vacancy + 2, values.y)
+		invalid.encode_s64(16, _wire_hash(invalid.slice(24)))
+		var before: int = ext.get_economy_state_hash()
+		var rejected: Dictionary = ext.restore_economy_ecp2(invalid)
+		_expect("vacancy archive rejects %s without replacing the live world" % str(values),
+			not bool(rejected.get("ok", true))
+			and rejected.get("reason") == "save_building_vacancy_history_invalid;rolled_back"
+			and ext.get_economy_state_hash() == before)
+
+
 func _legacy_archive(wire: PackedByteArray) -> PackedByteArray:
 	var groups := _domain_offset(wire, BUILDINGS_DOMAIN) + 8
 	var owned := _domain_offset(wire, OWNED_DOMAIN)
@@ -155,6 +177,17 @@ func _legacy_archive(wire: PackedByteArray) -> PackedByteArray:
 		return PackedByteArray()
 	legacy.encode_s64(first_pkec_row + 12, 0)
 	legacy.encode_s64(first_owned_row + 12, 0)
+	var vacancy := first_pkec_row + PKEC_BUILDING_VACANCY_OFFSET
+	if legacy.decode_u16(groups + 4) >= 66:
+		if legacy.decode_u16(vacancy) > 0:
+			var rows := legacy.decode_u32(groups + 8)
+			var trailer := first_owned_row + legacy.decode_u32(owned_building_block + 4) - (4 + rows * 10)
+			if legacy.decode_u32(trailer) != 1:
+				return PackedByteArray()
+			legacy.encode_u16(trailer + 4, 0)
+			legacy.encode_s64(trailer + 6, 0)
+		legacy.encode_u16(vacancy, 0)
+		legacy.encode_s64(vacancy + 2, 0)
 	var end := mobility + 8 + legacy.decode_u32(mobility + 4)
 	# The legacy wire stored row positions. Row 0 is gone, rows 1 and 2 survive.
 	var pairs := PackedByteArray()

@@ -52,7 +52,8 @@
     bool building_liquidation_due() const;
     int64_t building_mobility_days(int32_t cell) const;
     void review_expired_building_vacancy(int32_t group_index);
-    void observe_building_employment(int32_t begin, int32_t end, bool mobility_due);
+    void observe_building_employment(int32_t begin, int32_t end, bool mobility_due,
+                                     const std::vector<int64_t> &owner_targets);
     void finish_building_reopenings(int32_t begin, int32_t end, ProductionResult &result);
     void review_recovery_building_group(int32_t group_index);
     void finalize_household_building_cell(int32_t cell, int64_t &saturation,
@@ -183,6 +184,7 @@
     int32_t find_building_group(int32_t cell, int32_t type_id,
                                 int32_t owner_signature_id) const;
     int32_t find_cohort_slot(int32_t cell, int32_t signature_id) const;
+    int32_t building_settlement_owner_slot(BuildingGroupConstRef group) const;
     void merge_cohort_lookup_counts(const CohortLookupCounts &counts) const;
     int64_t credit_local_merchants(int32_t cell, int64_t amount,
                                    int32_t cashflow_source = CASHFLOW_MERCHANT_BUSINESS,

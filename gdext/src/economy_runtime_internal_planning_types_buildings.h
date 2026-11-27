@@ -287,6 +287,8 @@
         int64_t purchase_intent_capacity_q16 = 0;
         int32_t realized_profit_margin_q16 = 0;
         uint16_t severe_loss_cycles = 0;
+        uint16_t owner_vacancy_cycles = 0;
+        int64_t vacant_buildings = 0;
         uint16_t recovery_cycles = 0;
         uint16_t recovery_failed_reviews = 0;
         uint16_t merchant_debt_term_cycles_left = 0;
@@ -352,6 +354,8 @@
     X(int64_t, purchase_intent_capacity_q16, purchase_intent_capacity_q16)     \
     X(int32_t, realized_profit_margin_q16, realized_profit_margin_q16)         \
     X(uint16_t, severe_loss_cycles, severe_loss_cycles)                        \
+    X(uint16_t, owner_vacancy_cycles, owner_vacancy_cycles)                    \
+    X(int64_t, vacant_buildings, vacant_buildings)                             \
     X(uint16_t, recovery_cycles, recovery_cycles)                              \
     X(uint16_t, recovery_failed_reviews, recovery_failed_reviews)              \
     X(uint16_t, merchant_debt_term_cycles_left,                                \

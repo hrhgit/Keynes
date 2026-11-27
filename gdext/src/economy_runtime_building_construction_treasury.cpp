@@ -318,7 +318,7 @@ bool NativeEconomyRuntime::apply_treasury_sponsored_demolish_command(
     const int64_t before = buildings_store().group_units[group_id];
     if (before < cmd.i64_0) return reject("demolish_owned_count_insufficient");
     record_annual_event(cell, AnnualMetric::REMOVED, cmd.i64_0);
-    buildings_store().group_units.write_scalar(group_id, before - cmd.i64_0);
+    buildings_store().remove_units(group_id, cmd.i64_0);
     _building_handle_index_clean = false;
     std::vector<EventLeg> event_legs;
     if (trace_detail_for_cell(cell)) {

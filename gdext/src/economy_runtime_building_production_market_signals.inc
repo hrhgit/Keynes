@@ -112,7 +112,7 @@
             continue;
         const BuildingType &sale_type = _building_types[sale.type_id];
         const int64_t owner_livelihood = saturating_mul(saturating_mul(
-            living_cost_for_signature(cell, sale_group.owner_signature_id, -1,
+            living_cost_for_signature(cell, settlement_owner_signatures[sale.group - begin], -1,
                                       _saturation_count),
             std::max<int64_t>(0, sale_group.filled_owner), _saturation_count),
             std::max(1, _epoch_days.get()), _saturation_count);
@@ -174,7 +174,7 @@
                 group.last_capacity_q16, Q16_ONE, _saturation_count);
             if (qty <= 0) continue;
             const int64_t owner_livelihood = saturating_mul(saturating_mul(
-                living_cost_for_signature(cell, group.owner_signature_id, -1,
+                living_cost_for_signature(cell, settlement_owner_signatures[g - begin], -1,
                                           _saturation_count),
                 std::max<int64_t>(0, group.filled_owner), _saturation_count),
                 std::max(1, _epoch_days.get()), _saturation_count);

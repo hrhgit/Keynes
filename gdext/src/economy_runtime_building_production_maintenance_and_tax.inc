@@ -29,7 +29,7 @@
                 saturating_mul(std::max<int64_t>(0, maintenance_daily),
                     group.count, _saturation_count),
                 std::max(1, _epoch_days.get()), _saturation_count);
-        const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
+        const int32_t owner_slot = settlement_owner_slots[g - begin];
         if (owner_slot < 0) continue;
         const int64_t building_days = saturating_mul(
             group.count, std::max(1, _epoch_days.get()), _saturation_count);
@@ -146,8 +146,7 @@
             if (rate >= 0 ||
                 mode == CountryApi::TAX_MODE_ABSOLUTE ||
                 group.owner_signature_id < 0) continue;
-            const int32_t owner_slot = find_cohort_slot(
-                cell, group.owner_signature_id);
+            const int32_t owner_slot = settlement_owner_slots[g - begin];
             if (owner_slot < 0) continue;
             const int64_t eligible_cost = saturating_add(
                 saturating_add(group.last_input_cost,
@@ -245,7 +244,7 @@
     for (int32_t g = begin; g < end; ++g) {
         const auto group = building_view(static_cast<size_t>(g));
         const int64_t owner_livelihood = saturating_mul(saturating_mul(
-            living_cost_for_signature(cell, group.owner_signature_id, -1,
+            living_cost_for_signature(cell, settlement_owner_signatures[g - begin], -1,
                                       _saturation_count),
             std::max<int64_t>(0, group.filled_owner), _saturation_count),
             std::max(1, _epoch_days.get()), _saturation_count);

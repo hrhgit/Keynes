@@ -329,8 +329,12 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
                                              end_chunks);
         if (end_chunks.empty()) {
             std::vector<uint8_t> payload;
+            uint16_t schema = SCHEMA_VERSION;
+            size_t schema_offset = sizeof(uint32_t);
+            if (!ordered_chunks.empty())
+                binary_codec::read_le(ordered_chunks.front(), schema_offset, schema);
             const godot::PackedByteArray end_chunk =
-                make_save_chunk(SAVE_SECTION_END, 0, payload);
+                make_save_chunk(SAVE_SECTION_END, 0, payload, schema);
             ordered_chunks.emplace_back(
                 static_cast<size_t>(end_chunk.size()));
             std::memcpy(ordered_chunks.back().data(), end_chunk.ptr(),

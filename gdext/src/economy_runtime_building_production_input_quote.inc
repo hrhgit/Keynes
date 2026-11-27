@@ -193,7 +193,7 @@
             // Owner retention is a current-period demand signal and is settled
             // before the remaining output enters merchant procurement.
             int64_t retained_increment = 0;
-            const int32_t owner_signature = group.owner_signature_id;
+            const int32_t owner_signature = settlement_owner_signatures[group.index - begin];
             if (owner_signature >= 0 && owner_signature <
                     static_cast<int32_t>(_signatures.size()) &&
                 retention_signature_stamp[owner_signature] ==

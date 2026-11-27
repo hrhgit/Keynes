@@ -97,6 +97,12 @@
                                      const std::vector<int64_t> *additional_stock = nullptr,
                                      std::vector<int64_t> *stock_inout = nullptr,
         bool split_candidates = false, bool forecast_missing = false) const;
+    int64_t construction_material_capacity(int32_t type_id, int32_t cost_factor_q16,
+        const std::vector<int64_t> &stock, int64_t ceiling) const;
+    static int64_t construction_material_required(
+        int64_t quantity, int32_t cost_factor_q16, int64_t &saturation);
+    static int64_t construction_material_physical(
+        int64_t required, int32_t efficiency_q16, int64_t &saturation);
     bool apply_demolish_command(const Command &cmd, int32_t owner_slot, std::string &error);
     bool run_building_employment_cell(int32_t cell,
                                       bool allow_owner_job_reallocation,

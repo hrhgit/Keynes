@@ -9,8 +9,7 @@
         for (int32_t gi = owner_groups_begin; gi < owner_groups_end; ++gi) {
             const int32_t g = owner_groups[static_cast<size_t>(gi)];
             const auto group = building_view(static_cast<size_t>(g));
-            if (group.owner_signature_id != owner_signature ||
-                !building_available(cell, group.type_id, true)) continue;
+            if (!building_available(cell, group.type_id, true)) continue;
             total_due = saturating_add(total_due, std::max<int64_t>(
                 0, group.last_base_wages_due - group.last_base_wages_paid),
                 _saturation_count);
@@ -25,8 +24,7 @@
             const int32_t g = owner_groups[static_cast<size_t>(gi)];
             {
                 const auto group_view = building_view(static_cast<size_t>(g));
-                if (group_view.owner_signature_id != owner_signature ||
-                    !building_available(cell, group_view.type_id, true)) continue;
+                if (!building_available(cell, group_view.type_id, true)) continue;
             }
             auto group = building_at(static_cast<size_t>(g));
             const BuildingType &type = _building_types[group.type_id];
@@ -64,8 +62,7 @@
             const int32_t g = owner_groups[static_cast<size_t>(gi)];
             {
                 const auto group_view = building_view(static_cast<size_t>(g));
-                if (group_view.owner_signature_id != owner_signature ||
-                    !building_available(cell, group_view.type_id, true)) continue;
+                if (!building_available(cell, group_view.type_id, true)) continue;
             }
             auto group = building_at(static_cast<size_t>(g));
             group.last_wages_paid = group.last_base_wages_paid;
@@ -85,7 +82,7 @@
                 group_view.merchant_debt_premium <= 0) continue;
         }
         auto group = building_at(static_cast<size_t>(g));
-        const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
+        const int32_t owner_slot = settlement_owner_slots[g - begin];
         int64_t due_sat = 0;
         const int64_t due = building_debt_due(group, due_sat);
         _saturation_count = saturating_add(

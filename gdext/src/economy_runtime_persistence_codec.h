@@ -83,13 +83,13 @@ inline int64_t maintenance_from_operating_cost(int64_t operating_cost,
 
 inline godot::PackedByteArray make_save_chunk(
         uint16_t section, uint32_t records,
-        const std::vector<uint8_t> &payload) {
+        const std::vector<uint8_t> &payload,
+        uint16_t schema = NativeEconomyRuntime::SCHEMA_VERSION) {
     using binary_codec::append_le;
     std::vector<uint8_t> bytes;
     bytes.reserve(16 + payload.size());
     append_le<uint32_t>(bytes, SAVE_MAGIC);
-    append_le<uint16_t>(bytes,
-        static_cast<uint16_t>(NativeEconomyRuntime::SCHEMA_VERSION));
+    append_le<uint16_t>(bytes, schema);
     append_le<uint16_t>(bytes, section);
     append_le<uint32_t>(bytes, records);
     append_le<uint32_t>(bytes, static_cast<uint32_t>(payload.size()));

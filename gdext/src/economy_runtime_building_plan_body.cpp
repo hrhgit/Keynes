@@ -514,6 +514,8 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             // captured a service in a suspended state.
             group.operating_state = 0;
             group.severe_loss_cycles = 0;
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
             group.recovery_cycles = 0;
             group.recovery_failed_reviews = 0;
             group.pending_operating_state = 255;
@@ -527,6 +529,8 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             // private operating cost so the payroll and rail paths behave.
             group.operating_state = 0;
             group.severe_loss_cycles = 0;
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
             group.recovery_cycles = 0;
             group.recovery_failed_reviews = 0;
             group.pending_operating_state = 255;

@@ -456,8 +456,11 @@ bool NativeEconomyRuntime::sync_owned_columns_to_production(
         families_store().flags = owned.families.family_flags;
     if (owned.building.captured &&
         owned.buildings.group_units.size() == building_count()) {
-        for (size_t i = 0; i < building_count(); ++i)
+        for (size_t i = 0; i < building_count(); ++i) {
             buildings_store().group_units.write_scalar(i, owned.buildings.group_units[i]);
+            buildings_store().owner_vacancy_cycles.write_scalar(i, owned.buildings.owner_vacancy_cycles[i]);
+            buildings_store().vacant_buildings.write_scalar(i, owned.buildings.vacant_buildings[i]);
+        }
         _building_handle_index_clean = false;
     }
     return true;
