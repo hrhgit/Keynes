@@ -199,8 +199,12 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
         magic != SAVE_MAGIC ||
         (abi != RUNTIME_EFFECT_POD_ABI_VERSION && abi != EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT) ||
         catalog_version != RUNTIME_EFFECT_POD_CATALOG_VERSION ||
-        catalog_hash_value != _catalog.catalog_hash || next_transaction_id <= 0) {
+        catalog_hash_value != _catalog.catalog_hash) {
         error = "effect_pod_save_header_invalid";
+        return false;
+    }
+    if (next_transaction_id <= 0 || next_transaction_id > EFFECT_BUILTIN_TRANSACTION_ID_BASE) {
+        error = "effect_pod_transaction_cursor_invalid";
         return false;
     }
     State restored;
@@ -323,6 +327,7 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
         error = "effect_pod_transaction_count_invalid"; return false;
     }
     restored.transactions.resize(count);
+    int64_t previous_transaction_id = 0;
     for (auto &transaction : restored.transactions) {
         if (!read_le(data,payload_end,cursor,transaction.transaction_id) ||
             !read_le(data,payload_end,cursor,transaction.source_instance_id) ||
@@ -347,6 +352,16 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             (transaction.received_ack_mask & ~transaction.required_ack_mask) != 0u) {
             error = "effect_pod_transaction_truncated_or_invalid"; return false;
         }
+        if (transaction.transaction_id >= next_transaction_id) {
+            error = "effect_pod_transaction_cursor_invalid";
+            return false;
+        }
+        // The writer appends transactions in ID order and compaction preserves it.
+        if (transaction.transaction_id <= previous_transaction_id) {
+            error = "effect_pod_transaction_order_invalid";
+            return false;
+        }
+        previous_transaction_id = transaction.transaction_id;
         if (abi != EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT) {
             if (!read_le(data, payload_end, cursor, transaction.delivery_program_id) ||
                 !read_le(data, payload_end, cursor, transaction.delivery_source_type) ||

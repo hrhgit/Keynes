@@ -3,7 +3,16 @@
 
 namespace pk {
 namespace {
-constexpr uint32_t EFFECT_TRANSPORT_MARKER = 0x31515445u; // ETQ1
+constexpr uint32_t EFFECT_TRANSPORT_LEGACY = 0x31515445u; // ETQ1
+constexpr uint32_t EFFECT_TRANSPORT_MARKER = 0x32515445u; // ETQ2
+
+template <typename Fields>
+auto dated(Fields fields, bool has_day) {
+    return [fields, has_day](auto &io, auto &entry) {
+        return (!has_day || (io.field(entry.admitted_day) && entry.admitted_day >= 0)) &&
+            fields(io, entry);
+    };
+}
 
 constexpr auto instance_fields = [](auto &io, auto &entry) {
     auto &value = entry.input;
@@ -40,14 +49,14 @@ std::vector<uint8_t> NativeSimulationHost::encode_effect_transport() const {
     CheckpointWriter out;
     out.field(EFFECT_TRANSPORT_MARKER);
     out.field(_effect_transport_sequence);
-    out.rows(_effect_instance_queue, instance_fields);
-    out.rows(_effect_metric_queue, metric_fields);
-    out.rows(_effect_remove_queue, removal_fields);
+    out.rows(_effect_instance_queue, dated(instance_fields, true));
+    out.rows(_effect_metric_queue, dated(metric_fields, true));
+    out.rows(_effect_remove_queue, dated(removal_fields, true));
     out.rows(_effect_acks, ack_fields);
     return std::move(out.bytes);
 }
 
-void NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &bytes) {
+bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &bytes, bool install) {
     CheckpointReader in{bytes.data(), bytes.size()};
     uint32_t marker = 0;
     uint64_t sequence = 0;
@@ -55,16 +64,21 @@ void NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &
     decltype(_effect_metric_queue) metrics;
     decltype(_effect_remove_queue) removals;
     decltype(_effect_acks) acks;
-    const bool saved = in.field(marker) && marker == EFFECT_TRANSPORT_MARKER &&
-        in.field(sequence) && in.rows(instances, instance_fields) &&
-        in.rows(metrics, metric_fields) && in.rows(removals, removal_fields) &&
-        in.rows(acks, ack_fields) && in.cursor == in.size;
+    const bool has_marker = in.field(marker);
+    const bool has_day = marker == EFFECT_TRANSPORT_MARKER;
+    if (!bytes.empty() && (!has_marker || (!has_day && marker != EFFECT_TRANSPORT_LEGACY) ||
+            !in.field(sequence) || !in.rows(instances, dated(instance_fields, has_day)) ||
+            !in.rows(metrics, dated(metric_fields, has_day)) ||
+            !in.rows(removals, dated(removal_fields, has_day)) ||
+            !in.rows(acks, ack_fields) || in.cursor != in.size)) return false;
+    if (!install) return true;
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    _effect_transport_sequence = saved ? sequence : 0;
-    _effect_instance_queue = saved ? std::move(instances) : decltype(instances){};
-    _effect_metric_queue = saved ? std::move(metrics) : decltype(metrics){};
-    _effect_remove_queue = saved ? std::move(removals) : decltype(removals){};
-    _effect_acks = saved ? std::move(acks) : decltype(acks){};
+    _effect_transport_sequence = sequence;
+    _effect_instance_queue = std::move(instances);
+    _effect_metric_queue = std::move(metrics);
+    _effect_remove_queue = std::move(removals);
+    _effect_acks = std::move(acks);
     _effect_intents.clear();
+    return true;
 }
 } // namespace pk

@@ -219,20 +219,24 @@ bool RuntimeEffectPodAuthority::apply_ack(const RuntimeDomainAck &ack,
     if (tx_index < 0) { error = "effect_pod_ack_transaction_unknown"; return false; }
     auto &transaction = _current.transactions[static_cast<size_t>(tx_index)];
     uint32_t adapter_bit = 0;
+    bool names_adapter = false;
     uint32_t legacy_subdomain_bits = 0;
     for (uint32_t ordinal = 0; ordinal < transaction.command_count; ++ordinal) {
         const size_t command_index = static_cast<size_t>(transaction.command_begin) + ordinal;
         if (command_index >= _current.command_arena.size()) continue;
         const auto &command = _current.command_arena[command_index];
+        const bool names_command_adapter = ack.domain == adapter_domain(command.action);
+        names_adapter |= names_command_adapter;
         if (!ack_matches(ack, command)) continue;
-        if (ack.domain == adapter_domain(command.action))
+        if (names_command_adapter)
             adapter_bit = adapter_ack_bit(command.action);
         else
             legacy_subdomain_bits |= adapter_ack_bit(command.action);
     }
-    // A receipt names its adapter. Old senders used the command subdomain,
-    // which is safe only when it identifies a single adapter in this batch.
-    const uint32_t matched_bit = adapter_bit != 0 ? adapter_bit : legacy_subdomain_bits;
+    // The presence of a named adapter decides how to interpret the number,
+    // even if that adapter has no command matching the receipt's target.
+    // Otherwise a legacy subdomain must identify one matching adapter.
+    const uint32_t matched_bit = names_adapter ? adapter_bit : legacy_subdomain_bits;
     if (matched_bit == 0 || (matched_bit & (matched_bit - 1u)) != 0u) {
         error = "effect_pod_ack_command_mismatch";
         return false;

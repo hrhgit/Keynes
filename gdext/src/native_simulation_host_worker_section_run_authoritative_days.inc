@@ -24,7 +24,7 @@
                 if (try_fault_injection("worker.inflight.before")) {
                     break;
                 }
-                if (_world_environment && !try_freeze_command_inputs(day)) break;
+                if (effect_has_daily_input_fence() && !try_freeze_command_inputs(day)) break;
                 const bool narrative_commands = prepare_narrative_day(day);
                 if (state() == RuntimeWorkerState::FAULTED) break;
                 if (country_delivery_boundary || narrative_commands) drain_commands();
@@ -385,7 +385,7 @@
                     // committed clock. Wait for the main thread to publish
                     // the matching reference or for a control message; this
                     // is a condition-variable wait, not a polling sleep.
-                    if (day_commit.continuation_pending == 0) {
+                    if (!finish_day_for_save && day_commit.continuation_pending == 0) {
                         _time_debt_days.store(std::min(100.0,
                             _time_debt_days.load(std::memory_order_relaxed) + 1.0),
                             std::memory_order_release);
@@ -465,7 +465,8 @@
                         // A save cannot run until this attempt's day commits.
                         const bool ready = _stop_requested.load(std::memory_order_acquire) ||
                             player_requests_pending_locked() ||
-                            (!climate_driven && _paused.load(std::memory_order_acquire)) ||
+                            (!climate_driven && !finish_day_for_save &&
+                             _paused.load(std::memory_order_acquire)) ||
                             stale_input_consumed ||
                             _climate_trace_signal.load(std::memory_order_acquire) !=
                                 trace_signal ||

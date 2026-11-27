@@ -1,7 +1,8 @@
 namespace {
 
 bool mixed_ack_setup(RuntimeEffectPodAuthority &authority, int modifier_domain,
-        const std::vector<RuntimeEffectPodAction> &actions, std::string &error) {
+        const std::vector<RuntimeEffectPodAction> &actions, std::string &error,
+        bool distinct_targets = false) {
     RuntimeEffectPodCatalog catalog;
     RuntimeEffectPodDefinition definition;
     definition.key_hash = RuntimeEffectPodAuthority::hash_text("mixed_ack");
@@ -13,6 +14,10 @@ bool mixed_ack_setup(RuntimeEffectPodAuthority &authority, int modifier_domain,
         RuntimeEffectPodCommandDefinition command;
         command.action = actions[i];
         command.domain = command.action == RuntimeEffectPodAction::MODIFIER_COMMAND ? modifier_domain : 1;
+        if (distinct_targets && command.action == RuntimeEffectPodAction::MODIFIER_COMMAND) {
+            command.target_resolver = RuntimeEffectPodTargetResolver::STATIC;
+            command.static_target = 77;
+        }
         command.opcode = 1;
         command.command_key_hash = 100 + i;
         catalog.commands.push_back(command);
@@ -70,6 +75,25 @@ bool mixed_adapter_ack_self_test(std::string &error) {
             authority.snapshot().transactions.front().status != RuntimeEffectPodTransactionStatus::ACKED)
             return false;
     }
+
+    // A Country receipt for the wrong target must not settle the Modifier
+    // command whose legacy subdomain happens to equal the Country adapter.
+    RuntimeEffectPodAuthority wrong_target;
+    if (!mixed_ack_setup(wrong_target, 3, {country, modifier}, error, true)) return false;
+    ack.transaction_id = wrong_target.snapshot().transactions.front().transaction_id;
+    ack.domain = domain_for(country);
+    ack.target_handle = 77;
+    const uint64_t before_wrong_target = wrong_target.snapshot().deterministic_state_hash;
+    const bool wrong_target_accepted = wrong_target.apply_ack(ack, error);
+    std::vector<RuntimeDomainIntent> pending;
+    wrong_target.append_committed_pending_intents(0, pending);
+    if (wrong_target_accepted || error != "effect_pod_ack_command_mismatch" ||
+        wrong_target.snapshot().deterministic_state_hash != before_wrong_target ||
+        pending.size() != 2) {
+        error = "test_only_effect_country_ack_wrong_target_settled_modifier";
+        return false;
+    }
+    ack.target_handle = 99;
 
     // The legacy subdomain 1 can designate both a Country command and a
     // country-targeted Modifier. A receipt lacking an unambiguous adapter

@@ -71,8 +71,10 @@ bool NativeSimulationHost::try_freeze_command_inputs(int64_t day) {
     if (player_requests_pending_locked()) return false;
     int64_t seal = _command_seal.load(std::memory_order_acquire);
     if ((seal & 1) != 0) return false;
-    return _command_seal.compare_exchange_strong(seal, day * 2,
-        std::memory_order_acq_rel, std::memory_order_acquire);
+    if (!_command_seal.compare_exchange_strong(seal, day * 2,
+            std::memory_order_acq_rel, std::memory_order_acquire)) return false;
+    _effect_input_sealed_day.store(day, std::memory_order_release);
+    return true;
 }
 
 bool NativeSimulationHost::enqueue_batch_at(

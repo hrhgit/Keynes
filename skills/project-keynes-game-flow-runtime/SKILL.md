@@ -98,7 +98,7 @@ bounded to days 0..30, requires filled matching owner posts, and must be idempot
 
 ## Enforce PKSV Boundaries
 
-- 整日提交后才生成存档。后台和内联执行器共用未完成日标记，部分授权且缺少当日环境时也要等齐。
+- 整日提交后才生成存档。后台和内联执行器共用未完成日标记，部分授权后台请求保存后可以在暂停期间处理完已经打开的一天。目标日输入齐备后续算，到整日边界即保存并保持暂停。
 - 正式会话取得 Events 授权后，首启和同世界重启都会记事件。调用方的诊断开关只决定额外的探测。
 - Freeze new clock advancement but continue rendered frames while draining an
   already-open continuation.

@@ -110,9 +110,13 @@
     // Apply queued instance/metric/remove/ACK transport without planning a day.
     // Soft-skip and climate-park paths must call this so main-thread ENSURE
     // registrations are not stranded in `_effect_instance_queue`.
+    bool effect_has_daily_input_fence() const noexcept;
+    RuntimeCommandAdmission admit_effect_input(int64_t &admitted_day);
+    bool append_effect_instance_locked(const RuntimeEffectPodInstanceInput &input,
+                                       int64_t admitted_day, std::string &error);
     bool drain_effect_transport_queues(std::string &error, int64_t open_day = 0);
     std::vector<uint8_t> encode_effect_transport() const;
-    void restore_effect_transport(const std::vector<uint8_t> &bytes);
+    bool restore_effect_transport(const std::vector<uint8_t> &bytes, bool install);
     // E8: shared Modifier POD stage for SHADOW diagnostics and ACTIVE
     // production. authority_plan is non-null only on SHADOW (fixture ACK /
     // domain-runner commit). ACTIVE passes nullptr. Failure isolates

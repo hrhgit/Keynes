@@ -1,6 +1,7 @@
 #pragma once
 
 #include "effect_magnitude.h"
+#include "effect_transaction_ids.h"
 #include "selector_cell_cap.h"
 #include "selector_ownership.h"
 

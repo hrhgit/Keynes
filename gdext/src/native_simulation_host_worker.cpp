@@ -358,10 +358,19 @@ void NativeSimulationHost::worker_main() {
             }
             const bool paused = _paused.load(std::memory_order_acquire);
             const double speed = _speed_days_per_second.load(std::memory_order_acquire);
+            const bool active = _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE;
+            const uint32_t wanted = _requested_authority_mask.load(std::memory_order_acquire);
             const bool climate_driven =
-                _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
-                (_requested_authority_mask.load(std::memory_order_acquire) &
-                 runtime_domain_mask(RuntimeDomainId::CLIMATE)) != 0u;
+                active && (wanted & runtime_domain_mask(RuntimeDomainId::CLIMATE)) != 0u;
+            const auto pending_save_can_finish_day = [&] {
+                if (!inline_day_pending() || !_save_requested.load(std::memory_order_acquire))
+                    return false;
+                if (retained_day_pending || !active ||
+                        (wanted & runtime_domain_mask(RuntimeDomainId::INPUT_CAPTURE)) == 0u)
+                    return true;
+                const auto input = environment_input_for_plan();
+                return input && input->day == committed_day_value() + 1;
+            };
             const auto daily_work_ready = [&] {
                 if (_world_environment) {
                     return retained_day_pending || player_response_admits(committed_day_value() + 1) ||
@@ -383,8 +392,13 @@ void NativeSimulationHost::worker_main() {
             };
             const bool climate_pending = daily_work_ready();
             const bool awaiting_player = player_confirmation_block() != nullptr;
+            const bool clock_suspended = paused || speed <= 0.0 || !std::isfinite(speed);
+            // A pending save can finish an already opened day during pause.
+            // It neither opens a new day nor spends the running clock's debt.
+            const bool finish_day_for_save =
+                !climate_driven && clock_suspended && pending_save_can_finish_day();
             if (awaiting_player || (climate_driven && !climate_pending) ||
-                (!climate_driven && (paused || speed <= 0.0 || !std::isfinite(speed)))) {
+                (!climate_driven && clock_suspended && !finish_day_for_save)) {
                 if (_stop_requested.load(std::memory_order_acquire)) break;
                 _state.store(RuntimeWorkerState::PAUSED, std::memory_order_release);
                 last = std::chrono::steady_clock::now();
@@ -400,8 +414,9 @@ void NativeSimulationHost::worker_main() {
                         (_economy_read_view_requested && !inline_day_pending()) ||
                         (!blocked && (climate_driven ?
                             daily_work_ready() :
-                            (!_paused.load(std::memory_order_acquire) &&
-                             _speed_days_per_second.load(std::memory_order_acquire) > 0.0)));
+                            (pending_save_can_finish_day() ||
+                             (!_paused.load(std::memory_order_acquire) &&
+                              _speed_days_per_second.load(std::memory_order_acquire) > 0.0))));
                     if (!ready && climate_driven && !_world_environment && !blocked &&
                             !_paused.load(std::memory_order_acquire))
                         _worker_timing.observe_main_wait(committed_day_value() + 1,
@@ -428,7 +443,7 @@ void NativeSimulationHost::worker_main() {
             const auto now = std::chrono::steady_clock::now();
             const double elapsed = std::chrono::duration<double>(now - last).count();
             last = now;
-            double debt = climate_driven ? 1.0 : std::min(100.0,
+            double debt = (climate_driven || finish_day_for_save) ? 1.0 : std::min(100.0,
                 _time_debt_days.load(std::memory_order_relaxed) + elapsed * speed);
             int64_t target_days = static_cast<int64_t>(debt);
             if (target_days <= 0) {
@@ -450,7 +465,8 @@ void NativeSimulationHost::worker_main() {
             }
             target_days = std::min<int64_t>(target_days, 8);
             debt -= static_cast<double>(target_days);
-            _time_debt_days.store(std::min(100.0, debt), std::memory_order_release);
+            if (!finish_day_for_save)
+                _time_debt_days.store(std::min(100.0, debt), std::memory_order_release);
 #include "native_simulation_host_worker_section_run_authoritative_days.inc"
         }
         _authority_control.revoke();

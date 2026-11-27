@@ -127,6 +127,7 @@
     RuntimeEffectPodCatalog _effect_pod_catalog;
     bool _effect_pod_configured = false;
     struct EffectPodMetricQueueItem {
+        int64_t admitted_day = 0;
         int64_t instance_id = 0;
         uint32_t generation = 0;
         int32_t metric_id = 0;
@@ -139,14 +140,19 @@
     // deque wholesale would swap that pair into "retire, submit" -- which
     // silently resurrects the very instance the caller retired.
     struct EffectPodInstanceQueueItem {
+        int64_t admitted_day = 0;
         uint64_t sequence = 0;
         RuntimeEffectPodInstanceInput input;
     };
     struct EffectPodRemoveQueueItem {
+        int64_t admitted_day = 0;
         uint64_t sequence = 0;
         int64_t instance_id = 0;
         uint32_t generation = 0;
     };
+    // Inline peer waits reopen the generic command boundary. External Effect
+    // inputs stay sealed once the day has started, including across a revisit.
+    std::atomic<int64_t> _effect_input_sealed_day{0};
     mutable std::mutex _effect_transport_mutex;
     // Guarded by `_effect_transport_mutex`.
     uint64_t _effect_transport_sequence = 0;

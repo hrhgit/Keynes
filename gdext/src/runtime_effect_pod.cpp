@@ -1,5 +1,6 @@
 #include "runtime_effect_pod.h"
 #include "effect_magnitude.h"
+#include "effect_transaction_ids.h"
 #include "runtime_text_hash.h"
 
 #include <algorithm>

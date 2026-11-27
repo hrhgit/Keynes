@@ -230,6 +230,7 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     _committed_day.store(start_day, std::memory_order_release);
     publish_narrative_boundary(start_day);
     _command_seal.store(start_day * 2, std::memory_order_release);
+    _effect_input_sealed_day.store(start_day, std::memory_order_release);
     _clock_requested_day.store(start_day, std::memory_order_release);
     _calendar_suspended.store(start_paused, std::memory_order_release);
     _display_consumed_day.store(start_day, std::memory_order_release);
@@ -720,8 +721,10 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     if (restore_pending && !restore_trigger_transport(_pending_restore_bundle.trigger_transport_bytes, ecp2_apply_error, true)) {
         set_fault(ecp2_apply_error.c_str()); return false;
     }
-    if (restore_pending)
-        restore_effect_transport(_pending_restore_bundle.effect_transport_bytes);
+    if (restore_pending && !restore_effect_transport(_pending_restore_bundle.effect_transport_bytes, true)) {
+        set_fault("effect_transport_continuation_invalid");
+        return false;
+    }
     if (restore_pending && _world_environment && _economy_production_runtime &&
         _economy_production_runtime->worker_resource_seeded()) {
         std::lock_guard<std::mutex> display(_resource_display_mutex);

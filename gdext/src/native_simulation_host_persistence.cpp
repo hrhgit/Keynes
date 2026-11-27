@@ -277,6 +277,11 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
     }
     if ((parsed.section_mask & RUNTIME_SAVE_SECTION_EFFECT_TRANSPORT) != 0u) {
         parsed.effect_transport_bytes.assign(bytes + cursor, bytes + payload_end);
+        if (parsed.effect_transport_bytes.empty() ||
+                !restore_effect_transport(parsed.effect_transport_bytes, false)) {
+            error = "effect_transport_continuation_invalid";
+            return false;
+        }
         cursor = payload_end;
     }
     if (cursor != payload_end) {

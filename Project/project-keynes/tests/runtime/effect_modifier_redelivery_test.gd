@@ -21,8 +21,98 @@ func _background_config() -> NewGameConfig:
 func _run() -> void:
 	var result := await _run_world(false)
 	_expect("D2 completed", result.get("day") == 2)
+	_partial_modifier_redelivery()
 	print("effect modifier redelivery: %d checks, %d failures" % [_checks, _failures])
 	call_deferred("quit", 0 if _failures == 0 else 1)
+
+func _partial_modifier_redelivery() -> void:
+	const GRANT := 0x841 # Input capture, Modifier and day commit
+	var ext := DCWorldExt.new()
+	var modifier := ModifierFacade.new()
+	var configured := modifier.configure(ext, 1)
+	_expect("partial host configures Modifier", configured.get("modifier_pod_ready", false))
+	var effects := preload("res://scripts/effect/effect_domain_catalog.gd").build()
+	_expect("partial host configures embedded Effect", ext.configure_effects(
+		effects.compile_native_catalog()).get("effect_pod_ready", false))
+	var technology := preload("res://scripts/economy/technology_catalog.gd").compile_native_catalog()
+	var slot: int = technology.technology_ids.find(String(TECHNOLOGY))
+	var definition: int = modifier.compiled_catalog().definition_keys.find(DEFINITION)
+	_expect("partial host uses the formal technology and Modifier definition", slot >= 0 and definition >= 0)
+	if slot < 0 or definition < 0:
+		return
+	var started := ext.start_runtime_worker({"simulation_thread_mode": "ACTIVE",
+		"graph_coverage_complete": true, "native_daily_inline": true,
+		"authoritative_domain_mask": GRANT, "day": 0, "speed_days_per_second": 0, "paused": true})
+	_expect("partial inline executor starts", started.get("ok", false))
+	const COUNTRY := 4294967296
+	const OLD_GENERATION := 2
+	const NEW_GENERATION := 1
+	var source := slot + 1
+	var seed_row := ext.submit_runtime_command(_peer_packet(
+		1, 1, COUNTRY, OLD_GENERATION, source, definition, 0))
+	_expect("partial D1 admits the conflicting row", seed_row.get("admitted", false))
+	_expect("partial D1 captures inputs", _capture_partial(ext, 1))
+	var first_day := ext.run_native_daily_inline_day()
+	_expect("partial D1 commits without Effect or Events authorization",
+		first_day.get("ok", false) and first_day.get("completed_domain_mask") == GRANT)
+	if ext.runtime_committed_day() != 1:
+		ext.request_runtime_stop()
+		return
+	var first := _published(ext)
+	var index: int = first.entry_source_ids.find(source)
+	_expect("partial D1 publishes the conflicting Modifier", index >= 0)
+	if index < 0:
+		ext.request_runtime_stop()
+		return
+	var instance := (COUNTRY << 16) | source
+	var queued := ext.queue_effect_pod_instance({
+		"instance_id": instance, "generation": 1,
+		"program_key": technology.technology_effect_recipe_ids[slot],
+		"source_handle": COUNTRY, "target_handle": COUNTRY, "target_generation": NEW_GENERATION,
+		"source_type": TECH, "source_id": instance, "level": 1, "next_due_day": 2,
+	})
+	_expect("partial D2 admits the embedded Effect instance", queued.get("ok", false))
+	_expect("partial D2 captures inputs", _capture_partial(ext, 2))
+	var d2_visits: Array[Dictionary] = []
+	for visit in 2:
+		var result := ext.run_native_daily_inline_day()
+		var report := ext.get_runtime_thread_report()
+		print("PARTIAL_EFFECT visit=%d committed=%d continuation=%s modifier=%s effect=%s transactions=%d" % [
+			visit + 1, ext.runtime_committed_day(), result.get("continuation_pending", false),
+			report.modifier_pod_fallback_reason, report.effect_pod_fallback_reason,
+			report.effect_pod_transaction_count])
+		d2_visits.append(report)
+		_expect("partial D2 visit %d keeps the original Modifier request pending" % [visit + 1],
+			result.get("continuation_pending", false) and ext.runtime_committed_day() == 1
+			and report.modifier_pod_fallback_reason == "modifier_pod_stale_generation"
+			and report.effect_pod_transaction_count == 1)
+	_expect("both refusals leave the published Modifier generation and hash untouched",
+		d2_visits[1].modifier_pod_snapshot_generation == first.generation
+		and d2_visits[1].modifier_pod_state_hash == first.state_hash)
+	if ext.runtime_committed_day() == 1:
+		var released := ext.submit_runtime_command(_peer_packet(
+			2, 2, COUNTRY, OLD_GENERATION, source, definition, first.entry_handles[index]))
+		_expect("partial D2 admits the matching retirement", released.get("admitted", false)
+			and released.get("effective_day") == 2)
+		_expect("partial D2 commits when the conflict is gone", ext.run_native_daily_inline_day().get("ok", false))
+	var current := _published(ext)
+	var sources := []
+	for i in current.get("entry_definition_ids", PackedInt32Array()).size():
+		if current.entry_definition_ids[i] == definition and current.entry_entity_handles[i] == COUNTRY:
+			sources.append([current.entry_source_ids[i], current.entry_target_generations[i]])
+	var final_report := ext.get_runtime_thread_report()
+	print("PARTIAL_EFFECT settled_day=%d source_and_generation=%s expected=%s modifier_acks=%d" % [
+		ext.runtime_committed_day(), sources, [[source, NEW_GENERATION]], final_report.effect_pod_ack_count])
+	_expect("partial D2 publishes the originally submitted technology once and receives its receipt",
+		ext.runtime_committed_day() == 2 and sources == [[source, NEW_GENERATION]]
+		and final_report.effect_pod_ack_count == 1)
+	ext.request_runtime_stop()
+
+func _capture_partial(ext: DCWorldExt, day: int) -> bool:
+	return ext.capture_runtime_inputs({"generation": day, "day": day,
+		"terrain": PackedByteArray([1]), "landform": PackedByteArray([0]),
+		"has_river": PackedByteArray([0]), "neighbor_indices": PackedInt32Array([-1, -1, -1, -1, -1, -1]),
+	}).get("ok", false)
 
 func _sample_world(host: WorldRuntimeHost, _clock: WorldClock, _stall: bool) -> Dictionary:
 	host.set_process(false)

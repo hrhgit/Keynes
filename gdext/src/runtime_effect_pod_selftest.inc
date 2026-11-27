@@ -102,6 +102,31 @@ bool RuntimeEffectPodAuthority::self_test(std::string &error) {
     if (!latch_self_test(error)) return false;
     if (!magnitude_scale_self_test(error) || !checkpoint_frozen_delivery_test(error)) return false;
     if (!mixed_adapter_ack_self_test(error)) return false;
+    {
+        RuntimeEffectPodAuthority source, reader;
+        RuntimeEffectPodInstanceInput input;
+        RuntimeEffectPodPlan plan;
+        if (!checkpoint_delivery_setup(source, true, input, error)) return false;
+        ++input.instance_id;
+        if (!source.upsert_instance(input, error) || !source.plan_day(2, 2, plan, error) ||
+            !source.commit_day(plan, error) ||
+            !reader.configure(checkpoint_delivery_catalog(true), error)) return false;
+        std::vector<uint8_t> valid, duplicate, after;
+        source.serialize(valid);
+        if (!reader.restore(valid.data(), valid.size(), error)) return false;
+        // Model a save written by the old allocator after reusing the first ID.
+        // Both hashes are written by the real serializer and the cursor is ahead.
+        auto &state = source._current;
+        const int64_t reused = state.transactions.front().transaction_id;
+        state.transactions.back().transaction_id = reused;
+        state.instances.back().pending_transaction_id = reused;
+        state.deterministic_state_hash = source.state_hash(state);
+        source.serialize(duplicate);
+        const bool accepted = reader.restore(duplicate.data(), duplicate.size(), error);
+        reader.serialize(after);
+        if (accepted || error != "effect_pod_transaction_order_invalid" || after != valid)
+            return fail("test_only_effect_checkpoint_duplicate_transaction_accepted");
+    }
     // Managed lifecycle: one apply, one deactivation after the condition
     // falls, and no idle churn while the same input stays applied. The
     // fixture also pins ACK semantics and ACKED transaction compaction.

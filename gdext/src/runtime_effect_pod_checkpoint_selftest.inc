@@ -232,6 +232,80 @@ bool checkpoint_same_generation_program_ack(std::string &error) {
     return true;
 }
 
+bool checkpoint_transaction_cursor(std::string &error) {
+    RuntimeEffectPodAuthority source;
+    RuntimeEffectPodInstanceInput input;
+    if (!checkpoint_delivery_setup(source, true, input, error)) return false;
+    const auto catalog = checkpoint_delivery_catalog(true);
+    std::vector<uint8_t> current_save, legacy_save;
+    source.serialize(current_save);
+    if (!v4_checkpoint_fixture(source, 789227947764160962ull,
+            11252559877637169278ull, legacy_save, error)) return false;
+
+    const auto with_cursor = [](std::vector<uint8_t> bytes, int64_t next) {
+        constexpr size_t offset = 3 * sizeof(uint32_t) + 2 * sizeof(uint64_t);
+        std::vector<uint8_t> encoded;
+        append_le(encoded, next);
+        std::copy(encoded.begin(), encoded.end(), bytes.begin() + offset);
+        bytes.resize(bytes.size() - sizeof(uint64_t));
+        append_le(bytes, mix_bytes(FNV_OFFSET, bytes.data(), bytes.size()));
+        return bytes;
+    };
+    const int64_t retained_id = source.snapshot().transactions.front().transaction_id;
+    const int64_t overflowing_id = std::numeric_limits<int64_t>::max();
+    std::string failures;
+    for (const auto *save : {&current_save, &legacy_save}) {
+        for (const int64_t next : {int64_t{0}, retained_id,
+                EFFECT_BUILTIN_TRANSACTION_ID_BASE + 1, overflowing_id}) {
+            RuntimeEffectPodAuthority reader;
+            if (!reader.configure(catalog, error) ||
+                !reader.restore(current_save.data(), current_save.size(), error)) return false;
+            const auto damaged = with_cursor(*save, next);
+            const bool accepted = reader.restore(damaged.data(), damaged.size(), error);
+            std::vector<uint8_t> after;
+            reader.serialize(after);
+            if (accepted || error != "effect_pod_transaction_cursor_invalid" || after != current_save)
+                failures += " v" + std::to_string((*save)[4]) +
+                    " cursor=" + std::to_string(next) + " accepted=" + std::to_string(accepted) +
+                    " changed=" + std::to_string(after != current_save) + " reason=" + error;
+        }
+    }
+    if (!failures.empty()) {
+        error = "effect_checkpoint_invalid_transaction_cursor" + failures;
+        return false;
+    }
+
+    // The last allocatable number can be used and saved. Later planning that
+    // would allocate another number must leave that saved state intact.
+    const int64_t final_id = EFFECT_BUILTIN_TRANSACTION_ID_BASE - 1;
+    const auto near_limit = with_cursor(current_save, final_id);
+    RuntimeEffectPodAuthority reader;
+    if (!reader.configure(catalog, error) ||
+        !reader.restore(near_limit.data(), near_limit.size(), error)) return false;
+    ++input.instance_id;
+    RuntimeEffectPodPlan plan;
+    if (!reader.upsert_instance(input, error) || !reader.plan_day(2, 2, plan, error) ||
+        !reader.commit_day(plan, error)) return false;
+    if (reader.snapshot().transactions.back().transaction_id != final_id) {
+        error = "effect_checkpoint_last_transaction_id_not_allocated";
+        return false;
+    }
+    std::vector<uint8_t> terminal_save;
+    reader.serialize(terminal_save);
+    if (!reader.restore(terminal_save.data(), terminal_save.size(), error)) return false;
+    ++input.instance_id;
+    if (!reader.upsert_instance(input, error)) return false;
+    std::vector<uint8_t> before, after;
+    reader.serialize(before);
+    const bool planned = reader.plan_day(3, 3, plan, error);
+    reader.serialize(after);
+    if (planned || error != "effect_pod_transaction_id_exhausted" || after != before) {
+        error = "effect_checkpoint_exhausted_transaction_cursor_allocated";
+        return false;
+    }
+    return true;
+}
+
 bool checkpoint_frozen_delivery_test(std::string &error) {
     RuntimeEffectPodAuthority source, restored;
     RuntimeEffectPodInstanceInput input;
@@ -272,6 +346,6 @@ bool checkpoint_frozen_delivery_test(std::string &error) {
         }
     }
     return checkpoint_legacy_deliveries(error) && checkpoint_legacy_rebound_owner(error) &&
-        checkpoint_same_generation_program_ack(error);
+        checkpoint_same_generation_program_ack(error) && checkpoint_transaction_cursor(error);
 }
 }

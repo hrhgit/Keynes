@@ -36,12 +36,18 @@ func _run() -> void:
 			"terrain": PackedByteArray([1]), "landform": PackedByteArray([0]),
 			"has_river": PackedByteArray([0]), "neighbor_indices": PackedInt32Array([-1, -1, -1, -1, -1, -1])})
 		_expect("missing input supplied", captured.get("ok", false))
-		ext.set_runtime_clock(false, 30)
-		while saved.get("pending", false):
+		var deadline := Time.get_ticks_msec() + 3000
+		while saved.get("pending", false) and Time.get_ticks_msec() < deadline:
 			await process_frame
 			saved = ext.poll_runtime_save(SAVE_ID)
+		print("PAUSED_SAVE host_day=%d state=%s ready=%s pending=%s archive_day=%s archive_paused=%s" % [
+			ext.runtime_committed_day(), ext.get_runtime_control_state().get("state"), saved.get("ready", false),
+			saved.get("pending", false), saved.get("committed_day", -1), saved.get("paused", false)])
 		_expect("same save releases at day one with Modifier", saved.get("ready", false)
 			and saved.get("committed_day", -1) == 1 and int(saved.get("modifier_bytes", 0)) > 0)
+		_expect("saving preserves the pause and opens no new day", saved.get("paused", false)
+			and ext.runtime_committed_day() == 1
+			and not ext.get_runtime_thread_report().get("inline_day_pending", true))
 	if saved.get("ready", false):
 		var reader := DCWorldExt.new()
 		_expect("configure restore target", ModifierFacade.new().configure(reader, 1).get("ok", false))

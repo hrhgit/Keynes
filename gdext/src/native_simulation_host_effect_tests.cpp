@@ -383,6 +383,58 @@ bool NativeSimulationHost::effect_pod_transport_queue_self_test(
         if (instance->active == 0) return fail("effect_transport_stale_retired_newer");
     }
 
+    auto dated = std::make_unique<NativeSimulationHost>();
+    dated->_mode.store(RuntimeSimulationMode::ACTIVE);
+    dated->_requested_authority_mask.store(runtime_domain_mask(RuntimeDomainId::ECONOMY) |
+        runtime_domain_mask(RuntimeDomainId::MODIFIER));
+    dated->_committed_day.store(1);
+    dated->_command_seal.store(2);
+    if (!dated->configure_effect_pod(catalog, error) ||
+        !dated->queue_effect_pod_instance(make_input(71, 1, 1), error) ||
+        !dated->queue_effect_pod_instance(make_input(74, 1, 1), error) ||
+        !dated->try_freeze_command_inputs(2))
+        return fail("effect_transport_dated_fixture_failed");
+    // Model an inline day that has sealed inputs but has not yet reached
+    // Economy. An inline continuation also reopens the generic fence.
+    dated->_command_seal.store(2);
+    const auto accepted = dated->queue_effect_pod_instances(
+        {make_input(71, 1, 7), make_input(73, 1, 7)}, error);
+    if (accepted != std::vector<uint8_t>{1, 1} ||
+        !dated->queue_effect_pod_metric(71, 1, 0, 1, 90, error) ||
+        !dated->queue_effect_pod_remove(74, 1, error) ||
+        !dated->drain_effect_transport_queues(error, 2))
+        return fail("effect_transport_dated_input_failed");
+    const auto &first = dated->_effect_pod_authority.snapshot();
+    if (first.instances.size() != 2 || first.instances[0].level != 1 ||
+        first.instances[1].instance_id != 74 || first.instances[1].active == 0 ||
+        first.metric_values[0] != 0)
+        return fail("effect_transport_mutation_crossed_sealed_day");
+
+    auto restored = std::make_unique<NativeSimulationHost>();
+    const auto transport = dated->encode_effect_transport();
+    std::vector<uint8_t> authority;
+    if (!dated->encode_effect_pod_save(authority, error) ||
+        !restored->configure_effect_pod(catalog, error) ||
+        !restored->restore_effect_pod_save(authority.data(), authority.size(), error) ||
+        !restored->restore_effect_transport(transport, true) ||
+        restored->encode_effect_transport() != transport)
+        return fail("effect_transport_dated_restore_failed");
+    auto bad_date = transport;
+    // ETQ2 header is the marker, sequence, row count, then the first date.
+    std::fill_n(bad_date.begin() + 16, 8, uint8_t{255});
+    if (restored->restore_effect_transport(bad_date, true) ||
+        restored->encode_effect_transport() != transport)
+        return fail("effect_transport_invalid_day_accepted");
+    if (!restored->drain_effect_transport_queues(error, 2) ||
+        restored->encode_effect_transport() != transport ||
+        !restored->drain_effect_transport_queues(error, 3))
+        return fail("effect_transport_restored_date_changed");
+    const auto &next = restored->_effect_pod_authority.snapshot();
+    if (next.instances.size() != 3 || next.instances[0].level != 7 ||
+        next.instances[1].instance_id != 74 || next.instances[1].active != 0 ||
+        next.instances[2].instance_id != 73 || next.metric_values[0] != 90)
+        return fail("effect_transport_mutation_not_applied_on_admitted_day");
+
     // A stopped session rejects player input immediately, while a day
     // already executing can still deliver its effects before it returns.
     auto stopping = std::make_unique<NativeSimulationHost>();

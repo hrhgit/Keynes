@@ -4,6 +4,10 @@ bool RuntimeEffectPodAuthority::append_transaction(
         bool retirement,
         RuntimeEffectPodTransaction &transaction, std::string &error) {
     if (commands.empty()) return false;
+    if (state.next_transaction_id >= EFFECT_BUILTIN_TRANSACTION_ID_BASE) {
+        error = "effect_pod_transaction_id_exhausted";
+        return false;
+    }
     if (state.transactions.size() >= _transaction_capacity ||
         state.command_arena.size() + commands.size() > _command_capacity) {
         error = state.transactions.size() >= _transaction_capacity
@@ -12,7 +16,7 @@ bool RuntimeEffectPodAuthority::append_transaction(
         return false;
     }
     transaction = RuntimeEffectPodTransaction{};
-    transaction.transaction_id = state.next_transaction_id;
+    transaction.transaction_id = state.next_transaction_id++;
     transaction.source_instance_id = instance.instance_id;
     transaction.source_generation = instance.generation;
     transaction.effective_day = day;
@@ -51,7 +55,6 @@ bool RuntimeEffectPodAuthority::append_retirement_transaction(
     if (!append_transaction(state, instance, day, commands, true, transaction,
                             error))
         return false;
-    ++state.next_transaction_id;
     instance.fire_sequence += 1u;
     instance.pending_transaction_id = transaction.transaction_id;
     instance.pending_idempotency_key = commands.front().idempotency_key;
@@ -136,7 +139,6 @@ bool RuntimeEffectPodAuthority::schedule_application(
     if (!append_transaction(state, instance, day, commands, false, transaction,
                             error))
         return false;
-    ++state.next_transaction_id;
     instance.fire_sequence += 1u;
     instance.pending_transaction_id = transaction.transaction_id;
     instance.pending_idempotency_key = commands.front().idempotency_key;

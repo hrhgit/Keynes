@@ -47,7 +47,7 @@ PREFLIGHTED -> safe commit -> runtime COMMITTED -> ACK`. Cross-domain
 transactions remain pending until every required domain bit is acknowledged.
 整图授权时，`NativeSimulationHost::stage_effect_adapter` 在日尾安装已提交的
 Effect 结果，保留 Economy 加入的殖民、运河事务和 Country、Economy 的回执关联。
-前台的 Effect 报告读取该阶段随日发布的视图。同日续算只补发已经到期的首次事务，保留未来实例原定日期。每条新命令随这一天的事件发布一次，待收回执的命令沿用首次发送的事务号、序号、程序、来源及幅值倍率。重送只交给尚未确认的接收方。
+前台的 Effect 报告读取该阶段随日发布的视图。整图及同时拥有 Economy 与 Modifier 授权的执行器在开日时封口外来登记、指标更新和退役。同一批登记共用受理日，封口后的外来输入留到下一开放日。同日续算可交付封口内请求产生的事务和待收回执。重访按 Effect 提交日期判断，独立阶段和 Modifier 内嵌阶段共用规则。每条首次命令随实际生效日发布事件，重送沿用原事务号、序号、程序、来源和幅值倍率。回执先按事务中的正式接收方解释编号，校验日期和目标。事务中没有该接收方且旧编号单义时才按旧编号确认。
 Known Modifier commands should use the native batch bridge first:
 `EffectRuntime::dispatch_native_modifier()` -> `ModifierRuntime` POD enqueue ->
 `modifier_daily` -> `ack_native_modifier()`. `EffectFacade` is only the
@@ -83,7 +83,7 @@ authored key is invalid.
 Register `effect_runtime` after `trigger_runtime` and before `modifier_daily`.
 Use `effect_should_run(day)` and a cooperative `done=false` cursor.
 
-PKEF v14 保存实例、指标快照和版本、程序哈希、触发序号、生命周期与叠层、待收回执的事务、正在计算的候选及上次消费的输入版本。读档校验格式版本、目录哈希及数据完整性。后台 EFP1 v5 同时保存首次发射时的程序、来源与倍率。旧 v4 待收的修正确能还原时沿原事务重送，缺失必要参数时拒绝该档。
+PKEF v14 保存实例、指标快照和版本、程序哈希、触发序号、生命周期与叠层、待收回执的事务、正在计算的候选及上次消费的输入版本。读档校验格式版本、目录哈希及数据完整性。后台 EFP1 v5 同时保存首次发射时的程序、来源与倍率。旧 v4 待收的修正确能还原时沿原事务重送，缺失必要参数时拒绝该档。两种版本均校验事务游标，目录号段用尽时拒绝分配。ETQ2 保存外来输入的受理日，ETQ1 沿用下一次可处理时交付的规则。
 
 Store a native-bound
 `PREFLIGHTED` transaction as `PLANNED`: native Modifier request IDs are not

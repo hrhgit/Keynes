@@ -293,13 +293,52 @@ bool NativeSimulationHost::restore_effect_pod_save(
     return true;
 }
 
+bool NativeSimulationHost::effect_has_daily_input_fence() const noexcept {
+    constexpr uint32_t tax_domains = runtime_domain_mask(RuntimeDomainId::ECONOMY) |
+        runtime_domain_mask(RuntimeDomainId::MODIFIER);
+    return _world_environment || (_mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
+        (_requested_authority_mask.load(std::memory_order_acquire) & tax_domains) == tax_domains);
+}
+
+RuntimeCommandAdmission NativeSimulationHost::admit_effect_input(int64_t &admitted_day) {
+    if (on_worker_thread() || !effect_has_daily_input_fence())
+        return RuntimeCommandAdmission(true);
+    RuntimeCommandAdmission admission(_command_producer_mutex, _command_seal);
+    admitted_day = std::max({command_seal_day(), frozen_command_day() + 1,
+        _effect_input_sealed_day.load(std::memory_order_acquire) + 1});
+    return admission;
+}
+
 bool NativeSimulationHost::queue_effect_pod_instance(
-        const RuntimeEffectPodInstanceInput &input, std::string &error) {
+        const RuntimeEffectPodInstanceInput &input, std::string &error, bool day_consequence) {
     if (!_effect_pod_configured) {
         error = "effect_pod_not_configured";
         return false;
     }
+    int64_t admitted_day = 0;
+    auto admission = day_consequence ? RuntimeCommandAdmission(true) : admit_effect_input(admitted_day);
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+    return append_effect_instance_locked(input, admitted_day, error);
+}
+
+std::vector<uint8_t> NativeSimulationHost::queue_effect_pod_instances(
+        const std::vector<RuntimeEffectPodInstanceInput> &inputs, std::string &error) {
+    std::vector<uint8_t> accepted(inputs.size(), 0);
+    if (inputs.empty()) return accepted;
+    if (!_effect_pod_configured) {
+        error = "effect_pod_not_configured";
+        return accepted;
+    }
+    int64_t admitted_day = 0;
+    auto admission = admit_effect_input(admitted_day);
+    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+    for (size_t i = 0; i < inputs.size(); ++i)
+        accepted[i] = append_effect_instance_locked(inputs[i], admitted_day, error);
+    return accepted;
+}
+
+bool NativeSimulationHost::append_effect_instance_locked(
+        const RuntimeEffectPodInstanceInput &input, int64_t admitted_day, std::string &error) {
     // Coalesce only with the queue tail, and only when that tail is still the
     // newest arrival. Re-ENSUREing the same identity several times per frame
     // must keep the newest payload (a stale level / next_due_day here is exactly
@@ -310,6 +349,7 @@ bool NativeSimulationHost::queue_effect_pod_instance(
     if (!_effect_instance_queue.empty()) {
         EffectPodInstanceQueueItem &tail = _effect_instance_queue.back();
         if (tail.sequence == _effect_transport_sequence &&
+            tail.admitted_day == admitted_day &&
             tail.input.instance_id == input.instance_id &&
             tail.input.generation == input.generation) {
             tail.input = input;
@@ -321,6 +361,7 @@ bool NativeSimulationHost::queue_effect_pod_instance(
         return false;
     }
     EffectPodInstanceQueueItem item;
+    item.admitted_day = admitted_day;
     item.sequence = ++_effect_transport_sequence;
     item.input = input;
     _effect_instance_queue.push_back(item);
@@ -334,12 +375,15 @@ bool NativeSimulationHost::queue_effect_pod_metric(
         error = "effect_pod_not_configured";
         return false;
     }
+    int64_t admitted_day = 0;
+    auto admission = admit_effect_input(admitted_day);
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
     if (_effect_metric_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
         error = "effect_metric_capacity_exceeded";
         return false;
     }
     EffectPodMetricQueueItem item;
+    item.admitted_day = admitted_day;
     item.instance_id = instance_id;
     item.generation = generation;
     item.metric_id = metric_id;
@@ -355,12 +399,15 @@ bool NativeSimulationHost::queue_effect_pod_remove(
         error = "effect_pod_not_configured";
         return false;
     }
+    int64_t admitted_day = 0;
+    auto admission = admit_effect_input(admitted_day);
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
     if (_effect_remove_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
         error = "effect_remove_capacity_exceeded";
         return false;
     }
     EffectPodRemoveQueueItem item;
+    item.admitted_day = admitted_day;
     item.sequence = ++_effect_transport_sequence;
     item.instance_id = instance_id;
     item.generation = generation;
@@ -410,9 +457,17 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
     std::vector<RuntimeDomainAck> acks;
     {
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-        instances.swap(_effect_instance_queue);
-        metrics.swap(_effect_metric_queue);
-        removes.swap(_effect_remove_queue);
+        const auto take_admitted = [open_day](auto &queue, auto &ready) {
+            const auto first_moved = std::remove_if(queue.begin(), queue.end(), [&](auto &entry) {
+                if (entry.admitted_day > open_day) return false;
+                ready.push_back(std::move(entry));
+                return true;
+            });
+            queue.erase(first_moved, queue.end());
+        };
+        take_admitted(_effect_instance_queue, instances);
+        take_admitted(_effect_metric_queue, metrics);
+        take_admitted(_effect_remove_queue, removes);
         acks.assign(_effect_acks.begin(), _effect_acks.end());
         _effect_acks.clear();
     }
@@ -562,11 +617,12 @@ bool NativeSimulationHost::execute_effect_worker_stage(
 
     if (!drain_effect_transport_queues(error, day)) return false;
     const auto &previous = _effect_pod_authority.snapshot();
-    const bool revisit = event_packets && day <= previous.committed_day;
+    // The embedded Modifier path has no Events packet sink but may revisit
+    // the same Effect commit while waiting for a Modifier receipt.
+    const bool revisit = day >= 0 && day == previous.committed_day;
     if (revisit) {
         _effect_pod_authority.append_committed_pending_intents(day, _effect_day_intents);
-        if (day != previous.committed_day ||
-            std::none_of(previous.instances.begin(), previous.instances.end(),
+        if (std::none_of(previous.instances.begin(), previous.instances.end(),
                 [day](const auto &instance) { return instance.first_fire_due(day); })) {
             collect_day_modifier_intents();
             ack_effect_events_intents_in_worker(_effect_day_intents);

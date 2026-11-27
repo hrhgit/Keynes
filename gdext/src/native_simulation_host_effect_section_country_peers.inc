@@ -113,7 +113,7 @@ bool NativeSimulationHost::ensure_effect_pod_technology_instance(
     // Effect POD authority: worker plan_day/commit/ack run concurrently and a
     // same-turn upsert races them (instances stuck fire_seq=0 / never fire).
     // Effect stage drain_effect_transport_queues installs before plan/soft-skip.
-    if (!queue_effect_pod_instance(input, error)) return false;
+    if (!queue_effect_pod_instance(input, error, true)) return false;
     return true;
 }
 
