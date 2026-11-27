@@ -106,6 +106,7 @@ static func set_model_for_selection(panel, model: Dictionary) -> void:
 	var cell_changed: bool = new_cell_index != panel._cell_index
 	if cell_changed:
 		panel._scroll_by_tab.clear()
+		panel._list_scroll_by_tab.clear()
 		panel._pending_tax.clear()
 		panel._draft_tax.clear()
 		panel._deferred_object_detail_payload.clear()
@@ -116,6 +117,8 @@ static func set_model_for_selection(panel, model: Dictionary) -> void:
 		panel._cell_index = new_cell_index
 		if panel._scroll != null:
 			panel._scroll.scroll_vertical = 0
+		if panel._list_scroll != null:
+			panel._list_scroll.scroll_vertical = 0
 	panel._model = model
 	if panel._model.is_empty():
 		panel._publish_population_discontent({})
@@ -226,6 +229,8 @@ static func _animate_content_in(panel) -> void:
 static func _on_tab_selected(panel, tab_id: String) -> void:
 	if panel._scroll != null:
 		panel._scroll_by_tab[panel._current_tab] = panel._scroll.scroll_vertical
+	if panel._list_scroll != null:
+		panel._list_scroll_by_tab[panel._current_tab] = panel._list_scroll.scroll_vertical
 	panel.close_detail()
 	panel._current_tab = tab_id
 	if panel._chapter_nav != null:
@@ -238,8 +243,76 @@ static func _on_tab_selected(panel, tab_id: String) -> void:
 
 
 static func _restore_tab_scroll(panel, tab_id: String) -> void:
-	if panel._scroll != null and tab_id == panel._current_tab:
+	if tab_id != panel._current_tab:
+		return
+	if panel._scroll != null:
 		panel._scroll.scroll_vertical = int(panel._scroll_by_tab.get(tab_id, 0))
+	if panel._list_scroll != null:
+		panel._list_scroll.scroll_vertical = int(panel._list_scroll_by_tab.get(tab_id, 0))
+
+
+static func reset_for_world(panel) -> void:
+	panel._model.clear()
+	panel._cell_index = -1
+	panel._current_tab = "geography"
+	panel._publish_population_discontent({})
+	panel._scroll_by_tab.clear()
+	panel._list_scroll_by_tab.clear()
+	panel._pending_tax.clear()
+	panel._draft_tax.clear()
+	panel.close_detail(false)
+	if panel._military_dossier != null:
+		panel._military_dossier.clear()
+	panel._directory_available = true
+	panel._has_list_wing = false
+	panel._tabs_signature_cache = ""
+	panel._section_collapsed.clear()
+	panel._kpi_values.clear()
+	panel._clear_block_controls()
+	if panel._list_content != null:
+		for child in panel._list_content.get_children():
+			panel._list_content.remove_child(child)
+			child.queue_free()
+	if panel._list_shell != null:
+		panel._list_shell.visible = false
+	panel._notify_list_wing_changed()
+	if panel._chapter_nav != null:
+		panel._chapter_nav.set_chapters([], "")
+	if panel._scroll != null:
+		panel._scroll.scroll_vertical = 0
+	if panel._list_scroll != null:
+		panel._list_scroll.scroll_vertical = 0
+
+
+static func _render_content(panel, reset_scroll: bool) -> void:
+	panel._capture_tax_drafts()
+	for child in panel._content_box.get_children():
+		panel._content_box.remove_child(child)
+		child.queue_free()
+	if panel._list_content != null:
+		for child in panel._list_content.get_children():
+			panel._list_content.remove_child(child)
+			child.queue_free()
+	panel._clear_block_controls()
+	panel._tax_context = {}
+	panel._tax_editors.clear()
+	panel._page_tax_editors.clear()
+	panel._page_tax_section = null
+	panel._reset_tax_button = null
+	var categories: Dictionary = panel._model.get("categories", {})
+	var data: Dictionary = categories.get(panel._current_tab, {})
+	panel._content_structure = panel._category_structure(data)
+	panel._build_category_content(data)
+	panel._rebuild_tax_editor_registry()
+	panel._restore_tax_drafts()
+	if reset_scroll:
+		if panel._scroll != null:
+			panel._scroll.scroll_vertical = 0
+		if panel._list_scroll != null:
+			panel._list_scroll.scroll_vertical = 0
+	panel._sync_split_layout()
+	panel._notify_list_wing_changed()
+	panel._publish_population_discontent(data)
 
 
 

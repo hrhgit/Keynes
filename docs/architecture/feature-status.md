@@ -32,6 +32,120 @@
 
 本轮验证使用 Godot 4.6.3。七个加压进程下，含非零税率与重复命令的专项用例也通过全部 42 项，三天的代次、税率和层数与普通运行相同。完整回归 153 项通过，包含导入、年度自动存档和正式存读档往返。独立回放矩阵覆盖标准 D2、日历 D5、多国 D5、军事 D20，每次恢复后均比较 8 天。工厂单测 211 项、CI 静态架构检查 18 项全部通过。
 
+## 本次合入的上游功能（2026-11-27）
+
+以下是上游 `fc09590a3` 的功能与当时的验证记录。正式会话的显示和跨域交接沿用本项目的已发布视图与所有者端口。
+
+合入时补齐了三处运行边界。日历只从已发布数据取得经济结算日，停显仅影响顶栏。最后一城的次日清理进入
+`pknr.stratum_unrest` 第 2 版存档。停业建筑按可执行性和原利润门槛尝试恢复。空置达到阈值时，
+还要有足够可雇用的本地业主候选支撑每座建筑，缺少可雇用人手的组进入既有清算。
+原构建上盈利重启仍受亏损计数阻挡的场景，在合入后验证通过。
+
+合入后的 macOS 调试版和发布版构建、19 项静态检查、四个回放场景、9 个税率及同日续跑专项、
+正式存读档往返均已通过。合入时的完整回归有 161 项通过，矿井的三条历史断言在原版上游也会失败。
+旧场景先出现真实业主空置，随后开工产生实际亏损。修正后的建筑专项沿用原断言和种子 77，
+用食品补贴维持业主生活。第 2 至第 5 期业主均在岗，必需工具有库存，周转金不足以购买最小用量，
+因此实际投入、产出和严重亏损计数均为零。第 5 期存档携带第 6 期返还资金的命令，
+直接续跑和读档续跑均重新购料、产煤，保存和续跑的经济状态哈希一致。
+
+只读审查复现了分组计划提前写入全局复工计数、两座织机只有一名业主时仍获准整组复工、
+长跑人口检查误收旧日期、叙事清理格号越界，以及开局税率小数被截断。复工计数随任务结果汇总。
+长跑按人口快照自己的日期取样，开局税率先验整数含义和范围，再转为整数。叙事暂存和安装均校验地图上界。
+
+相同逐日夹具下，上游候选跑两次，合入版空闲跑十次、加七个 `yes` 进程跑十次。
+第 1 至第 8 日共 3,076 个字段全部一致。
+
+### 最后一城叛乱处理（2026-11-27）
+
+- 方案 D：保留「最后一城不能独立」。`advance_independence` 在该国只剩 1 格时取消建国请求，
+  给玩家一条「最后一城不能独立」提示，并把该格交给 host 在次日 prepare 调
+  `clear_cell_mobilization_independence(cell)` 清掉所有动员行的 `flags & 8`；经济扫描在
+  `country_cell_count(country) <= 1` 时兜底清位，覆盖清位请求尚未落地就存档的窗口。
+- 玩家保留城市，不进入零领土/游戏结束；链条停在当前阶，读档后不再反复排队或建国。
+  独立入队同时收口为「只认原生 `flags & 8`」：`finish_unrest_choice` 不再根据动作和成败自行推断。
+- 修复前该分支静默丢弃请求，行可能永久停在 stage 4/flags&8，事件文案与实际结果相反。
+- 全链最后一城场景暂无自动化覆盖：当前引擎在玩家失去起始格（首都）后第 4 天仍会堆损坏崩溃，
+  去掉叛乱事实也能复现，属既有的起始格/首都丢失问题；本次只做了原生清位契约测试，该崩溃未修复。
+- 验证：`tests/economy/stratum_chain_pacing_test.gd` 72/0（新增清位契约与第 4 阶招安失败规则）、
+  `economy_stratum_save_restore_test` 107/0、`stratum_unrest_service_test` 28/0、
+  `narrative_event_runtime_test` 89/0、`golden_day_hash_test` 203/0、`politics_parse_probe` PASS；
+  `check_world_ext_bindings` 等静态护栏通过（`check_size_ratchet` 仍报 6 个既有超长 UI 文件）。
+
+### 叛乱链改为阈值驱动（2026-11-27）
+
+- 行动失败不再直接升阶：只增加组织度/后遗症，把 `next_check_day` 推后 10 天，模拟继续。
+  链只在 `next_check_day` 到达且组织度与 power 同时越过下一阶门槛时升阶（去掉原来的 0.35 骰），
+  对齐 Victoria 3 式「局势自己走到下一档才出下一幕」。
+- 成功降阶并把 `next_check_day` 推到 `cooldown_until_day`，冷却期内不升阶；第 3 阶镇压失败
+  不再直接置独立位，只有第 4 阶镇压失败（或弃城）才置 `flags & 8`。
+- 行动文案与 tooltip 同步：第 1–3 阶镇压失败只写「组织度上涨」，第 4 阶失败（含招安失败）才写「此城脱离」；
+  招安失败写明后果；「置之不理」不再声称阶段会前进。AI 升阶事实在 AI 行动未改变行时也会发布。
+- 验证：新增 `tests/economy/stratum_chain_pacing_test.gd` 53/0（失败不升阶、第 3 阶不跳独立、
+  第 4 阶失败置独立、成功推进冷却、tooltip 契约）；`economy_stratum_save_restore_test` 107/0、
+  `tests/politics/stratum_unrest_service_test` 15/0、`narrative_event_runtime_test` 89/0、
+  `politics_parse_probe` PASS。`satisfaction_runtime_test` 为 49 项 1 失败（回放后整档 hash 不一致，
+  探针确认该夹具动员行数始终为 0，与本次阈值改动无关，属工作区既有失败）。
+
+### 第四阶段失败由 Economy 统一确认（2026-11-27）
+
+- 第四阶段招安失败现在由 Economy 设置 `flags & 8`，与镇压失败和弃城使用同一独立标记。
+- Narrative 不再根据阶段和掷骰结果自行创建独立状态，只消费 Economy 应用结果后的行标记。
+- `stratum_chain_pacing_test.gd` 增加第四阶段招安失败的独立标记覆盖。
+
+### 经济系统性数值再平衡（2026-11-27）
+
+- **硬/软投入重构**：`NativeEconomyRuntime` 将软投入（`0 < required_q16 < 65536`）改为无软料 100% 基础产出、齐备最高 `+40%` 封顶增产（`SOFT_PRODUCTIVITY_BONUS_CAP_Q16 = 26214`，多软投入按权重归一化共享 `+40%` 上限，消除 32 栋零硬投入工业建筑及其他误标主原料，全部工业建筑至少含 1 项硬主原料）。
+- **科技加法叠加与产出耦合消耗**：建筑产出修正由多维叠乘改为加法池化 `1 + ΣΔ`，只保留 `0.10x` 下限（`OUTPUT_FACTOR_MIN_Q16 = 6554`）；同日取消运行时 `4.0x` 封顶（原 `OUTPUT_FACTOR_MAX_Q16 = 262144`），池化倍率只受各修正定义的 `max_value` 与 Q16/int32 数值边界约束；生产投入随建筑产出倍率按 `1 + 0.60 * max(0, M_out - 1)` 联动放大（保障净物料转换效率提升，同时 `country.production.input_factor` 下限由 `0.40` 上调至 `0.80`）；同步重标 `technology_network.json`（单行业/家族/地理/商品/全局加成封顶并清除 9 项负居民消费项）。
+- **基础数值与按财富递增消费**：`default_economy.tres` 全局产出效率由 `1.5x` 回撤至 `1.0x`，各部门维护折旧周期由 6–20 年缩短至 2–5 年（`[1460, 900, 1095, 730, 1825]`）；通过 `tools/economy/rebalance_economy_content.py` 去除石器时代后 2× 食物膨胀（石器起始采集/狩猎食物做 1.45× 补偿以适配 1.0× 全局效率），将 255 栋工业建筑投入产出价值比中位数校准至 `0.550`（45%–70%），并提高居民非食物基础消费占比至 `35%–52%`（`wealth=1.0`）；将 `HOUSEHOLD_WEALTH_ANCHORS_Q16` 扩展至 15 档（`1/16x`–`1024x`，即人均最高 `10,240` 货币），解耦 `Need` 数量增长与 `VariantChoice` 品质升级，防止富裕阶层过食主粮。未改动过剩减产与“应收尽收”机制。
+- **验证**：
+  - 静态护栏 13/13 全部通过（`check_cpp_deps`、`check_committed_views`、`check_save_contracts`、`check_module_api`、`check_script_native_access` 等 0 违规）；Windows `template_debug` / `template_release` 扩展双目标构建并重新预烘焙（991 项）。
+  - 新增契约测试 `economy_rebalance_contract_test.gd` 21/21 通过（4 项软投入叠加实测 `1.3999x` 封顶；全 467 科技 `coke_ovens` 实测产出 `2.199x`、投入 `1.389x`、净效率 `+58.3%`、`input_factor = 0.800`；同一建筑在科技之上再叠 `+4.0` 城市商品产出加成后实测产出 `6.199x`，证明 `4.0x` 运行时封顶已移除而非被静默截断；`owner_household` 在 `1x/16x/128x/1024x` 财富下日消费支出 `243.9 → 987.9 → 2,933.0 → 11,881.5` 货币、`48.7x` 增长且主粮严格封顶 `1.23x`）。
+  - 运行时回归与确定性：`consumption_satisfaction_runtime_test.gd`（49/49）、`economy_birth_runtime_test.gd`（65/65）、`economy_cadence_runtime_test.gd`、`starter_settlement_soak_test.gd`（180 天 16/16）、`check_golden_determinism.py`（2 轮 0 差异）、`check_replay_matrix.py`（默认边界与军事续跑矩阵全部 0 差异）通过。
+  - 取消封顶复验（2026-11-27）：`template_debug` / `template_release` 双目标重建通过；`economy_rebalance_contract_test.gd` 21/21、`economy_birth_runtime_test.gd` 65/65、`economy_cadence_runtime_test.gd`、`check_golden_determinism.py`（2 轮 0 差异）通过；CI 静态护栏 12 项 0 违规。`check_size_ratchet` 报出的 6 个超长文件、以及 3 项依赖 `clang++`/`g++`、symlink 权限、`os.getloadavg` 的 Windows 不可运行项，均为既有环境或工作区问题，不在本次改动文件内。
+  - 5 年（1825 天）正式开局浸泡（`economy_balance_soak.gd`，`seed=20260727`，`ok=true`、`coverage_ok=true`、全期三账误差均为 `0/0/0`）：第 1825 天总库存由基线（2026-11-08）`51,337,024` 降至 `3,415,964`（`-93.3%`），“应收尽收”占比由 `22.4%` 降至 `0.7%`，日产出稳定在 `87,593`（基线 `507,083`）；当前石器时代 `wild_game` 生态密度与 `starvation_satisfaction_threshold = 0.75` 叠加使前 5 年人口自 `160` 缓降至 `59`（0 饥荒报错，满意度从第 30 天 `0.196` 持续回升至第 1825 天 `0.532`），后续可结合开局规划器生态密度估算继续优化。
+
+### PC-Web 画质对齐桌面高画质与原生 HiDPI（2026-11-26）
+
+- 新增 `DCFeatureFlags.is_mobile_web()` / `is_desktop_web()` / `is_limited_render_platform()`，将移动浏览器的降档策略与 PC 浏览器解耦；保留 `uses_shader_quality_tier()` 作为 Web 共享低/中档与迷雾/天气预热前缀契约。
+- PC-Web 默认（`auto`）解析为 `high`（`visual_quality=2`），启动菜单默认预热并启用 `PK_WEB_PC_HIGH` 完整陆地/水面/植被管线及 `building_shadow`（同时保留共享低/中档预热，游戏内切换画质零卡顿）；移动浏览器或显式 `?quality=low|medium` 跳过 `_high` 预热。
+- PC-Web 恢复全量植被点缀层（不裁半）与桌面散布实例上限、100% 植被阴影强度、建筑投影阴影与 128 常驻块上限、非裁剪建筑 horizon GI 光照、商队与军队阵型高画质阴影、1024×512 云影场与高档合成强度，并开放「自定义」画质与地图清晰度等全部细分选项。
+- Web 导出恢复 `loading_prebaked_v1/material_1024_*.res` 打包，默认不再将 `material_512_*.res` 压到 256²，也不再把 `resource_art` 与 `vehicles_topdown_v2` 砍半分辨率；UI/图标保持 0.55 WebP 有损瘦身。
+- `export_presets.cfg` 将 PC-Web 的 `window.devicePixelRatio` 解锁至最高 `2.0`（支持 `?dpr=` 覆盖，移动浏览器保持 `1`），`MobileUIScaling` 在桌面 Web 上按物理窗口尺寸夹取补偿 `content_scale_factor`，保证逻辑画布不低于 1600×960 且高分屏按原生物理像素清晰绘制。
+- 验证：`web_pc_quality_policy_test.gd`、`game_settings_service_test.gd`、`cloud_weather_quality_test.gd`、`terrain_shader_variant_test.gd`（含 `gl_compatibility`）、`web_water_pass_node_test.gd`、`cell_field_web_probe_test.gd`、`military_formation_shader_lighting_test.gd` 及静态架构护栏通过。
+
+### 建筑长期空置自动退出（2026-11-27）
+
+- 原生建筑计划现在把“业主数量小于建筑数量”计入既有
+  `severe_loss_cycles` 生命周期计数。达到配置阈值后进入亏损停产状态，沿用现有
+  恢复与清算流程，服务类建筑也适用；达到空缺阈值后不再用收益门槛阻止清算，
+  清算确认的过剩量至少覆盖业主缺口。
+  有足够业主但缺原料、资源或周转资金的建筑仍按经营阻塞处理。
+- 停产后的恢复仍需可执行且达到重启利润门槛。空置已达阈值的组还要有每座至少一名的本地业主候选。
+  两座织机只有一名候选时，先按现行清算规则缩到一座，下一次评估可恢复余下的一座。
+  禁止招聘失业人口时，这些人口不计入候选。复工期先让就业阶段安排到岗，后续按本期实际空置计数。
+  织机专项覆盖候选总量不足和招聘入口关闭，清算沿用既有评估日、顺序和名额。
+  复工批准数由计划任务完成后统一累加。存档继续使用现有字段。
+- 验证：模块地图、C++ 依赖、模块契约、提交视图和存档契约检查通过；Windows 原生扩展
+  已完成修改文件的编译，但链接阶段因运行中的 Godot 锁定 DLL 未完成。
+
+### 河流穿越陆地地块的建筑布局（2026-11-27）
+
+玩家反馈有河流经过的陆地地块上城市建筑没有正确出现。根因是建筑原生布局器只在地块中心附近
+做最多六次、半径不超过地块内半径 14% 的避河抖动。河道占据地块中心时，广场和建筑候选仍落在
+河道上，候选的角点检查会把整座城市的建筑体全部拒绝，河岸两侧仍有空间也无法出图。
+
+现在只有河流靠近地块中心时才触发确定性的多环搜索。搜索对候选中心采样小邻域，优先选择有
+足够干燥空间的河岸位置，随后继续沿用原有的建筑角点避河检查。无河流中心的地块沿用原抖动
+路径，建筑实例 ABI、河流纹理和每日模拟状态不变。回归夹具加入
+`tests/building/building_visual_native_bridge_test.gd`，构造竖向河道穿过陆地地块并检查河流拒绝
+计数与陆侧建筑实例同时存在。
+
+### 2026-11-27 已探索区域的迷雾与开拓目标
+
+- 迷雾层提高已探索未可见区域的薄纱不透明度至 0.64，并改用更深的冷灰蓝色，使远景地形与当前可见区域的区别更清楚；未探索区域的完全遮挡规则保持不变。
+- 玩家家族开拓的报价、路线和生效日复核改用 `explored_arr` 作为知识边界。已探索但当前视野外的格子可以作为目的地，未探索格仍不可达。该边界只改变玩家开拓输入，AI 的当前视野规划保持原有路径。
+- 本次已完成源码与文档同步；Windows x86_64 `template_debug` 与 `template_release` 增量构建均通过，未运行 Godot 图形回归。
+
 ## 历史记录
 
 ### [主线程镜像、面板与地图绘制](feature-status-01.md)

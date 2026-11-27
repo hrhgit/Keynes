@@ -18,11 +18,6 @@ namespace pk {
 using namespace godot;
 using namespace variant_helpers;
 
-namespace {
-constexpr std::array<int32_t, 9> HOUSEHOLD_WEALTH_ANCHORS_Q16 = {
-    4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576};
-} // namespace
-
 bool NativeEconomyRuntime::compile_catalog(const Dictionary &catalog, std::string &error) {
     _profession_ids = packed_strings(catalog, "profession_ids");
     _ethnicity_ids = packed_strings(catalog, "ethnicity_ids");

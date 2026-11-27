@@ -36,6 +36,11 @@ func _run() -> void:
 		return
 	var catalog: Dictionary = compiled.duplicate(true)
 	catalog.erase("ok")
+	# A percentage subsidy reserves against the cost of food the country can use.
+	var gathering := (catalog.technology_ids as PackedStringArray).find("tech.gathering")
+	_expect("gathering unlocks the fixture's basic food", gathering >= 0)
+	if gathering < 0:
+		return
 	var ext: Object = _new_ext(catalog, 3)
 	var country_profile := {
 		"country_runtime_mode": "ACTIVE",
@@ -50,8 +55,8 @@ func _run() -> void:
 		"country_cash": PackedInt64Array([1000000, 1000000, 1000000]),
 		"territory_offsets": PackedInt32Array([0, 1, 2, 3]),
 		"territory_cells": PackedInt32Array([0, 1, 2]),
-		"technology_offsets": PackedInt32Array([0, 0, 0, 0]),
-		"technology_indices": PackedInt32Array(),
+		"technology_offsets": PackedInt32Array([0, 1, 2, 3]),
+		"technology_indices": PackedInt32Array([gathering, gathering, gathering]),
 		"research_auto_purchase": PackedByteArray([0, 0, 0]),
 		"treasury_offsets": PackedInt32Array([0, 0, 0, 0]),
 		"treasury_good_indices": PackedInt32Array(),
@@ -180,7 +185,7 @@ func _run() -> void:
 		_settlement_restore_checked)
 	_expect("later pulse day continues the admitted fiscal settlement",
 		_settlement_day_advanced_checked)
-	_run_country_active_fiscal_bridge(catalog, merchant)
+	_run_country_active_fiscal_bridge(catalog, merchant, gathering)
 
 
 func _set_income_tax(ext: Object, handles: PackedInt64Array) -> bool:
@@ -282,7 +287,7 @@ func _observe_settlement(ext: Object, report: Dictionary) -> void:
 			String(blocked_restore.get("reason", "")) == "restore_fiscal_settlement_pending"
 
 
-func _run_country_active_fiscal_bridge(catalog: Dictionary, merchant: int) -> void:
+func _run_country_active_fiscal_bridge(catalog: Dictionary, merchant: int, gathering: int) -> void:
 	var ext: Object = _new_ext(catalog, 1)
 	_expect("bridge Country runtime configures", bool(ext.configure_country(
 		catalog, {"country_runtime_mode": "ACTIVE", "starting_technology_ids": PackedStringArray()},
@@ -293,8 +298,8 @@ func _run_country_active_fiscal_bridge(catalog: Dictionary, merchant: int) -> vo
 		"country_cash": PackedInt64Array([1000000]),
 		"territory_offsets": PackedInt32Array([0, 1]),
 		"territory_cells": PackedInt32Array([0]),
-		"technology_offsets": PackedInt32Array([0, 0]),
-		"technology_indices": PackedInt32Array(),
+		"technology_offsets": PackedInt32Array([0, 1]),
+		"technology_indices": PackedInt32Array([gathering]),
 		"research_auto_purchase": PackedByteArray([0]),
 		"treasury_offsets": PackedInt32Array([0, 0]),
 		"treasury_good_indices": PackedInt32Array(),

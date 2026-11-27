@@ -525,6 +525,7 @@ int64_t NativeEconomyRuntime::memory_bytes() const {
     cap(_building_merchant_credit_limit);
     cap(_building_recovery_probe_capacity_q16);
     cap(_building_recovery_liquidation_eligible);
+    cap(_building_reopened_groups);
     cap(_building_investment_score_q16); cap(_building_investment_payback_days);
     cap(_building_investment_rejection); cap(_trade_active_keys);
     cap(_trade_active_key_present);

@@ -73,6 +73,7 @@ struct RuntimeDayTail {
     std::shared_ptr<const RuntimeClimateSnapshot> climate;
     RuntimeCountryReadView country;
     std::shared_ptr<const RuntimeGdpDisplay> gdp;
+    int64_t economy_settled_day = -1;
     uint64_t modifier_session = 0;
     std::shared_ptr<const RuntimeModifierPodSnapshot> modifier;
     std::shared_ptr<const EconomyFrozenTaxView> frozen_tax;

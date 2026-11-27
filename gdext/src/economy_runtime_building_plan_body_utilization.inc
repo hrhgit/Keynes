@@ -59,7 +59,7 @@
                     }
                     physical = effective_production_input_quantity(
                         group.cell, candidate.good_id, physical,
-                        _saturation_count);
+                        _saturation_count, group.output_factor_q16);
                     int64_t quantity = saturating_add(saturating_mul(
                         physical, purchase_scale_q16, _saturation_count),
                         Q16_ONE - 1, _saturation_count) / Q16_ONE;
@@ -76,7 +76,7 @@
                     const int64_t unit_physical = effective_production_input_quantity(
                         group.cell, candidate.good_id,
                         unit_numerator / candidate.efficiency_q16,
-                        _saturation_count);
+                        _saturation_count, group.output_factor_q16);
                     const int64_t effective_price = mul_div_sat(
                         market_store().price[market_store().index(market, candidate.good_id)],
                         unit_physical, GOODS_SCALE, _saturation_count);

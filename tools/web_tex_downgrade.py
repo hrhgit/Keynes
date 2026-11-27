@@ -40,16 +40,18 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
 from typing import Any
+
+from web_tex_imports import (
+    ImportFile, _restore_files, collect_imports, dest_size, find_godot, human,
+    run_import, sha256_file,
+)
 
 # --------------------------------------------------------------------------
 # 策略
@@ -82,13 +84,13 @@ RULES: list[tuple[str, dict[str, str], int]] = [
      {"compress/mode": "1", "compress/lossy_quality": "0.80"}, 0),
 
     # 2D 数组纹理（地面覆盖 / 树冠，按 sprite 采样）。法线一旦出块状伪影会毁掉受光，
-    # 所以 q 给 0.82；mipmaps 必须保留（远处 minify 靠它）。
+    # 近景地图精灵保持高压缩质量（q=0.90），mipmaps 保留（远处 minify 靠它）。
     # 注意：已经是 s3tc+etc2 双套的 albedo 数组会被 is_vram_variant() 挡掉，不改 mode。
     ("res://assets/textures/resource_art/**",
-     {"compress/mode": "1", "compress/lossy_quality": "0.82"}, 0),
+     {"compress/mode": "1", "compress/lossy_quality": "0.90"}, 0),
 
-    # 法线：跟着 albedo 一起降分辨率，但质量档不能低于 0.90（强损会在受光上出
-    # 带状脏影，得不偿失）。这两条必须排在 resource_art/** 之后才生效。
+    # 法线：质量档不能低于 0.90（强损会在受光上出带状脏影，得不偿失）。
+    # 这两条必须排在 resource_art/** 之后才生效。
     ("res://assets/textures/resource_art/cover_normal.png",
      {"compress/mode": "1", "compress/lossy_quality": "0.90"}, 0),
     ("res://assets/textures/resource_art/crown_normal.png",
@@ -98,8 +100,8 @@ RULES: list[tuple[str, dict[str, str], int]] = [
     ("res://assets/textures/weather/**", {}, 0),
     ("res://textures/weather/**", {}, 0),
 
-    # 贸易车辆等 vfx 精灵图集
-    ("res://assets/vfx/**", {"compress/mode": "1", "compress/lossy_quality": "0.55"}, 0),
+    # 贸易车辆等地图 vfx 精灵图集：近景放大可见，给高画质档（单图体积很小）
+    ("res://assets/vfx/**", {"compress/mode": "1", "compress/lossy_quality": "0.90"}, 0),
 ]
 
 # ⚠️ 2026-11-11 撤回：这里曾经有三条 `process/size_limit`（ui 1152 / icons 1024 /
@@ -128,21 +130,44 @@ KEEP: list[tuple[str, str]] = [
 # 要么是 alpha 遮罩小图；动它们的性价比为负。
 MIN_BYTES = 128 * 1024
 
-# ---- 预烘焙材质 .res（不进 .import 流程，靠重烘焙脚本临时缩小）------------
-# [web-loading-material-shrink 2026-11-01] 只 stub **512** 那套，不再动 1024：
-#   * Web 运行时由 MapBaker._terrain_material_size() 决定档位，现在 Web 固定 512
-#     （1024 档在 Web 上被显式排除，见 export_presets.cfg 的 exclude_filter 与
-#     map_baker.gd 的注释），所以 1024 那套不进 Web 包，也不该在构建期被改写——
-#     否则同一份磁盘文件会连带影响桌面导出。
-#   * 512 -> 256：每张 1.334 MB -> 0.334 MB（RGBA8 + mipmap 链 = 4/3*w*h*4），
-#     4 张共 5.33 MB -> 1.33 MB，这是首屏关键路径（加载屏自己就要显示地面材质）。
-#   * 层尺寸由 map_baker._build_terrain_material_tex 按**实际读到的图**决定，
-#     所以文件名仍叫 material_512_*、内容是 256² 也是自洽的。
-RES_STUB_TARGETS = [
+# ---- 预烘焙材质 .res（默认保留 1024 / 512 原尺寸，仅在显式开启时缩小）------
+# PC-Web 中/高画质使用 material_1024_*.res，低画质与移动浏览器使用 material_512_*.res。
+# 默认不再把 material_512_* 重烘焙降到 256²，避免地面近景糊成色块；
+# 如需极限压缩包体，可显式设 PK_WEB_SHRINK_TERRAIN_MATERIALS=1 恢复 512->256 stub。
+RES_STUB_CANDIDATES = [
     f"assets/textures/loading_prebaked_v1/material_512_{i}.res" for i in range(4)
 ]
-RES_STUB_SIZES = "512"
+# Web 中/高画质实际读的是 material_1024_*（21.3 MB）。默认原样保留；要临时降采样时设
+# PK_WEB_TERRAIN_STUB_1024=<目标边长，如 256>：文件内容在导出期被缩小、文件名不变，
+# 导出后由同一套备份/还原逻辑恢复原值。源 PNG 与本目录的 1024 那套不做永久修改。
+RES_STUB_1024_CANDIDATES = [
+    f"assets/textures/loading_prebaked_v1/material_1024_{i}.res" for i in range(4)
+]
+RES_STUB_TARGETS: list[str] = []
 RES_STUB_SCRIPT = "res://tools/web_tex_stub_loading_materials.gd"
+
+
+def terrain_stub_1024_size() -> str:
+    raw = os.environ.get("PK_WEB_TERRAIN_STUB_1024", "").strip()
+    return raw if raw.isdigit() else ""
+
+
+def active_res_stub_targets() -> list[str]:
+    targets = list(RES_STUB_TARGETS)
+    if os.environ.get("PK_WEB_SHRINK_TERRAIN_MATERIALS") == "1":
+        targets += RES_STUB_CANDIDATES
+    if terrain_stub_1024_size():
+        targets += RES_STUB_1024_CANDIDATES
+    return targets
+
+
+def active_res_stub_sizes() -> str:
+    sizes: list[str] = []
+    if os.environ.get("PK_WEB_SHRINK_TERRAIN_MATERIALS") == "1":
+        sizes.append("512")
+    if terrain_stub_1024_size():
+        sizes.append("1024")
+    return ",".join(sizes) if sizes else "512"
 
 # ---- 源图分辨率上限（web-only，仅"单张整图"）--------------------------------
 # 只允许**单张整图**：图集（AtlasTexture）缩小后 .tres 里的 region 会整体错位。
@@ -157,24 +182,17 @@ MAX_DIM_RULES: list[tuple[str, int]] = [
 ]
 
 # ---- 按倍率缩放（web-only，单张整图）---------------------------------------
-# resource_art 的 5 张是"地表覆盖层 / 树冠 / 动物"，用户已授权 web 端降分辨率
-# （它们是地形视觉本身，桌面保持原样）。倍率由环境变量控制，`=1` 即回退：
-#   PK_WEB_RESOURCE_ART_SCALE=1    不缩
-#   PK_WEB_RESOURCE_ART_SCALE=0.5  各边减半（默认）
-# 注意：这些源图的层数是 vertical strip（512x8192 = 16 层），等比缩放不会破坏帧布局。
+# 默认保留地图精灵（地表覆盖层 / 树冠 / 动物 / 贸易车船）的桌面原尺寸（scale=1.0），
+# 保证 PC-Web 近景锐度与 PC 一致；需要极限压包时可设环境变量（如 =0.5）启用降采样：
+#   PK_WEB_RESOURCE_ART_SCALE=1.0  不缩（默认）
+#   PK_WEB_RESOURCE_ART_SCALE=0.5  各边减半
 SCALE_RULES: list[tuple[str, str, float]] = [
-    ("assets/textures/resource_art/cover_albedo.png", "PK_WEB_RESOURCE_ART_SCALE", 0.5),
-    ("assets/textures/resource_art/cover_normal.png", "PK_WEB_RESOURCE_ART_SCALE", 0.5),
-    ("assets/textures/resource_art/crown_atlas.png", "PK_WEB_RESOURCE_ART_SCALE", 0.5),
-    ("assets/textures/resource_art/crown_normal.png", "PK_WEB_RESOURCE_ART_SCALE", 0.5),
-    ("assets/textures/resource_art/fauna_atlas.png", "PK_WEB_RESOURCE_ART_SCALE", 0.5),
-    # [2026-11-24] 贸易单位俯视图：实测唯一能安全减半的图集类资源（450,266 B -> 约 149 KB）。
-    # 判据：着色器按**归一化 UV** 取图（`shaders/trade_vehicle.gdshader:42`
-    # `(vec2(col,row)+uv)/vec2(2.0,6.0)`），没有像素常量参与布局，也没有任何
-    # AtlasTexture.region / get_size() 指向它。其余图集（military_atlas_v1 等）
-    # 有 region 绝对像素或 get_size() 排版，一律**不缩**。
-    ("assets/vfx/trade/vehicles_topdown_v2.png", "PK_WEB_TRADE_VEHICLE_SCALE", 0.5),
-    # 法线跟着 albedo 同倍率缩放，但质量档见 RULES 里的 *_normal 规则（>=0.90）
+    ("assets/textures/resource_art/cover_albedo.png", "PK_WEB_RESOURCE_ART_SCALE", 1.0),
+    ("assets/textures/resource_art/cover_normal.png", "PK_WEB_RESOURCE_ART_SCALE", 1.0),
+    ("assets/textures/resource_art/crown_atlas.png", "PK_WEB_RESOURCE_ART_SCALE", 1.0),
+    ("assets/textures/resource_art/crown_normal.png", "PK_WEB_RESOURCE_ART_SCALE", 1.0),
+    ("assets/textures/resource_art/fauna_atlas.png", "PK_WEB_RESOURCE_ART_SCALE", 1.0),
+    ("assets/vfx/trade/vehicles_topdown_v2.png", "PK_WEB_TRADE_VEHICLE_SCALE", 1.0),
 ]
 
 # 平铺采样的贴图：缩小时必须用环绕卷积，否则左右/上下边不再连续（tiling seam 翻倍，
@@ -188,101 +206,6 @@ TILED_PATTERNS: list[str] = [
 TARGET_IMPORTERS = {"texture", "2d_array_texture"}
 
 STATE_DIRNAME = "web_tex_downgrade"
-
-
-# --------------------------------------------------------------------------
-# .import 读写
-# --------------------------------------------------------------------------
-SECTION_RE = re.compile(r"^\[([^\]]+)\]\s*$")
-
-
-@dataclass
-class ImportFile:
-    res_path: str
-    abspath: str
-    importer: str = ""
-    params: dict[str, str] = field(default_factory=dict)
-    dests: list[str] = field(default_factory=list)
-    raw: bytes = b""
-
-    @classmethod
-    def load(cls, res_path: str, abspath: str) -> "ImportFile":
-        with open(abspath, "rb") as fh:
-            raw = fh.read()
-        text = raw.decode("utf-8", "surrogateescape")
-        importer = ""
-        params: dict[str, str] = {}
-        dests: list[str] = []
-        section = ""
-        for line in text.splitlines():
-            s = line.strip()
-            m = SECTION_RE.match(s)
-            if m:
-                section = m.group(1)
-                continue
-            if section == "remap" and s.startswith("importer="):
-                importer = s.split("=", 1)[1].strip().strip('"')
-            elif section == "remap" and s.startswith("path") and "=" in s:
-                v = s.split("=", 1)[1].strip().strip('"')
-                if v.startswith("res://"):
-                    dests.append(v)
-            elif section == "deps" and s.startswith("dest_files="):
-                body = s.split("=", 1)[1].strip().strip("[]")
-                for part in body.split(","):
-                    part = part.strip().strip('"')
-                    if part.startswith("res://"):
-                        dests.append(part)
-            elif section == "params" and "=" in s:
-                k, v = s.split("=", 1)
-                params[k.strip()] = v.strip().strip('"')
-        seen: set[str] = set()
-        dests = [d for d in dests if not (d in seen or seen.add(d))]
-        return cls(res_path, abspath, importer, params, dests, raw)
-
-    def patched(self, changes: dict[str, str], removals: tuple[str, ...] = ()) -> bytes:
-        """只改 [params] 里指定的键，其余字节原样保留（行尾/顺序/其它键都不动）。
-
-        removals 里的键会被整行删掉（还原一个"原本不存在"的键时用）。
-        """
-        if not changes and not removals:
-            return self.raw
-        text = self.raw.decode("utf-8", "surrogateescape")
-        nl = "\r\n" if "\r\n" in text else "\n"
-        lines = text.split(nl)
-        out: list[str] = []
-        section = ""
-        params_at = -1
-        set_keys: set[str] = set()
-        for line in lines:
-            s = line.strip()
-            m = SECTION_RE.match(s)
-            if m:
-                section = m.group(1)
-                if section == "params":
-                    params_at = len(out)
-                out.append(line)
-                continue
-            if section == "params" and "=" in s:
-                key = s.split("=", 1)[0].strip()
-                if key in removals:
-                    continue
-                if key in changes:
-                    out.append(f"{key}={changes[key]}")
-                    set_keys.add(key)
-                    continue
-            out.append(line)
-        missing = [k for k in changes if k not in set_keys]
-        if missing:
-            if params_at < 0:
-                raise RuntimeError(f"{self.res_path}: .import 里没有 [params] 段")
-            insert_at = len(out)
-            for i in range(params_at + 1, len(out)):
-                if SECTION_RE.match(out[i].strip()):
-                    insert_at = i
-                    break
-            for off, key in enumerate(missing):
-                out.insert(insert_at + off, f"{key}={changes[key]}")
-        return nl.join(out).encode("utf-8", "surrogateescape")
 
 
 # --------------------------------------------------------------------------
@@ -341,96 +264,9 @@ def policy_for(res_path: str, params: dict[str, str], importer: str,
     return changed, f"规则 {rule_name}"
 
 
-# --------------------------------------------------------------------------
-# 工具函数
-# --------------------------------------------------------------------------
-def sha256_file(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def dest_size(project: str, res_dest: str) -> int:
-    p = os.path.join(project, res_dest.replace("res://", "").replace("/", os.sep))
-    try:
-        return os.path.getsize(p)
-    except OSError:
-        return -1
-
-
-def human(n: int) -> str:
-    if n < 0:
-        return "?"
-    x = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(x) < 1024.0 or unit == "GB":
-            return f"{n} B" if unit == "B" else f"{x:.2f} {unit}"
-        x /= 1024.0
-    return f"{x:.2f} GB"
-
-
-def find_godot(repo: str, explicit: str) -> str:
-    if explicit and os.path.isfile(explicit):
-        return explicit
-    env = os.environ.get("GODOT_BIN", "")
-    if env and os.path.isfile(env):
-        return env
-    # 与 scripts/Build-Web.cmd 一致：<repo>\..\..\Godot_v4.6.2-stable_win64.exe\<exe>
-    base = repo
-    for _ in range(3):
-        for cand in (
-            os.path.join(base, "Godot_v4.6.2-stable_win64.exe",
-                         "Godot_v4.6.2-stable_win64.exe"),
-            os.path.join(base, "Godot_v4.6.2-stable_win64.exe"),
-        ):
-            if os.path.isfile(cand):
-                return cand
-        base = os.path.dirname(base)
-    raise SystemExit("找不到 Godot 可执行文件，请用 --godot 指定（或设 GODOT_BIN）")
-
-
-def collect_imports(project: str) -> list[ImportFile]:
-    out: list[ImportFile] = []
-    skip_dirs = {".git", ".godot", "__pycache__", "tmp", "test_output", "docs", "android"}
-    for root, dirs, files in os.walk(project):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
-        rel = os.path.relpath(root, project).replace("\\", "/")
-        for fn in files:
-            if not fn.endswith(".import"):
-                continue
-            abspath = os.path.join(root, fn)
-            res = "res://" + (f"{rel}/{fn[:-7]}" if rel != "." else fn[:-7])
-            try:
-                out.append(ImportFile.load(res, abspath))
-            except OSError as exc:
-                print(f"[warn] 读不了 {abspath}: {exc}", file=sys.stderr)
-    out.sort(key=lambda i: i.res_path)
-    return out
-
-
-def run_import(godot: str, project: str, log_path: str) -> None:
-    cmd = [godot, "--headless", "--path", project, "--import"]
-    t0 = time.time()
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "wb") as log:
-        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
-    dt = time.time() - t0
-    if proc.returncode != 0:
-        tail = ""
-        try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-                tail = "".join(fh.readlines()[-25:])
-        except OSError:
-            pass
-        raise RuntimeError(f"godot --import 失败 (exit={proc.returncode}, {dt:.1f}s)\n{tail}")
-    print(f"[import] ok  {dt:.1f}s  (log: {log_path})")
-
-
 def _backup_res_stubs(project: str, backup_root: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    for rel in RES_STUB_TARGETS:
+    for rel in active_res_stub_targets():
         path = os.path.join(project, rel.replace("/", os.sep))
         if not os.path.isfile(path):
             print(f"[tex] warn: 找不到 {rel}，跳过", file=sys.stderr)
@@ -580,8 +416,8 @@ def run_res_stub(godot: str, project: str, log_path: str) -> None:
     """跑 Godot 侧的重烘焙脚本（有 PK_WEB_DG_STUB=1 守卫，误跑不会动手）。"""
     env = dict(os.environ)
     env["PK_WEB_DG_STUB"] = "1"
-    env["PK_WEB_DG_STUB_SIZES"] = RES_STUB_SIZES
-    env.setdefault("PK_WEB_DG_STUB_SIZE", "256")
+    env["PK_WEB_DG_STUB_SIZES"] = active_res_stub_sizes()
+    env.setdefault("PK_WEB_DG_STUB_SIZE", terrain_stub_1024_size() or "256")
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     t0 = time.time()
     with open(log_path, "wb") as log:
@@ -630,9 +466,10 @@ def cmd_plan(args: Any, state: str) -> int:
         print(f"| `{imp.res_path}` | {fmt(imp.params)} | {fmt({**imp.params, **changes})} | "
               f"{human(before)} | {why} |")
     print(f"\n合计 {len(rows)} 项，当前 {human(sum(r[3] for r in rows))}。")
-    res_now = sum(max(0, dest_size(project, r)) for r in RES_STUB_TARGETS)
+    stub_targets = active_res_stub_targets()
+    res_now = sum(max(0, dest_size(project, r)) for r in stub_targets)
     if res_now > 0:
-        print(f"\n另有 prebaked .res {len(RES_STUB_TARGETS)} 个：当前 {human(res_now)}"
+        print(f"\n另有 prebaked .res {len(stub_targets)} 个：当前 {human(res_now)}"
               f"，导出期重烘焙到 256²（约 1.3 MB）后还原。")
     if skipped and args.verbose:
         print(f"\n## 跳过的纹理（{len(skipped)} 项）\n")
@@ -820,41 +657,6 @@ def cmd_begin(args: Any, state: str) -> int:
         _restore_res_stubs(res_entries)
         _drop_manifest(manifest_path)
         raise
-
-
-def _restore_files(entries: list[dict[str, Any]]) -> None:
-    """把 .import **整文件**还原成 begin 之前的样子，并用整文件 sha256 校验。
-
-    2026-11-01 事故（必须记住）：早期版本在"构建窗口内有人改过同一个文件"时会退化成
-    "只把我们改过的键还原、别人的改动保留"。那不是安全策略，而是**制造混合态**：
-    当时 77 个 .import 被并行工具改成了 web 变体，end 只回滚了我们那几个键，于是
-    paper 图集留下 `vram_texture: true` + `path.bptc/astc` —— 下一次构建每个 UI 图集
-    都会多带一份 s3tc/astc 变体（+5~10 MB），桌面导入设置也被悄悄改掉。
-
-    整文件还原才是唯一正确解：begin 前备份的是原件，end 把原件字节写回，
-    "桌面/编辑器字节级不变"就自动成立，不需要读懂别人改了什么。校验用备份的整文件
-    sha256；不一致就抛错中止 —— 宁可不还原，也不要带着脏状态继续导出。
-    """
-    restored = 0
-    for e in entries:
-        backup = e.get("backup", "")
-        path = e["import_abspath"]
-        expected = e.get("import_sha_before", "")
-        if not backup or not os.path.exists(backup):
-            raise RuntimeError(f"缺少 .import 备份，拒绝继续（状态未知）: {path}")
-        if not expected or sha256_file(backup) != expected:
-            raise RuntimeError(f"备份文件自身不完整/已损坏，拒绝写回: {backup}")
-        shutil.copy2(backup, path)
-        got = sha256_file(path)
-        if got != expected:
-            raise RuntimeError(
-                "整文件还原后 sha256 不匹配，已中止（导入缓存可能处于混合态）:\n"
-                f"  file     = {path}\n  expected = {expected}\n  got      = {got}\n"
-                "  处理：python tools\\web_tex_downgrade.py restore，"
-                "或对该文件 git checkout -- 恢复 HEAD 版本")
-        restored += 1
-    if restored:
-        print(f"[tex] 已整文件还原 {restored} 个 .import（每个都用 sha256 校验过）")
 
 
 def _drop_manifest(manifest_path: str) -> None:

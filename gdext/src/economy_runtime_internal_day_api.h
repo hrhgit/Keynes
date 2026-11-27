@@ -59,6 +59,7 @@
     // the same day `capture_committed_ledger_state` stamps on the ledger.
     int64_t current_day() const { return _current_day; }
     int64_t last_committed_day() const { return _last_committed_day; }
+    int64_t newest_settlement_day() const noexcept { return _settlement_newest_day; }
     bool should_run(int64_t day_index) const;
     bool deadline_critical(int64_t day_index) const;
     // Mutable peer-domain watermark.  `_epoch_id` identifies an Economy

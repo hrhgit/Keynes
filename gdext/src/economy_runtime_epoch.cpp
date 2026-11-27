@@ -376,6 +376,7 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
     // Recovery outcomes are committed only when this cell becomes due again.
     // This keeps employment and the published operating state on the same
     // frozen-cycle boundary instead of changing state after hiring has settled.
+    _building_reopened_groups.clear();
     for (const int32_t cell : _epoch_building_cells) {
         if (_building_cell_offsets.size() != static_cast<size_t>(_cell_count.get() + 1))
             continue;
@@ -389,6 +390,8 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
             auto group = building_at(static_cast<size_t>(g));
             const bool applying_pending = group.pending_operating_state <= 1;
             if (applying_pending) {
+                if (group.operating_state != 0 && group.pending_operating_state == 0)
+                    _building_reopened_groups.push_back(g);
                 group.operating_state = group.pending_operating_state;
                 group.pending_operating_state = 255;
                 if (group.operating_state == 0) {
@@ -407,6 +410,7 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
             group.recovery_cooldown_cycles = 0;
         }
     }
+    std::sort(_building_reopened_groups.begin(), _building_reopened_groups.end());
     _epoch_begin_recovery_apply_ms = elapsed_ms(recovery_apply_started);
     {
     EconomyCostProbe probe("epoch_vectors", day_index, _market_signals.good_ids.size());

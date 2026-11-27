@@ -19,6 +19,9 @@ static func bind(panel) -> Button:
 	panel._chapter_nav = panel.get_node_or_null("%ChapterNav") as DossierChapterNav
 	panel._scroll = panel.get_node_or_null("%Scroll") as ScrollContainer
 	panel._content_box = panel.get_node_or_null("%ContentBox") as VBoxContainer
+	panel._list_shell = panel.get_node_or_null("%ListShell") as PanelContainer
+	panel._list_scroll = panel.get_node_or_null("%ListScroll") as ScrollContainer
+	panel._list_content = panel.get_node_or_null("%ListContent") as VBoxContainer
 	panel._inspector_root = panel.get_node_or_null("%InspectorRoot") as VBoxContainer
 	panel._detail_shell = panel.get_node_or_null("%DetailShell") as PanelContainer
 	panel._object_detail_dialog = panel.get_node_or_null("%ObjectDetail") as ObjectDetailDialog

@@ -55,6 +55,7 @@ signal population_discontent_changed(cell_index: int, discontent: Dictionary)
 signal tab_data_requested(tab_id: String)
 signal object_details_requested(request: Dictionary)
 signal detail_visibility_changed(open: bool)
+signal list_wing_visibility_changed(open: bool)
 signal family_colonization_requested(family_handle: int, source_cell: int)
 signal construction_page_requested(sector: String, search: String, sort: String, offset: int)
 signal construction_requested(request: Dictionary)
@@ -78,7 +79,11 @@ var _current_tab := "geography"
 var _tabs_signature_cache := ""
 var _cell_index := -1
 var _scroll_by_tab: Dictionary = {}
+var _list_scroll_by_tab: Dictionary = {}
 var _compact_detail := false
+var _list_wing_enabled := false
+var _has_list_wing := false
+var _list_wing_notified := false
 
 var _kicker_label: Label
 var _title_label: Label
@@ -89,6 +94,9 @@ var _kpi_cards: Array = []
 var _chapter_nav: DossierChapterNav
 var _scroll: ScrollContainer
 var _content_box: VBoxContainer
+var _list_shell: PanelContainer
+var _list_scroll: ScrollContainer
+var _list_content: VBoxContainer
 var _inspector_root: VBoxContainer
 var _detail_shell: PanelContainer
 var _object_detail_dialog: ObjectDetailDialog
@@ -239,25 +247,7 @@ func select_tab(tab_id: String) -> void:
 
 
 func reset_for_world() -> void:
-	_model.clear()
-	_cell_index = -1
-	_current_tab = "geography"
-	_publish_population_discontent({})
-	_scroll_by_tab.clear()
-	_pending_tax.clear()
-	_draft_tax.clear()
-	close_detail(false)
-	if _military_dossier != null:
-		_military_dossier.clear()
-	_directory_available = true
-	_tabs_signature_cache = ""
-	_section_collapsed.clear()
-	_kpi_values.clear()
-	_clear_block_controls()
-	if _chapter_nav != null:
-		_chapter_nav.set_chapters([], "")
-	if _scroll != null:
-		_scroll.scroll_vertical = 0
+	LivePresentation.reset_for_world(self)
 
 
 func visible_node_count() -> int:
@@ -301,25 +291,7 @@ func _clear_block_controls() -> void:
 
 
 func _render_content(reset_scroll: bool) -> void:
-	_capture_tax_drafts()
-	for child in _content_box.get_children():
-		_content_box.remove_child(child)
-		child.queue_free()
-	_clear_block_controls()
-	_tax_context = {}
-	_tax_editors.clear()
-	_page_tax_editors.clear()
-	_page_tax_section = null
-	_reset_tax_button = null
-	var categories: Dictionary = _model.get("categories", {})
-	var data: Dictionary = categories.get(_current_tab, {})
-	_content_structure = _category_structure(data)
-	_build_category_content(data)
-	_rebuild_tax_editor_registry()
-	_restore_tax_drafts()
-	if reset_scroll and _scroll != null:
-		_scroll.scroll_vertical = 0
-	_publish_population_discontent(data)
+	LivePresentation._render_content(self, reset_scroll)
 
 
 func _publish_population_discontent(category: Dictionary) -> void:
@@ -556,7 +528,7 @@ func _apply_category_block_patch(data: Dictionary) -> void:
 	CategoryContent._apply_category_block_patch(self, data)
 
 
-func _add_collapsible_section(section: Dictionary) -> VBoxContainer:
+func _add_collapsible_section(section: Dictionary, host: Control = null) -> VBoxContainer:
 	var section_id := String(section.get("id", "section"))
 	var key := "%s:%s" % [_current_tab, section_id]
 	var collapsed := bool(_section_collapsed.get(key, section.get("collapsed", false)))
@@ -587,7 +559,8 @@ func _add_collapsible_section(section: Dictionary) -> VBoxContainer:
 		if expanded:
 			UIAnimation.crossfade(body, UITokens.ANIM_FAST)
 	)
-	_content_box.add_child(root)
+	var parent_box: Control = host if host != null else _content_box
+	parent_box.add_child(root)
 	_section_refs[section_id] = refs
 	return body
 
@@ -729,6 +702,22 @@ func detail_open() -> bool:
 
 func set_compact_detail_mode(compact: bool) -> void:
 	DetailWorkspaces.set_compact_detail_mode(self, compact)
+
+
+func set_list_wing_enabled(enabled: bool) -> void:
+	DetailWorkspaces.set_list_wing_enabled(self, enabled)
+
+
+func has_list_wing() -> bool:
+	return DetailWorkspaces.has_list_wing(self)
+
+
+func list_wing_open() -> bool:
+	return DetailWorkspaces.list_wing_open(self)
+
+
+func _notify_list_wing_changed() -> void:
+	DetailWorkspaces._notify_list_wing_changed(self)
 
 
 func _unhandled_key_input(event: InputEvent) -> void:

@@ -3,13 +3,10 @@
             ++_recovery_candidates;
             const int64_t building_days = saturating_mul(
                 group.count, std::max(1, _epoch_days.get()), _saturation_count);
-            // Soft inputs (required_q16 < 1) are optional productivity, not an
-            // entry gate. Match production/investment: missing soft stock only
-            // lowers executable throughput via (1-required)+required*coverage,
-            // and must not keep a profitable suspended lot permanently idle
-            // (e.g. flint_quarry tools shelf empty after a price spike).
+            // Optional inputs only add to base productivity. Empty tool
+            // shelves must still allow a profitable, executable restart.
             bool physical_inputs_available = true;
-            int64_t soft_coverage_scale_q16 = Q16_ONE;
+            int64_t soft_bonus_sum_q16 = 0;
             int64_t restart_input_unit_cost = 0;
             int64_t restart_hard_input_unit_cost = 0;
             for (int32_t i = 0; i < type.input_count && physical_inputs_available; ++i) {
@@ -32,14 +29,15 @@
                             Q16_ONE, _saturation_count) < effective)
                         physical = saturating_add(physical, 1, _saturation_count);
                     physical = effective_production_input_quantity(
-                        group.cell, candidate.good_id, physical, _saturation_count);
+                        group.cell, candidate.good_id, physical,
+                        _saturation_count, group.output_factor_q16);
                     const int64_t physical_numerator = saturating_add(
                         saturating_mul(item.quantity, Q16_ONE, _saturation_count),
                         candidate.efficiency_q16 - 1, _saturation_count);
                     const int64_t unit_physical = effective_production_input_quantity(
                         group.cell, candidate.good_id,
                         physical_numerator / std::max<int32_t>(1, candidate.efficiency_q16),
-                        _saturation_count);
+                        _saturation_count, group.output_factor_q16);
                     const int64_t candidate_cost = mul_div_sat(
                         unit_physical,
                         market_store().price[market_store().index(market, candidate.good_id)],
@@ -62,17 +60,24 @@
                     }
                 } else if (candidate_available &&
                     best_unit_cost != std::numeric_limits<int64_t>::max()) {
-                    // Soft and stocked: bill only the covered share that
-                    // production would actually purchase.
-                    restart_input_unit_cost = saturating_add(
-                        restart_input_unit_cost, best_unit_cost,
-                        _saturation_count);
-                } else {
-                    // Soft and unstocked: coverage 0 → efficiency 1-required.
-                    soft_coverage_scale_q16 = std::min<int64_t>(
-                        soft_coverage_scale_q16, Q16_ONE - required_q16);
+                    // Soft and stocked: include cost & capped bonus only if profitable.
+                    const int64_t marginal_bonus_q16 =
+                        soft_input_marginal_bonus_q16(type, required_q16);
+                    const int64_t marginal_revenue = mul_div_sat(
+                        revenue, marginal_bonus_q16,
+                        Q16_ONE, _saturation_count);
+                    if (marginal_revenue > best_unit_cost) {
+                        restart_input_unit_cost = saturating_add(
+                            restart_input_unit_cost, best_unit_cost,
+                            _saturation_count);
+                        soft_bonus_sum_q16 = saturating_add(
+                            soft_bonus_sum_q16, marginal_bonus_q16,
+                            _saturation_count);
+                    }
                 }
             }
+            const int64_t soft_coverage_scale_q16 =
+                clamp_soft_productivity_bonus_q16(soft_bonus_sum_q16);
             // Production clamps a resource-limited group to its capacity or
             // safe-harvest budget, so restart needs one building's worth, not
             // the whole group: 35 hunting camps built in a good decade need
@@ -143,36 +148,35 @@
                 (_merchant_credit_runtime_mode.get() != 0 &&
                  group.merchant_debt_delinquent_cycles == 0 &&
                  credit_needed <= cell_credit_remaining);
-            // Owner-operated buildings cannot restart without local labour that
-            // can refill the canonical owner signature. SUSPENDED_LOSS sheds
-            // owners into unemployment, so an emptied signature alone must not
-            // block restart when the unemployed pool (or same profession) still
-            // has people. Ledger population commands apply after this plan
-            // stage; early-apply due population adjusts before planning so the
-            // hireable check and tests that drain labour stay coherent.
-            bool owner_cohort_live = owner_slot >= 0 &&
-                owner_slot < static_cast<int32_t>(
-                    population_store().population.size()) &&
-                population_store().population[owner_slot] > 0;
-            int64_t hireable_owner_labor = 0;
-            if (!owner_cohort_live && type.owner_slots_per_building > 0) {
+            const bool vacancy_expired = group.filled_owner < group.count &&
+                group.severe_loss_cycles >= _building_severe_loss_cycles.get();
+            // Released owners can return from unemployment or another
+            // profession. An expired vacancy needs at least one candidate
+            // per building. Unemployed cohorts cannot take a new seat when
+            // mobility is disabled, though existing jobs can still transfer.
+            const int64_t owners_needed = type.owner_slots_per_building <= 0 ? 0
+                : (vacancy_expired ? group.count : 1);
+            int64_t hireable_owner_labor = owner_slot >= 0
+                ? std::max<int64_t>(0, population_store().population[owner_slot]) : 0;
+            if (hireable_owner_labor < owners_needed) {
                 population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
-                    if (is_merchant_slot(slot)) return;
+                    if (hireable_owner_labor >= owners_needed ||
+                        slot == owner_slot || is_merchant_slot(slot)) return;
                     const uint32_t sig = population_store().signature_id[slot];
                     if (sig >= _signatures.size()) return;
-                    // Profitable recovery may draw cross-profession labour via
-                    // the next employment pass (same path as survival-food
-                    // restarts). Counting only unemployed / same-profession
-                    // workers left flint quarries locked when every local adult
-                    // was pinned on gathering after the unemployed pool cleared.
+                    const int32_t profession = _signatures[sig].profession_id;
+                    if (vacancy_expired &&
+                        (profession_is_state_service_only(profession) ||
+                         (profession == _unemployed_profession_id &&
+                          _employment_mobility_daily_q16.get() <= 0)))
+                        return;
                     hireable_owner_labor = saturating_add(
                         hireable_owner_labor,
                         std::max<int64_t>(0, population_store().population[slot]),
                         _saturation_count);
                 });
             }
-            const bool owner_available = type.owner_slots_per_building <= 0 ||
-                owner_cohort_live || hireable_owner_labor > 0;
+            const bool owner_available = hireable_owner_labor >= owners_needed;
             const bool executable = owner_available && physical_inputs_available &&
                 physical_resources_available && finance_available;
             // Counterfactual restart margin must match the executable soft path:
@@ -180,7 +184,7 @@
             int64_t recovery_profit_margin = expected_profit_margin;
             int64_t recovery_margin_denominator = std::max<int64_t>(
                 MONEY_SCALE, operating);
-            if (soft_coverage_scale_q16 < Q16_ONE ||
+            if (soft_coverage_scale_q16 != Q16_ONE ||
                 restart_input_unit_cost != input_cost) {
                 const int64_t recovery_revenue = mul_div_sat(
                     revenue, soft_coverage_scale_q16, Q16_ONE, _saturation_count);
@@ -254,20 +258,16 @@
                 _saturation_count = saturating_add(_saturation_count, quote_sat,
                     _saturation_count);
             }
-            if (group_index < static_cast<int32_t>(
-                    _building_recovery_liquidation_eligible.size())) {
-                _building_recovery_liquidation_eligible[group_index] =
-                    executable &&
-                    recovery_profit_margin < _building_restart_margin_q16.get();
-            }
             // Recovery must be able to bootstrap an empty owner roster. The
             // employment pass only advertises vacancies for ACTIVE groups, so
             // requiring an already seated owner here creates a circular gate.
-            // All buildings use the same current-price cash + owner-retained
-            // income test; survival goods receive no special profitability
-            // exemption.
             const bool viable = executable &&
                 recovery_profit_margin >= _building_restart_margin_q16.get();
+            if (group_index < static_cast<int32_t>(
+                    _building_recovery_liquidation_eligible.size())) {
+                _building_recovery_liquidation_eligible[group_index] =
+                    !viable && (vacancy_expired || executable);
+            }
             if (viable) {
                 group.pending_operating_state = 0;
                 group.severe_loss_cycles = 0;
@@ -280,6 +280,5 @@
                     cell_credit_remaining -= credit_needed;
                 }
                 ++_recovery_approved;
-                ++_recovery_restarted;
             }
         }

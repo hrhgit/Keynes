@@ -39,10 +39,51 @@ func _init() -> void:
 	binding.detach()
 	_expect("scene destruction permits idempotent detach", true)
 	clock.free()
+	_test_economy_calendar_display_hold()
 	if DisplayServer.get_name() == "headless":
 		_test_fast_headless_sessions()
 	print("runtime clock binding: %d checks, %d failures" % [checks, failures])
 	quit(0 if failures == 0 else 1)
+
+func _test_economy_calendar_display_hold() -> void:
+	var clock := WorldClock.new()
+	clock.speed_multiplier = 1.0
+	clock.set_native_climate_calendar(true)
+	var admitted: Array[int] = []
+	clock.bind_runtime_calendar(func(day: int) -> int:
+		admitted.append(day)
+		return day)
+	clock.publish_runtime_date(100)
+	_expect("calendar starts at the published day", clock.economy_limited_display_day(101) == 101)
+	_expect("an absent economy publication cannot trip the hold",
+		not clock.set_economy_settled_day(-1) and not clock.is_economy_gate_blocked())
+	var before_hold := clock.export_state()
+	_expect("the first over-limit heartbeat does not hold the display",
+		not clock.set_economy_settled_day(20) and not clock.is_economy_gate_blocked())
+	_expect("the second over-limit heartbeat holds only the display",
+		clock.set_economy_settled_day(20) and clock.is_economy_gate_blocked()
+		and clock.export_state() == before_hold)
+	clock.publish_runtime_date(102)
+	clock._process_runtime_calendar(1.0)
+	_expect("hold preserves the player date while publication, save and admission advance",
+		clock.economy_limited_display_day(102) == 101 and clock.day_index() == 103
+		and int(clock.export_state().last_day) == 103 and admitted.size() == 1)
+	_expect("catch-up unholds the display without another simulation commit",
+		clock.set_economy_settled_day(81) and clock.economy_limited_display_day(102) == 102
+		and clock.day_index() == 103)
+	clock.publish_runtime_date(161)
+	clock.economy_limited_display_day(161)
+	clock.set_economy_settled_day(81)
+	clock.set_economy_settled_day(81)
+	clock.set_economy_gate_force_open(true)
+	_expect("GM force open bypasses the display hold",
+		not clock.is_economy_gate_blocked() and clock.economy_limited_display_day(162) == 162)
+	clock.set_economy_gate_force_open(false)
+	var saved := clock.export_state()
+	_expect("restore clears the old display hold",
+		bool(clock.restore_state(saved).ok) and not clock.is_economy_gate_blocked()
+		and clock.economy_limited_display_day(161) == 161 and clock.day_index() == 162)
+	clock.free()
 
 func _test_fast_headless_sessions() -> void:
 	var original := OS.low_processor_usage_mode_sleep_usec

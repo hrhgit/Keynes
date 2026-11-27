@@ -219,6 +219,9 @@ func ui_worker_day() -> int:
 func received_worker_day() -> int:
 	return _runtime_commit_day
 
+func published_economy_settled_day() -> int:
+	return int(_runtime_last_commit.get("economy_settled_day", -1))
+
 func presented_worker_day() -> int:
 	return _presentation.presented_worker_day()
 

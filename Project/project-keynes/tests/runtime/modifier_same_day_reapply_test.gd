@@ -48,6 +48,7 @@ func _create_host() -> WorldRuntimeHost:
 func _background_config() -> NewGameConfig:
 	var config := super._background_config()
 	config.country.foreign_count = 0
+	config.country.starting_tax_rate_bp = 0
 	config.base.map_width = 40
 	config.base.map_height = 28
 	return config

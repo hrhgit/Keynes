@@ -77,6 +77,9 @@ func _consume_runtime_commit_if_ready(host, report_override: Dictionary = {}) ->
 		host._runtime_commit_day = commit_day
 		host.map_fields_received.emit(commit_day)
 		if commit_day <= old_day or int(commit.get("from_day", -1)) == commit_day:
+			# Opening frames can publish the economy day for an unchanged calendar day.
+			if commit.has("economy_settled_day"):
+				host._runtime_last_commit["economy_settled_day"] = commit.economy_settled_day
 			host._generator.get_data_core_world_ext().finish_runtime_display_frame()
 			host._publish_player_confirmation(host._runtime_control_state())
 			return
@@ -139,6 +142,7 @@ func _consume_runtime_commit_if_ready(host, report_override: Dictionary = {}) ->
 	if ideology != null:
 		ideology.drain_receipts()
 	host.simulation_committed.emit(from_day, host._runtime_commit_day, host._runtime_commit_generation)
+	host._presentation.sync_settlement_labels(false)
 	ext.finish_runtime_display_frame()
 	if not whole_graph:
 		# This path publishes the installed map directly, without a queued worker texture.

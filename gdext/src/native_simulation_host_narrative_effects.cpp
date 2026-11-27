@@ -23,7 +23,9 @@ int64_t share(int64_t total, int64_t basis_points) {
 
 int64_t limited_quantity(const NarrativeEffect &effect, int64_t available) {
     const int64_t maximum = std::max<int64_t>(0, available);
-    const int64_t requested = effect.value > 0 ? effect.value : share(maximum, effect.ratio);
+    int64_t requested = effect.value > 0 ? effect.value : share(maximum, effect.ratio);
+    if (requested == 0 && effect.value == 0 && effect.ratio > 0 && maximum > 0)
+        requested = 1;
     return std::clamp<int64_t>(requested, 0, maximum);
 }
 
@@ -188,9 +190,13 @@ Dictionary NativeSimulationHost::resolve_narrative_choice(int64_t day, const Dic
         case NarrativeEffect::MARKET_ADD_STOCK:
         case NarrativeEffect::MARKET_REMOVE_STOCK: {
             const auto it = std::find(catalog.good_ids.begin(), catalog.good_ids.end(), effect.key);
-            if (cell < 0 || it == catalog.good_ids.end()) break;
+            if (cell < 0 || local.market_id < 0 || it == catalog.good_ids.end()) break;
+            if ((effect.kind == NarrativeEffect::MARKET_ADD_STOCK ||
+                 effect.kind == NarrativeEffect::COUNTRY_GOOD_TO_MARKET) &&
+                !local.has_local_merchant)
+                break;
             EconomyApi::EffectCommand command;
-            command.i32_0 = cell;
+            command.i32_0 = local.market_id;
             command.i32_1 = static_cast<int32_t>(it - catalog.good_ids.begin());
             if (effect.kind == NarrativeEffect::MARKET_ADD_STOCK) {
                 command.opcode = EconomyApi::COMMAND_ADD_STOCK;
@@ -259,9 +265,21 @@ Dictionary NativeSimulationHost::resolve_narrative_choice(int64_t day, const Dic
         const int32_t option = record.get("chosen_option_index", -1);
         if (option >= 0 && option < actions.size()) {
             const bool success = int32_t(record.get("rolled_outcome_index", 1)) == 0;
-            narrative.finish_unrest_choice(economy_api::settle_narrative_unrest(
-                *_economy_production_runtime, meta.get("cell", -1),
-                meta.get("profession", -1), actions[option], success), effect_day);
+            const int32_t cell = meta.get("cell", -1);
+            const int32_t profession = meta.get("profession", -1);
+            const bool applied = economy_api::settle_narrative_unrest(
+                *_economy_production_runtime, cell, profession, actions[option], success);
+            bool independence_pending = false;
+            if (applied) {
+                std::vector<NarrativeUnrestRow> rows;
+                if (economy_api::narrative_unrest_rows(*_economy_production_runtime, cell, rows)) {
+                    independence_pending = std::any_of(rows.begin(), rows.end(),
+                        [profession](const auto &row) {
+                            return row.profession == profession && (row.flags & 8) != 0;
+                        });
+                }
+            }
+            narrative.finish_unrest_choice(applied, independence_pending, effect_day);
         }
     }
     return narrative.complete_choice(std::move(result));

@@ -408,13 +408,11 @@ func _save(slot_id: String, reason: String) -> Dictionary:
 	}
 	# provider 可能返回含运行时 PackedArray 的 Dictionary；在恢复时钟之前
 	# 序列化成私有字节，后台任务不能再读 Node、facade 或活跃的世界容器。
-	var frozen_sections := {}
-	for section_id in collected.sections:
-		var section = collected.sections[section_id]
-		frozen_sections[section_id] = section if section is PackedByteArray else var_to_bytes(section)
+	var frozen_sections: Dictionary = SaveSections.freeze_sections(collected.sections)
 	var result: Dictionary
 	if not background_write:
 		result = _repository.write_slot(slot_id, header, frozen_sections)
+		frozen_sections.clear()
 		_restore_clock_mode(was_paused, previous_speed, generation)
 	else:
 		# 捕获已经完成；恢复模拟后，压缩/SHA/回读验证/原子替换仍走原仓库路径。

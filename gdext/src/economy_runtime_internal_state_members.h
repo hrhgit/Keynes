@@ -163,6 +163,8 @@
     // financially executable but still economically unviable.
     std::vector<int64_t> _building_recovery_probe_capacity_q16;
     std::vector<uint8_t> _building_recovery_liquidation_eligible;
+    // Rows reopened at this epoch boundary, before they have had a chance to hire.
+    std::vector<int32_t> _building_reopened_groups;
 #include "economy_runtime_internal_state_members_building_and_market.h"
 #include "economy_runtime_internal_state_members_configuration_and_environment.h"
 #include "economy_runtime_internal_state_members_command_and_publication.h"

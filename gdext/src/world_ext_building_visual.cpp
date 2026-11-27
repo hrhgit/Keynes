@@ -1,6 +1,7 @@
 #include "world_ext.h"
 #include "building_visual_cache.h"
 #include "building_visual_instance_selection.h"
+#include "building_visual_layout.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>

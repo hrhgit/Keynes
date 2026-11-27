@@ -174,6 +174,8 @@ func sync_time_ui(host) -> void:
 		var ui_day: int = host._runtime_host.ui_worker_day()
 		if ui_day >= 0:
 			day = ui_day
+	if clock is WorldClock:
+		day = clock.economy_limited_display_day(day)
 	var date: Dictionary = clock.calendar_date_for_day(day)
 	host._ui_manager.update_time_state(clock.year_index_for_day(day), int(date.month),
 		int(date.day_of_month), clock.paused or not host.player_confirmation_reason().is_empty(),

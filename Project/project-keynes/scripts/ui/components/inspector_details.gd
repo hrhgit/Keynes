@@ -210,6 +210,17 @@ static func set_compact_detail_mode(panel, compact: bool) -> void:
 	panel._sync_split_layout()
 
 
+static func set_list_wing_enabled(panel, enabled: bool) -> void:
+	if panel._list_wing_enabled == enabled:
+		panel._sync_split_layout()
+		return
+	panel._list_wing_enabled = enabled
+	if panel._has_list_wing and not panel._model.is_empty():
+		panel._render_content(false)
+	else:
+		panel._sync_split_layout()
+
+
 ## 建筑页签里的「营造新建筑」纸笺。页签每日重建时只刷新这句话，报价留给
 ## 真正打开营造窗口的那一次请求。
 static func _build_construction_entry(panel, host: Control, entry_data: Dictionary) -> void:
@@ -259,6 +270,7 @@ static func _open_building_workspace(panel) -> void:
 static func _show_detail_shell(panel) -> void:
 	panel._detail_shell.visible = true
 	panel._sync_split_layout()
+	panel._list_wing_notified = has_list_wing(panel)
 	panel.detail_visibility_changed.emit(true)
 
 
@@ -276,6 +288,7 @@ static func _on_detail_closed(panel) -> void:
 	panel._detail_shell.visible = false
 	panel._set_family_chrome(false)
 	panel._sync_split_layout()
+	panel._list_wing_notified = has_list_wing(panel)
 	panel._inspector_root.visible = true
 	if restore_family_focus and panel._family_list != null:
 		panel._family_list.focus_selected()
@@ -311,14 +324,38 @@ static func _sync_split_layout(panel) -> void:
 		split.clip_contents = not panel._family_chrome_active
 	var inspecting: bool = panel._detail_shell.visible
 	panel._detail_shell.clip_contents = not panel._family_chrome_active
+	var wing_visible: bool = panel._list_shell != null and panel._has_list_wing \
+		and panel._list_wing_enabled and not inspecting \
+		and panel._directory_available
+	if panel._list_shell != null:
+		panel._list_shell.visible = wing_visible
+		panel._list_shell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		panel._list_shell.size_flags_stretch_ratio = 1.0
+	var has_left: bool = inspecting or wing_visible
 	# 家族栏始终保留右侧目录；普通对象详情仍沿用窄窗独占策略。
 	var family_open: bool = panel._family_workspace != null and panel._family_workspace.visible
 	var can_split: bool = family_open or (not panel._compact_detail \
-		and panel.size.x >= panel.SPLIT_DETAIL_MIN_WIDTH)
+		and (panel.size.x >= panel.SPLIT_DETAIL_MIN_WIDTH or wing_visible))
 	var show_dossier: bool = (not inspecting or can_split) and panel._directory_available
 	panel._inspector_root.visible = show_dossier
-	panel._inspector_root.size_flags_horizontal = Control.SIZE_FILL if inspecting \
+	panel._inspector_root.size_flags_horizontal = Control.SIZE_FILL if has_left \
 		else Control.SIZE_EXPAND_FILL
-	panel._inspector_root.size_flags_stretch_ratio = 0.0 if inspecting else 1.0
+	panel._inspector_root.size_flags_stretch_ratio = 0.0 if has_left else 1.0
 	panel._detail_shell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel._detail_shell.size_flags_stretch_ratio = 1.0
+
+
+static func has_list_wing(panel) -> bool:
+	return panel._has_list_wing and not panel.detail_open() and panel._directory_available
+
+
+static func list_wing_open(panel) -> bool:
+	return panel._list_shell != null and panel._list_shell.visible
+
+
+static func _notify_list_wing_changed(panel) -> void:
+	var active := has_list_wing(panel)
+	if active == panel._list_wing_notified:
+		return
+	panel._list_wing_notified = active
+	panel.list_wing_visibility_changed.emit(active)

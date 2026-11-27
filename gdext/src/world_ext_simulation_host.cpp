@@ -398,6 +398,8 @@ Dictionary DCWorldExt::poll_runtime_commit(int64_t after_generation, bool take_d
     out["state_hash"] = static_cast<int64_t>(h.state_hash);
     out["command_receipt_count"] = static_cast<int>(h.command_receipt_count);
     if (commit.day_tail) {
+        if (commit.day_tail->economy_settled_day >= 0)
+            out["economy_settled_day"] = commit.day_tail->economy_settled_day;
         out["resource_recovery_cells"] = commit.day_tail->resource_recovery_cells;
         out["species_writeback"] = !commit.day_tail->occupancy.empty();
         out["species_diffused_cells"] = commit.day_tail->species_diffused_cells;

@@ -171,6 +171,11 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
             _recovery_approved,
             task_result.recovery_approved,
             _saturation_count);
+        // Every approval in this plan queues a restart at the next boundary.
+        _recovery_restarted = saturating_add(
+            _recovery_restarted,
+            task_result.recovery_approved,
+            _saturation_count);
         _loss_suspended_building_groups = saturating_add(
             _loss_suspended_building_groups,
             task_result.loss_suspended_building_groups,

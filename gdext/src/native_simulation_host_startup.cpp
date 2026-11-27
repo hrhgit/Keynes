@@ -754,6 +754,8 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         }
         tail->country.snapshot = std::move(country);
         tail->ideology = latest_ideology_read_view();
+        if (_economy_production_runtime && !economy_api::epoch_active(*_economy_production_runtime))
+            tail->economy_settled_day = economy_api::newest_settlement_day(*_economy_production_runtime);
         capture_modifier_display(*tail, nullptr);
         commit->day_tail = std::move(tail);
         std::shared_ptr<const RuntimeCommit> opening = std::move(commit);

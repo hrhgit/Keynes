@@ -54,6 +54,8 @@
 
         auto schedule_suspended_survival_restart = [&](BuildingGroupRef group) {
             if (group.operating_state != 1 || group.filled_owner <= 0) return;
+            if (group.filled_owner < group.count &&
+                group.severe_loss_cycles >= _building_severe_loss_cycles.get()) return;
             if (group.type_id < 0 || group.type_id >= static_cast<int32_t>(
                     _building_types.size())) return;
             const BuildingType &type = _building_types[group.type_id];

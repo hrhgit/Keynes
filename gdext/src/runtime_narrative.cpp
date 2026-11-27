@@ -36,8 +36,9 @@ bool contains(const std::vector<int32_t> &cells, int32_t cell) {
 }
 } // namespace
 
-bool RuntimeNarrative::configure(const Dictionary &packet, const Dictionary &archive) {
-    const String error = checkpoint_error(archive);
+bool RuntimeNarrative::configure(const Dictionary &packet, const Dictionary &archive,
+                                 int32_t world_cell_count) {
+    const String error = checkpoint_error(archive, world_cell_count);
     if (!error.is_empty()) {
         UtilityFunctions::push_error("narrative_archive_invalid: ", error);
         return false;

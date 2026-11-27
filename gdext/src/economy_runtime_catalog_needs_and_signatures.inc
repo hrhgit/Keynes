@@ -217,7 +217,7 @@
                 std::clamp<int64_t>(pow_q16(
                     HOUSEHOLD_WEALTH_ANCHORS_Q16[anchor],
                     _variants[v].wealth_elasticity_q16, _saturation_count),
-                    0, std::numeric_limits<int32_t>::max()));
+                    Q16_ONE / 16, Q16_ONE * 64));
         }
     }
     _components.resize(component_goods.size());

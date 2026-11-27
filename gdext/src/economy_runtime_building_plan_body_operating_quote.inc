@@ -76,7 +76,7 @@
                 const int64_t physical = effective_production_input_quantity(
                     group.cell, candidate.good_id,
                     physical_numerator / candidate.efficiency_q16,
-                    _saturation_count);
+                    _saturation_count, group.output_factor_q16);
                 const int64_t candidate_cost = mul_div_sat(
                     physical,
                     market_store().price[market_store().index(market, candidate.good_id)],
@@ -387,8 +387,14 @@
         group.sample_unit_input_cost = input_cost;
         group.sample_unit_maintenance_cost = maintenance_cost;
         group.last_margin_gap_q16 = static_cast<int32_t>(margin_gap);
+        const bool owner_shortfall = group.count > 0 &&
+            group.filled_owner < group.count;
         bool suspended_now = false;
-        if (type.kind != 2 && group.operating_state == 0) {
+        // The previous period of a just-reopened group was spent suspended.
+        // Let this period's employment run before counting another vacancy.
+        if (type.kind != 2 && group.operating_state == 0 &&
+            !std::binary_search(_building_reopened_groups.begin(),
+                                _building_reopened_groups.end(), group_index)) {
             // 停业沿用实际经营收支；业主生活成本属于岗位机会评价。
             // 不可把单座单日生活报价加到整组已结算的成本中。
             const bool settled_production = group.last_output > 0 ||
@@ -463,10 +469,10 @@
             const bool realized_severe_loss = settled_production &&
                 !positive_self_employment &&
                 realized_after_tax_margin <= _building_severe_loss_threshold_q16.get();
-            if (realized_severe_loss) {
-                // Count consecutive observed owner losses. A single settled loss
-                // must remain visible to employment and audit while the configured
-                // hysteresis threshold decides when the group is suspended.
+            if (realized_severe_loss || owner_shortfall) {
+                // Count consecutive severe losses or owner-shortfall reviews.
+                // A single observation remains visible to employment and audit
+                // while the configured hysteresis threshold decides suspension.
                 const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
                 group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
                     threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
@@ -477,8 +483,9 @@
                     invalidate_cell_monetary_units(group.cell);
                 }
             } else {
-                // Zero settlement covers labor, input, resource and financing
-                // blockages. None is a realized loss observation.
+                // A staffed building with no settled loss may simply be blocked
+                // by labor, inputs, resources or working capital. None of those
+                // conditions advances the lifecycle counter.
                 group.severe_loss_cycles = 0;
             }
             group.pending_operating_state = 255;
@@ -489,4 +496,26 @@
                 suspended_now = true;
                 invalidate_cell_monetary_units(group.cell);
             }
+        }
+        // Service buildings do not participate in producer profit/loss
+        // classification, but an owner-shortfall service group still has a
+        // finite lifecycle and must be eligible for the same liquidation path.
+        if (type.kind == 2 && group.operating_state == 0 && owner_shortfall) {
+            const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
+            group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
+                threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
+            if (group.severe_loss_cycles >= threshold) {
+                group.operating_state = 1;
+                group.recovery_cycles = 0;
+                group.pending_operating_state = 255;
+                suspended_now = true;
+                invalidate_cell_monetary_units(group.cell);
+            }
+        }
+        if (type.kind == 2 && group.operating_state == 1 &&
+            group.filled_owner < group.count &&
+            group.severe_loss_cycles >= _building_severe_loss_cycles.get() &&
+            group_index < static_cast<int32_t>(
+                _building_recovery_liquidation_eligible.size())) {
+            _building_recovery_liquidation_eligible[group_index] = 1;
         }

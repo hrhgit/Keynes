@@ -280,23 +280,9 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
                     !building_available(cell, group.type_id, true)) continue;
                 const BuildingType &type = _building_types[group.type_id];
                 int64_t group_floor_q16 = 0;
-                // The owner floor is expressed in full-recipe output.  When a
-                // soft input is absent, production deliberately keeps only the
-                // bare efficiency (1 - required), so the planned activity must
-                // be lifted to preserve the same survival quantity.  Without
-                // this conversion a missing tool silently halves food output
-                // and can turn a temporary shortage into starvation.
-                int64_t bare_efficiency_q16 = Q16_ONE;
-                for (int32_t i = 0; i < type.input_count; ++i) {
-                    const ProductionInput &input = _building_inputs[
-                        type.input_begin + i];
-                    const int64_t required = std::clamp<int64_t>(
-                        input.required_q16, 0, Q16_ONE);
-                    if (required > 0 && required < Q16_ONE)
-                        bare_efficiency_q16 = std::min<int64_t>(
-                            bare_efficiency_q16, Q16_ONE - required);
-                }
-                if (bare_efficiency_q16 <= 0) bare_efficiency_q16 = 1;
+                // Soft inputs are capped productivity bonuses on top of 100%
+                // bare output, so missing soft tools never cut below full-recipe
+                // survival output.
                 for (int32_t i = 0; i < type.output_count; ++i) {
                     const int32_t good = _building_outputs[type.output_begin + i].good_id;
                     if (_survival_food_good_mask[good] != 0) {
@@ -307,14 +293,6 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
                         group_floor_q16 = std::max(
                             group_floor_q16, owner_clothing_floor_q16[owner]);
                 }
-                if (group_floor_q16 > 0 && bare_efficiency_q16 < Q16_ONE)
-                    group_floor_q16 = std::clamp<int64_t>(
-                        saturating_add(
-                            saturating_mul(group_floor_q16, Q16_ONE,
-                                _saturation_count),
-                            bare_efficiency_q16 - 1, _saturation_count) /
-                            bare_efficiency_q16,
-                        0, Q16_ONE);
                 _building_survival_utilization_floor_q16[g] = group_floor_q16;
             }
         }

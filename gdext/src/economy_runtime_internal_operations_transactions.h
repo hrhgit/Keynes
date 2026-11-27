@@ -226,6 +226,24 @@
         int64_t employee_fillability_q16, int64_t &sat) const;
     int64_t projected_employee_tax_retention_q16(
         BuildingGroupConstRef group, int64_t &sat) const;
+    // 建筑产出修正按 `1 + ΣΔ` 加法池化，只保留 0.10x 下限，不设运行时上限；
+    // 倍率由数据侧加成总和决定，数值边界由 Q16/int32（约 32767x）兜底。
+    static constexpr int32_t OUTPUT_FACTOR_MIN_Q16 = 6554;          // 0.10x
+    static constexpr int32_t SOFT_PRODUCTIVITY_BONUS_CAP_Q16 = 26214; // +40%
+    static constexpr int32_t THROUGHPUT_INPUT_COUPLING_Q16 = 39322; // 0.60
+    static constexpr int32_t PRODUCTION_INPUT_FACTOR_MIN_Q16 = 52429; // 0.80x
+
+    static int64_t clamp_soft_productivity_bonus_q16(int64_t bonus_sum_q16);
+    int64_t soft_input_marginal_bonus_q16(const BuildingType &type,
+                                          int64_t required_q16) const;
+    static int64_t throughput_input_scale_q16(int32_t output_factor_q16,
+                                              int64_t &sat);
+    static int64_t interpolate_household_wealth_lut(
+        int64_t wealth_ratio_q16,
+        const std::array<int32_t, HOUSEHOLD_WEALTH_ANCHOR_COUNT> &lut,
+        int64_t &sat);
+    int32_t resolve_target_building_output_factor_q16(
+        int32_t cell, int32_t type_id, int32_t owner_signature_id);
     int64_t effective_building_output_quantity(
         BuildingGroupConstRef group, int32_t good_id, int64_t base_quantity,
         int64_t utilization_q16, int64_t building_days,
@@ -241,7 +259,7 @@
         int64_t building_days, int64_t &sat);
     int64_t effective_production_input_quantity(
         int32_t cell, int32_t good_id, int64_t base_quantity,
-        int64_t &sat) const;
+        int64_t &sat, int32_t output_factor_q16 = Q16_ONE) const;
     int64_t effective_resource_use_quantity(
         int32_t cell, int32_t resource_id, int64_t base_quantity,
         int64_t &sat) const;

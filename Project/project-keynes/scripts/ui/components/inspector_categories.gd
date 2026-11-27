@@ -2,17 +2,33 @@ extends RefCounted
 
 ## Builds the notes, metrics, and layout of each inspector category.
 
+const InspectorListWing = preload("res://scripts/ui/components/inspector_list_wing.gd")
+
 
 static func _build_category_content(panel, data: Dictionary) -> void:
 	panel._tax_context = data.get("tax_context", {})
-	var root_data := data.duplicate(false)
+	var split := InspectorListWing.split_category(panel._current_tab, data)
+	panel._has_list_wing = bool(split.get("has_left", false))
+	var use_wing: bool = panel._has_list_wing and panel._list_wing_enabled \
+		and panel._list_content != null
+	var right_source: Dictionary = split.get("right", data) if use_wing else data
+	var root_data := right_source.duplicate(false)
 	root_data.erase("sections")
 	root_data.erase("tax_context")
 	panel._build_category_block(panel._content_box, root_data)
-	for raw_section in data.get("sections", []):
+	for raw_section in right_source.get("sections", []):
 		var section: Dictionary = raw_section
-		var body: VBoxContainer = panel._add_collapsible_section(section)
+		var body: VBoxContainer = panel._add_collapsible_section(section, panel._content_box)
 		panel._build_category_block(body, section)
+	if use_wing:
+		var left_source: Dictionary = split.get("left", {})
+		var left_root := left_source.duplicate(false)
+		left_root.erase("sections")
+		panel._build_category_block(panel._list_content, left_root)
+		for raw_section in left_source.get("sections", []):
+			var section: Dictionary = raw_section
+			var body: VBoxContainer = panel._add_collapsible_section(section, panel._list_content)
+			panel._build_category_block(body, section)
 	panel._build_page_tax_section(panel._tax_context)
 
 
@@ -69,7 +85,7 @@ static func _build_category_block(panel, host: Control, data: Dictionary) -> voi
 		row.set_badges(badges)
 		panel._badge_row = row
 
-	if data.has("building_rows") and data.has("construction_entry"):
+	if data.has("construction_entry"):
 		panel._build_construction_entry(host, data.get("construction_entry", {}))
 
 	# 军事页签：一整张撕纸台账。驻军条 / 部队 / 训练 / 三行官营建筑都由它自绘，

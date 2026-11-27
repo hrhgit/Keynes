@@ -208,8 +208,7 @@ int64_t NativeEconomyRuntime::production_reserve_shortfall_cell(
 void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
     if (g < 0 || g >= static_cast<int32_t>(building_count())) return;
     // Read-only prefilter: most reviewed groups are live, non-liquidatable or
-    // debt-free and only need a conditional diagnostic reset. Borrowing every
-    // mutable column for them dominated this phase.
+    // otherwise ineligible and only need a conditional diagnostic reset.
     {
         const auto view = building_view(static_cast<size_t>(g));
         if (view.count <= 0 || view.operating_state != 1 ||
@@ -227,14 +226,38 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
             building_at(static_cast<size_t>(g)).recovery_failed_reviews = 0;
         return;
     }
-    // Recovery liquidation is debt recovery. An owner-financed building with
-    // no merchant principal/premium remains addressable while suspended so
-    // owner release and a later restart can inspect the same group.
-    if (building_view(static_cast<size_t>(g)).merchant_debt_principal <= 0 &&
-        building_view(static_cast<size_t>(g)).merchant_debt_premium <= 0) {
-        if (building_view(static_cast<size_t>(g)).recovery_failed_reviews != 0)
-            building_at(static_cast<size_t>(g)).recovery_failed_reviews = 0;
+    // Collapse v1 (2026-11-26): a suspended lot no longer has to carry merchant
+    // debt to be retired. Bad debt is proportional to the retired share, so a
+    // debt-free group writes off nothing but still loses capacity.
+    // Per-cell throttle: only the lowest-index suspended and liquidatable
+    // group may retire. The eligibility lanes are cleared at epoch opening.
+    // A group retired in this review keeps its turn while its count is zero.
+    constexpr uint8_t liquidated_this_epoch = 2;
+    const int32_t collapse_cell = building_view(static_cast<size_t>(g)).cell;
+    // Fail closed (2026-11-26 review). This throttle is the only guarantee that
+    // one cell retires at most one group per period, so an unreadable cell range
+    // must refuse the retirement instead of skipping the check. Reading "no
+    // earlier occupant" out of an empty or inconsistent offset table is exactly
+    // the fail-open this guard exists to prevent.
+    if (collapse_cell < 0 || collapse_cell + 1 >= static_cast<int32_t>(
+            _building_cell_offsets.size())) {
         return;
+    }
+    const int32_t collapse_begin = _building_cell_offsets[collapse_cell];
+    const int32_t collapse_end = _building_cell_offsets[collapse_cell + 1];
+    if (collapse_begin < 0 || collapse_begin > g || collapse_end <= g ||
+        collapse_end > static_cast<int32_t>(building_count()) ||
+        building_view(static_cast<size_t>(collapse_begin)).cell != collapse_cell ||
+        building_view(static_cast<size_t>(collapse_end - 1)).cell != collapse_cell) {
+        return;
+    }
+    for (int32_t prev = collapse_begin; prev < g; ++prev) {
+        if (prev >= static_cast<int32_t>(
+                _building_recovery_liquidation_eligible.size()) ||
+            _building_recovery_liquidation_eligible[prev] == 0) continue;
+        const auto prev_view = building_view(static_cast<size_t>(prev));
+        if (_building_recovery_liquidation_eligible[prev] == liquidated_this_epoch ||
+            (prev_view.count > 0 && prev_view.operating_state == 1)) return;
     }
     auto group = building_at(static_cast<size_t>(g));
     const BuildingType &type = _building_types[group.type_id];
@@ -265,8 +288,10 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
             saturating_add(std::max<int64_t>(0, group.last_sold),
                 unit_period_output - 1, _saturation_count) / unit_period_output)
         : 0;
+    const int64_t owner_shortfall = std::max<int64_t>(
+        0, group.count - std::max<int64_t>(0, group.filled_owner));
     const int64_t confirmed_excess = std::max<int64_t>(
-        0, group.count - supported_count);
+        std::max<int64_t>(0, group.count - supported_count), owner_shortfall);
     if (confirmed_excess <= 0) {
         group.recovery_failed_reviews = 0;
         return;
@@ -275,8 +300,14 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
         saturating_add(saturating_mul(group.count,
             _recovery_liquidation_max_share_q16.get(), _saturation_count),
             Q16_ONE - 1, _saturation_count) / Q16_ONE);
-    const int64_t retire_count = std::min(confirmed_excess, max_retire);
     const int64_t count_before = group.count;
+    // Collapse v2 (2026-11-26): the last building may collapse as well. A
+    // zero-count row stays in the store, the seats are released below and the
+    // prune pass retires its modifier identity, so no consumer ever sees a live
+    // lot of size zero.
+    const int64_t retire_count = std::min(confirmed_excess, max_retire);
+    if (retire_count <= 0) return;
+    _building_recovery_liquidation_eligible[g] = liquidated_this_epoch;
     const int64_t principal_bad = retire_count == count_before
         ? group.merchant_debt_principal
         : mul_div_sat(group.merchant_debt_principal,
@@ -297,6 +328,9 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
         0, group.merchant_debt_premium - premium_bad);
     _investment_employment_cells.push_back(group.cell);
     group.count -= retire_count;
+    const int64_t owner_capacity = saturating_mul(
+        group.count, type.owner_slots_per_building, _saturation_count);
+    group.filled_owner = std::min<int64_t>(group.filled_owner, owner_capacity);
     _building_handle_index_clean = false;
     if (group.count <= 0) {
         group.count = 0;
@@ -304,6 +338,11 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
         group.merchant_debt_premium = 0;
         group.merchant_debt_term_cycles_left = 0;
         group.merchant_debt_delinquent_cycles = 0;
+        // A collapsed lot has no roles left. For a surviving lot, employee
+        // seats continue describing the last completed employment period.
+        for (int32_t role = 0; role < type.employee_count; ++role)
+            _building_employee_filled.write_scalar(
+                group.employee_fill_begin + role, 0, market_mutation_sink());
         ++_recovery_fully_liquidated_groups;
     } else {
         _recovery_partially_liquidated_buildings = saturating_add(

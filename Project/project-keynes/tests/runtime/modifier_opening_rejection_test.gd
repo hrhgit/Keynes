@@ -19,13 +19,14 @@ func _run() -> void:
 func _reject_opening(bytes: PackedByteArray, inline_mode: bool) -> void:
 	var target := DCWorldExt.new()
 	target.create_entities(2)
+	var catalog: Dictionary = ModifierCatalog.load_default().compile_native_catalog()
+	_expect("target Modifier configures", target.configure_modifiers(catalog, 2).get("modifier_pod_ready", false))
 	var country := preload("res://scripts/country/country_facade.gd").new()
-	_expect("target Country configures", country.configure(target, 2, 7321).get("ok", false))
+	_expect("target Country configures",
+		country.configure(target, 2, 7321, null, {}, null, catalog).get("ok", false))
 	_expect("target Country bootstraps", country.bootstrap(PackedByteArray([0, 0])).get("ok", false))
 	_expect("target Country catalog captured", target.capture_country_pod_catalog().get("ok", false))
 	_expect("target Country snapshot captured", target.capture_country_runtime_snapshot().get("ok", false))
-	var catalog: Dictionary = ModifierCatalog.load_default().compile_native_catalog()
-	_expect("target Modifier configures", target.configure_modifiers(catalog, 2).get("modifier_pod_ready", false))
 	_expect("partial archive decodes", target.restore_runtime_bundle(bytes).get("ok", false))
 
 	# This archive has a committed D1, but no D1 Modifier. The full world demands

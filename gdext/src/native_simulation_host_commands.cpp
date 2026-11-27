@@ -530,6 +530,15 @@ void NativeSimulationHost::publish_day(
         capture_modifier_display(*_executor_day_tail, previous ? previous->day_tail.get() : nullptr);
         if (_economy_production_runtime)
             _executor_day_tail->frozen_tax = economy_api::frozen_tax_view(*_economy_production_runtime);
+        if (economy_worker_owns_execution()) {
+            // The Economy can still be in a settlement epoch when the day
+            // completes. Its working watermark is final only after that closes.
+            if (!economy_api::epoch_active(*_economy_production_runtime))
+                _executor_day_tail->economy_settled_day =
+                    economy_api::newest_settlement_day(*_economy_production_runtime);
+            else if (previous && previous->day_tail)
+                _executor_day_tail->economy_settled_day = previous->day_tail->economy_settled_day;
+        }
         auto climate = std::make_shared<RuntimeClimateSnapshot>();
         capture_climate_display(*climate);
         climate->generation = _climate_writeback_sequence.fetch_add(1, std::memory_order_relaxed) + 1;

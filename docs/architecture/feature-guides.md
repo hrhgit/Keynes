@@ -205,6 +205,12 @@ A12（叠加验证：真实地图河心落谷率，当前实测 0.83 未达 0.95
 验证入口为 `tests/building/building_inspector_state_test.gd`、`tests/ui/ui_scene_structure_test.gd`，
 以及 `tests/qa/cell_inspector_screenshot_qa.gd` 的建筑详情截图。
 
+经营期的严重亏损计数使用已结算的实际亏损和业主空缺。有业主但缺周转金、原料或资源时，
+单纯的经营阻塞不增加计数。已到空置阈值的停业组要有足够的候选业主、原料和周转资金，
+并通过原有利润门槛才可尝试复工。不能进入业主席位的人口不计入候选。复工后按实际到岗
+人数检查新经营期的空置。验证入口为 `tests/building/building_runtime_test.gd`
+和 `tests/building/building_recovery_occupancy_test.gd`。
+
 营造目录逐项显示单栋报价的建材。国库供料、待市购量和市场缺口来自同一份报价。
 营造悬停卡先显示费用、工期与建材，产出、所需投入、岗位和可选增产使用目录结构化数据逐项显示。
 既有建筑详情展示目录中的单栋基础建材，实际下单以当前营造报价选定的建材及数量为准。
@@ -446,8 +452,12 @@ Country 账目并发布不可变读视图，再确认消费回执；确认会同
   100% 归还两个平面；水面材质重建后也放入当前绘制目标。渲染验证使用
   `tests/rendering/terrain_render_scale_test.gd`，检查图层顺序、缩放、平移和调整窗口。
 - 迷雾清晰度、天气表现、植被与点缀密度、水面、云影分别由各渲染层应用；
-  关闭云影仍保留天气云的风场输入。切档验证入口为
-  `tests/game/game_settings_service_test.gd` 和 `tests/rendering/cloud_weather_quality_test.gd`。
+  关闭云影仍保留天气云的风场输入。Web 端通过 `DCFeatureFlags.is_mobile_web()`
+  区分 PC 浏览器与移动浏览器：PC-Web 默认启用最高画质（`PK_WEB_PC_HIGH`、1024 地面材质、
+  全量植被层与桌面散布预算、建筑/军队/商队投影阴影、原生 HiDPI 上限 2.0× 及 UI 缩放补偿）
+  并开放完整自定义画质选项；移动浏览器维持低画质默认与 DPR=1。切档与平台分流验证入口为
+  `tests/game/game_settings_service_test.gd`、`tests/rendering/cloud_weather_quality_test.gd`
+  和 `tests/rendering/web_pc_quality_policy_test.gd`。
 - 每次天气发布编码一次逐格风图。天气表按地图行列重排，云影和天气云按格编号使用同一份
   字节。显示世界按地图、尺寸和发布时间交付这份数据。各贴图保留自己的过渡端点，云影
   在尺寸与字节相同时复用当前风纹理。单独预览可以直接从地图编码。
@@ -515,8 +525,10 @@ Replay 使用、不跨调用存活，诊断计数在 Plan 后一次汇入报告�
 - 军事兵种份额：玩家局部修改经 `MilitaryFacade.submit` 将稳定 id 解析为完整 `int_pairs` 后提交；原生 `config.set` 是整表替换。改动此链路时运行 `tests/ui/military_config_command_test.gd`，避免空命令或清除其他兵种配比。
 - 军事部队编成：地块军事页从格快照中的本国驻军 lots 形成 `army.create` 请求；PlayerController 复核本国领土与占领状态，GDScript 不直接改写驻军或部队。入口与请求契约见 `docs/ui/military-cell-tab.md`。
 
-- 军事部队视野：每日军事结算后，执行器的 `stage_vision` 读取本国部队位置、国家领土和远程视野科技。输入变化时重新计算视野，探索状态按实际行军轨迹更新。主线程领取已发布的可见格、探索格和迷雾，刷新地图。视野计算入口在 `world_ext_vision.cpp:556`，地图领取在 `world_runtime_visual_adapter.gd:509`。
-- 玩家自动探路：任务、观察点、返程和战斗暂停归 `MilitaryCore`（`military_core_explore.cpp`，PKMI section 23）。`army.explore` 只接受 Host 安装的玩家 observer。探路通行条件独立于普通 `find_path()`，战争状态也不进入他国控制格。每国每日 8 个规划槽、16 次 A*，并保留至少 16 次共享路径预算给区域控制。`run_movement()` 逐格产生轨迹，执行器在同日视野阶段合并已探索格，产生下一份可见格和迷雾。验证入口：`tests/military/military_auto_exploration_test.gd`、`tests/military/military_dossier_test.gd`、`tests/runtime/military_index_continuation_test.gd`、`tests/qa/military_dossier_screenshot_qa.gd`。
+- 军事部队视野：每日军事结算后，执行器的 `stage_vision` 读取本国部队位置、国家领土和远程视野科技。输入变化时重新计算视野，探索状态按实际行军轨迹更新。主线程领取已发布的可见格、探索格和迷雾，刷新地图。视野计算入口为 `world_ext_vision.cpp`，地图领取由 `world_runtime_visual_adapter.gd` 处理。部队是低预算的移动视野源，城市与领土使用较高预算。视野覆盖见 `tests/ui/vision_solver_test.gd`；实际部队移动后的发布用 `vision_revision` 核对。
+- 玩家自动探路：任务、观察点、返程和战斗暂停归 `MilitaryCore`（`military_core_explore.cpp`，PKMI v4 section 23）。`army.explore` 只接受 Host 安装的玩家 observer。探路通行条件独立于普通 `find_path()`，战争状态也不进入他国控制格。每国每日 8 个规划槽、16 次 A*，并保留至少 16 次共享路径预算给区域控制。`run_movement()` 逐格产生轨迹，执行器在同日视野阶段合并已探索格，产生下一份可见格和迷雾。验证入口：`tests/military/military_auto_exploration_test.gd`、`tests/military/military_dossier_test.gd`、`tests/runtime/military_index_continuation_test.gd`、`tests/qa/military_dossier_screenshot_qa.gd`。
+- 探路预览使用已发布的部队信息。已知他国部队会在界面拦截。发布帧中查不到部队时仍可编辑探路草稿，确认后由后台核验并返回回执。验证入口为 `tests/game/player_command_authority_test.gd`。
+- 家族开拓目的地：玩家开拓报价和路线校验使用单调的 `explored_arr` 作为可达知识边界，允许前往已探索但当前不在视野内的目标；未探索格仍被路线搜索拒绝。迷雾关闭时继续使用全图通行。视野修订仍参与报价身份与路线重报价校验。
 
 ## GM 屏蔽与叙事弹窗
 
@@ -733,6 +745,14 @@ Trigger 收尾都完成后，主线程先用原请求日期重试已排队的 Id
 跟随屏幕和不限档由原有同步设置控制。
 视野实际变化时优先提交贴图，并在同次绘制前刷新边界、建筑情报及标签。
 保存通过宿主的视野同步入口，在采集建筑情报前处理已发布的视野变化。
+
+### 日历显示与经济结算
+
+玩家顶栏比较最近领取的日期和同一批发布的 `economy_settled_day`。心跳每 5 秒检查一次，
+允许领先的天数是当前倍速的 10 倍，最低 20 天、最高 200 天。连续两次超限后，顶栏日期暂时
+停在原值并记录告警。恢复或由 GM 放行时，顶栏可立即更新到已领取的日期。
+模拟放行、命令日期、季节与年度通知、存档日期仍沿用正式会话时钟。
+验证入口为 `tests/game/runtime_clock_binding_test.gd`。
 
 ### 无界面性能记录
 
@@ -968,8 +988,12 @@ Country `preserve_effective_days` 表示逐条保留提供的日期，并不让�
   `tests/rendering/terrain_render_scale_test.gd`，检查图层顺序、缩放、平移和调整窗口。
 - 半屏浓雾按地表最终显示在主画布上的位置裁剪。低清晰度地表额外保留线性放大可能采到的一圈像素。地被和建筑底图复用同一组可见区域。水波和迷雾各自的数值纹理跟随使用它的绘制节点，切换清晰度时会在新视口里先于地表或雾层更新。
 - 迷雾清晰度、天气表现、植被与点缀密度、水面、云影分别由各渲染层应用；
-  关闭云影仍保留天气云的风场输入。切档验证入口为
-  `tests/game/game_settings_service_test.gd` 和 `tests/rendering/cloud_weather_quality_test.gd`。
+  关闭云影仍保留天气云的风场输入。Web 端通过 `DCFeatureFlags.is_mobile_web()`
+  区分 PC 浏览器与移动浏览器：PC-Web 默认启用最高画质（`PK_WEB_PC_HIGH`、1024 地面材质、
+  全量植被层与桌面散布预算、建筑/军队/商队投影阴影、原生 HiDPI 上限 2.0× 及 UI 缩放补偿）
+  并开放完整自定义画质选项；移动浏览器维持低画质默认与 DPR=1。切档与平台分流验证入口为
+  `tests/game/game_settings_service_test.gd`、`tests/rendering/cloud_weather_quality_test.gd`
+  和 `tests/rendering/web_pc_quality_policy_test.gd`。
 
 - 画质/省电开关只能关**动画与强度**，不能关**静态数据**。`has_flow_tex` 是静态河网的总闸
   （height 贴图 B 通道 = 河流 SDF；`scals.g = has_flow_tex ? height.b : 0`），只能由

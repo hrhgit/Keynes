@@ -92,10 +92,10 @@
     quoted_output_quantities.assign(
         static_cast<size_t>(std::max(0, type.output_count)), 0);
     const auto quote_input_scan_started = Clock::now();
-    // Soft inputs are optional productivity at the objective activity scale.
-    // Track bare (stock coverage) and tooled (buy soft) efficiencies.
+    // Soft inputs are capped productivity bonuses on top of 100% bare output.
+    // Track bare (1.0x) and tooled (1.0x + capped bonus) multipliers.
     int64_t soft_efficiency_bare_q16 = Q16_ONE;
-    int64_t soft_efficiency_tooled_q16 = Q16_ONE;
+    int64_t soft_tooled_bonus_sum_q16 = 0;
     bool has_soft_partial_input = false;
     for (int32_t i = 0; i < type.input_count; ++i) {
         const ProductionInput &input = _building_inputs[type.input_begin + i];
@@ -113,7 +113,8 @@
                 std::max<int32_t>(0, candidate.efficiency_q16) - 1, sat);
             const int64_t physical = effective_production_input_quantity(
                 group.cell, candidate.good_id,
-                physical_numerator / std::max<int32_t>(1, candidate.efficiency_q16), sat);
+                physical_numerator / std::max<int32_t>(1, candidate.efficiency_q16),
+                sat, group.output_factor_q16);
             const int32_t idx = market_store().index(market, candidate.good_id);
             const int64_t stock = std::max<int64_t>(0, market_store().stock[idx]);
             const int64_t raw_capacity = physical > 0
@@ -132,12 +133,6 @@
         if (best_candidate < 0) {
             if (required >= Q16_ONE) { quote.prospective_scale_q16 = 0;
                 quote.executable_capacity_q16 = 0; return quote; }
-            if (required > 0 && required < Q16_ONE) {
-                has_soft_partial_input = true;
-                const int64_t bare = Q16_ONE - required;
-                soft_efficiency_bare_q16 = std::min(soft_efficiency_bare_q16, bare);
-                soft_efficiency_tooled_q16 = std::min(soft_efficiency_tooled_q16, bare);
-            }
             quoted_input_candidates.push_back(-1);
             continue;
         }
@@ -145,16 +140,17 @@
             scale = std::min(scale, best_raw_capacity);
         } else if (required > 0) {
             has_soft_partial_input = true;
-            soft_efficiency_bare_q16 = std::min<int64_t>(
-                soft_efficiency_bare_q16,
-                Q16_ONE - required + mul_div_sat(
-                    best_raw_capacity, required, Q16_ONE, sat));
-            // Buying soft restores full soft productivity for this slot.
-            soft_efficiency_tooled_q16 = std::min<int64_t>(
-                soft_efficiency_tooled_q16, Q16_ONE);
+            const int64_t marginal_bonus =
+                soft_input_marginal_bonus_q16(type, required);
+            soft_tooled_bonus_sum_q16 = saturating_add(
+                soft_tooled_bonus_sum_q16,
+                mul_div_sat(marginal_bonus, best_raw_capacity, Q16_ONE, sat),
+                sat);
         }
         quoted_input_candidates.push_back(best_candidate);
     }
+    const int64_t soft_efficiency_tooled_q16 =
+        clamp_soft_productivity_bonus_q16(soft_tooled_bonus_sum_q16);
     if (quote_trace)
         add_quote_section(quote_sections.input_scan_ms, quote_input_scan_started);
     auto purchase_input_cost_at_scale = [&](int64_t eval_scale,
@@ -174,7 +170,8 @@
                 std::max<int32_t>(0, candidate.efficiency_q16) - 1, sat);
             const int64_t physical = effective_production_input_quantity(
                 group.cell, candidate.good_id,
-                physical_numerator / std::max<int32_t>(1, candidate.efficiency_q16), sat);
+                physical_numerator / std::max<int32_t>(1, candidate.efficiency_q16),
+                sat, group.output_factor_q16);
             const int64_t purchase_scale = std::clamp<int64_t>(eval_scale, 0, Q16_ONE);
             const int64_t quantity = mul_div_sat(physical, purchase_scale,
                 Q16_ONE, sat);

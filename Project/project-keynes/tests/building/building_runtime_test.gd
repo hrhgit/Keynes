@@ -2,6 +2,9 @@ extends SceneTree
 
 const EconomyCatalogScript = preload("res://scripts/economy/economy_catalog.gd")
 const CountryTestHelper = preload("res://tests/country/country_test_helper.gd")
+const CountryCommandBatch = preload("res://scripts/country/country_command_batch.gd")
+const MINE_TOOL_ID := "precision_tools"
+const GOODS_SCALE := 1000
 
 var failures := 0
 
@@ -158,8 +161,34 @@ func _run() -> void:
 	entry_savings.fill(0)
 	catalog.profession_entry_savings_days = entry_savings
 	_block_construction_except(catalog, PackedInt32Array([mine_id]), _luxury_blocking_good(catalog))
-	_expect("all-technology test country bootstraps",
-		CountryTestHelper.configure_all_technologies(ext, catalog, 1, 77))
+	var goods: PackedStringArray = compiled.good_ids
+	var mine_input_good := goods.find(MINE_TOOL_ID)
+	_expect("precision tools exist for the mine's hard input", mine_input_good >= 0)
+	if mine_input_good < 0:
+		return
+	# Use a small, expensive tool charge. Household cash can cover daily
+	# living costs but is below the price of even one milli-unit of tools.
+	_ensure_building_input(catalog, mine_id, mine_input_good, 1, 65536)
+	var prices: PackedInt32Array = catalog.good_default_price
+	var max_prices: PackedInt32Array = catalog.good_reference_max_price
+	var price_fall: PackedInt32Array = catalog.good_max_price_fall_q16
+	prices[mine_input_good] = 100_000_000
+	max_prices[mine_input_good] = prices[mine_input_good]
+	price_fall[mine_input_good] = 0
+	catalog.good_default_price = prices
+	catalog.good_reference_max_price = max_prices
+	catalog.good_max_price_fall_q16 = price_fall
+	_expect("all-technology test country bootstraps", bool(ext.configure_country(
+		catalog, {
+			"country_runtime_mode": "ACTIVE",
+			"starting_technology_ids": catalog.technology_ids,
+		}, 1, 77).get("ok", false)) and bool(ext.bootstrap_country({
+			"country_ids": PackedStringArray(["country.default"]),
+			"country_names": PackedStringArray(["默认国家"]),
+			"country_cash": PackedInt64Array([200_000_000]),
+			"territory_offsets": PackedInt32Array([0, 1]),
+			"territory_cells": PackedInt32Array([0]),
+		}, PackedByteArray([0])).get("ok", false)))
 	_expect("building runtime configures", bool(ext.configure_economy(catalog, profile, 1, 77).get("ok", false)))
 	var employment_policy: Dictionary = ext.get_economy_report()
 	_expect("employment mobility policy is exposed deterministically",
@@ -178,7 +207,6 @@ func _run() -> void:
 	var worker_sig: int = (compiled.signature_keys as PackedStringArray).find("miner|default")
 	var manager_sig: int = (compiled.signature_keys as PackedStringArray).find("manager|default")
 	var merchant_sig: int = (compiled.signature_keys as PackedStringArray).find("merchant|default")
-	var goods: PackedStringArray = compiled.good_ids
 	var stock := PackedInt64Array()
 	stock.resize(goods.size())
 	stock.fill(10000000)
@@ -222,6 +250,8 @@ func _run() -> void:
 		int(day0.get("building_structure_topology_rebuilds", 0)) == 1)
 	var buildings: Dictionary = ext.get_building_cell_snapshot(0)
 	_expect("mine completes at cycle boundary", int((buildings.building_counts_by_type as PackedInt64Array)[mine_id]) == 1)
+	_expect("food support is installed before the owner loses spending cash",
+		_subsidize_mine_fixture_food(ext, goods))
 	var day1 := _run_day(ext, 1)
 	_expect("production cycle conserves population", int(day1.get("population_error", 1)) == 0)
 	_expect("production cycle conserves money", int(day1.get("money_error", 1)) == 0)
@@ -404,9 +434,14 @@ func _run() -> void:
 	landlord_row = _row_for_signature(pop, landlord_sig)
 	owner_handle = _handle_for_profession(pop, landlord_sig)
 	var owner_funds := int((pop.funds_by_cohort as PackedInt64Array)[landlord_row])
+	var household_cash := 2 * int(ext.get_cell_satisfaction_attractiveness(0).get(
+		"living_cost_per_capita", 0))
+	_expect("funded opening earned a mine profit",
+		int((buildings.last_revenue as PackedInt64Array)[0]) >
+			int((buildings.last_operating_cost as PackedInt64Array)[0]))
 	var drain: Dictionary = ext.submit_economy_commands({
 		"opcodes": PackedInt32Array([9]),
-		"effective_days": PackedInt64Array([2]),
+		"effective_days": PackedInt64Array([10]),
 		"sequences": PackedInt64Array([2]),
 		"target_handles": PackedInt64Array([owner_handle]),
 		"i32_0": PackedInt32Array([0]),
@@ -466,45 +501,32 @@ func _run() -> void:
 	_expect("treasury transfer is exposed as a settlement source",
 		_cashflow_has_source(drained_pop,
 			_row_for_signature(drained_pop, landlord_sig), "transfer", false))
+	_expect_mine_finance_block(ext, buildings, mine_group, owner_handle, 2, 0)
+	_expect("cycle 3 leaves only household cash", _drain_mine_cash(
+		ext, owner_handle, household_cash, 3))
 	_run_day(ext, 3)
 	var loss_two: Dictionary = ext.get_building_cell_snapshot(0)
 	mine_group = (loss_two.group_type_ids as PackedInt32Array).find(mine_id)
+	_expect_mine_finance_block(ext, loss_two, mine_group, owner_handle, 3, household_cash)
 	_expect("first execution-blocked cycle is not classified as a loss",
 		int((loss_two.severe_loss_cycles as PackedInt32Array)[mine_group]) == 0 and
 		int((loss_two.operating_state as PackedByteArray)[mine_group]) == 0)
+	_expect("cycle 4 leaves only household cash", _drain_mine_cash(
+		ext, owner_handle, household_cash, 4))
 	_run_day(ext, 4)
 	var suspended: Dictionary = ext.get_building_cell_snapshot(0)
 	mine_group = (suspended.group_type_ids as PackedInt32Array).find(mine_id)
+	_expect_mine_finance_block(ext, suspended, mine_group, owner_handle, 4, household_cash)
 	_expect("repeated execution blockage remains active without loss accumulation",
 		int((suspended.severe_loss_cycles as PackedInt32Array)[mine_group]) == 0 and
 		int((suspended.operating_state as PackedByteArray)[mine_group]) == 0)
 	var recovery_pop: Dictionary = ext.get_population_cell_snapshot(0)
-	var recovery_owner_row := _row_for_signature(recovery_pop, landlord_sig)
 	var recovery_owner_handle := _handle_for_profession(recovery_pop, landlord_sig)
-	var recovery_owner_funds := int(
-		(recovery_pop.funds_by_cohort as PackedInt64Array)[recovery_owner_row]) \
-		if recovery_owner_row >= 0 else 0
-	var input_offsets: PackedInt32Array = compiled.building_input_offsets
-	var candidate_offsets: PackedInt32Array = compiled.building_input_candidate_offsets
-	var candidate_goods: PackedInt32Array = compiled.building_input_candidate_good_ids
-	var mine_input := int(input_offsets[mine_id])
-	var mine_input_good := int(candidate_goods[int(candidate_offsets[mine_input])])
-	var recovery_drain_ok := true
-	if recovery_owner_funds > 0:
-		recovery_drain_ok = bool(ext.submit_economy_commands({
-			"opcodes": PackedInt32Array([9]),
-			"effective_days": PackedInt64Array([5]),
-			"sequences": PackedInt64Array([3]),
-			"target_handles": PackedInt64Array([recovery_owner_handle]),
-			"i32_0": PackedInt32Array([0]),
-			"i32_1": PackedInt32Array([0]),
-			"i64_0": PackedInt64Array([recovery_owner_funds]),
-			"i64_1": PackedInt64Array([0]),
-		}).get("ok", false))
+	var recovery_drain_ok := _drain_mine_cash(ext, owner_handle, household_cash, 5)
 	var recovery_stock: Dictionary = ext.submit_economy_commands({
 		"opcodes": PackedInt32Array([4]),
-		"effective_days": PackedInt64Array([5]),
-		"sequences": PackedInt64Array([4]),
+		"effective_days": PackedInt64Array([25]),
+		"sequences": PackedInt64Array([6]),
 		"target_handles": PackedInt64Array([0]),
 		"i32_0": PackedInt32Array([0]),
 		"i32_1": PackedInt32Array([mine_input_good]),
@@ -517,6 +539,7 @@ func _run() -> void:
 	var suspension_report := _run_day(ext, 5)
 	suspended = ext.get_building_cell_snapshot(0)
 	mine_group = (suspended.group_type_ids as PackedInt32Array).find(mine_id)
+	_expect_mine_finance_block(ext, suspended, mine_group, owner_handle, 5, household_cash)
 	_expect("third execution-blocked cycle remains active",
 		int((suspended.severe_loss_cycles as PackedInt32Array)[mine_group]) == 0 and
 		int((suspended.operating_state as PackedByteArray)[mine_group]) == 0)
@@ -528,6 +551,19 @@ func _run() -> void:
 		int(suspension_report.get("unfunded_business_demand", 0)) <=
 			int(suspension_report.get("desired_business_demand", 0)) and
 		int((suspended.last_input as PackedInt64Array)[mine_group]) == 0)
+	# Return part of the cash held by the treasury on the next cycle. The
+	# checkpoint must carry the same recovery command into both continuations.
+	_expect("mine's return of working capital is queued before save",
+		bool(ext.submit_economy_commands({
+			"opcodes": PackedInt32Array([1]),
+			"effective_days": PackedInt64Array([30]),
+			"sequences": PackedInt64Array([7]),
+			"target_handles": PackedInt64Array([recovery_owner_handle]),
+			"i32_0": PackedInt32Array([0]),
+			"i32_1": PackedInt32Array([0]),
+			"i64_0": PackedInt64Array([20_000_000]),
+			"i64_1": PackedInt64Array([0]),
+		}).get("ok", false)))
 	var country_chunks: Array[PackedByteArray] = []
 	var country_save_begin: Dictionary = ext.begin_country_save(4096)
 	_expect("building PKCN save begins", bool(country_save_begin.get("ok", false)))
@@ -629,6 +665,15 @@ func _run() -> void:
 	var recovery_after_pop: Dictionary = ext.get_population_cell_snapshot(0)
 	var recovery_merchant_row := _row_for_signature(recovery_after_pop, merchant_sig)
 	var recovery_mine_group := (recovery_one.group_type_ids as PackedInt32Array).find(mine_id)
+	var restored_recovery: Dictionary = restored.get_building_cell_snapshot(0)
+	var restored_mine_group := (restored_recovery.group_type_ids as PackedInt32Array).find(mine_id)
+	_expect("both continuations buy tools and produce coal when funds return",
+		bool(recovery_one_report.get("done", false))
+		and bool(restored_recovery_one_report.get("done", false))
+		and _snapshot_i64(recovery_one, "last_input", recovery_mine_group) > 0
+		and _snapshot_i64(recovery_one, "last_output", recovery_mine_group) > 0
+		and _snapshot_i64(restored_recovery, "last_input", restored_mine_group) > 0
+		and _snapshot_i64(restored_recovery, "last_output", restored_mine_group) > 0)
 	_expect("restored inputs resume through the active path without a recovery probe",
 		int(recovery_one_report.get("recovery_approved", 0)) == 0 and
 		recovery_mine_group >= 0 and
@@ -673,6 +718,67 @@ func _run() -> void:
 		int(resumed_report.get("money_error", 1)) == 0 and
 		int(resumed_report.get("goods_error", 1)) == 0)
 	print("=== native building runtime %s ===" % ("PASS" if failures == 0 else "FAIL"))
+
+func _subsidize_mine_fixture_food(ext: Object, goods: PackedStringArray) -> bool:
+	var country := int(ext.get_country_cell_summary(0).get("country_handle", 0))
+	var commands: Array[Dictionary] = []
+	# The treasury pays for food through household clearing. Extra proceeds
+	# leave cash for the next employment review. Tool purchases get no subsidy.
+	for id in ["prepared_staples", "bread", "grain", "wheat_grain", "rice_grain",
+			"corn_grain", "potatoes", "gathered_plants", "game_meat", "meat", "fish",
+			"canned_fish", "dairy_products", "frozen_food", "vegetables", "processed_food"]:
+		var good := goods.find(id)
+		if good < 0:
+			return false
+		commands.append({
+			"opcode": CountryFacade.Opcode.SET_TAX_OVERRIDE,
+			"target_handle": country,
+			"sequence": commands.size() + 1,
+			"tax_kind": CountryFacade.TaxKind.CONSUMPTION,
+			"tax_item": good,
+			"tax_rate_basis_points": -40_000,
+		})
+	return country != 0 and bool(ext.submit_country_commands(CountryCommandBatch.pack(
+		commands, false, CountryFacade.TAX_MODE_PERCENT_BP)).get("ok", false)) \
+		and bool(ext.run_country_slice({"day_index": 0}).get("ok", false))
+
+func _drain_mine_cash(ext: Object, owner_handle: int, household_cash: int, cycle: int) -> bool:
+	var pop: Dictionary = ext.get_population_cell_snapshot(0)
+	var row := (pop.handles as PackedInt64Array).find(owner_handle)
+	var cash := _snapshot_i64(pop, "funds_by_cohort", row)
+	var living_cost := int(ext.get_cell_satisfaction_attractiveness(0).get(
+		"living_cost_per_capita", 0))
+	if row < 0 or household_cash < living_cost or cash <= household_cash:
+		return false
+	return bool(ext.submit_economy_commands({
+		"opcodes": PackedInt32Array([9]),
+		"effective_days": PackedInt64Array([cycle * 5]),
+		"sequences": PackedInt64Array([cycle]),
+		"target_handles": PackedInt64Array([owner_handle]),
+		"i32_0": PackedInt32Array([0]),
+		"i32_1": PackedInt32Array([0]),
+		"i64_0": PackedInt64Array([cash - household_cash]),
+		"i64_1": PackedInt64Array([0]),
+	}).get("ok", false))
+
+func _expect_mine_finance_block(ext: Object, buildings: Dictionary, group: int,
+		owner_handle: int, cycle: int, opening_cash: int) -> void:
+	var pop: Dictionary = ext.get_population_cell_snapshot(0)
+	var row := (pop.handles as PackedInt64Array).find(owner_handle)
+	_expect("cycle %d keeps the mine owner fed and in the seat" % cycle,
+		group >= 0 and row >= 0
+		and _snapshot_i64(pop, "owner_employed_by_cohort", row) == 1
+		and _snapshot_i64(pop, "satisfaction_by_cohort_q16", row) >= 32768
+		and _snapshot_i64(buildings, "filled_owner", group) == 1)
+	var market: Dictionary = ext.get_market_cell_snapshot(0)
+	_expect("cycle %d has stocked tools but cannot finance production" % cycle,
+		group >= 0 and _good_value(market, "stock", MINE_TOOL_ID) >= 5
+		and _good_value(market, "price", MINE_TOOL_ID) > opening_cash * GOODS_SCALE
+		and _snapshot_i64(buildings, "purchase_intent_capacity_q16", group) > 0
+		and _snapshot_i64(buildings, "owner_working_capital_allocated", group) <= opening_cash
+		and _snapshot_i64(buildings, "funded_capacity_q16", group) == 0
+		and _snapshot_i64(buildings, "last_input", group) == 0
+		and _snapshot_i64(buildings, "last_output", group) == 0)
 
 func _test_construction_rebuild_preserves_employee_fill(
 		source_catalog: Dictionary, source_profile: Dictionary) -> void:
@@ -2834,7 +2940,7 @@ func _test_high_unemployment_investment_catchup(
 	_set_building_first_output_quantity(catalog, knapping_id, 100)
 	_strip_building_inputs(catalog, knapping_id)
 	_ensure_building_input(catalog, knapping_id, goods.find("flint"), 1, 65536)
-	_pin_household_need_good(catalog, "household_goods", tool_good, 20000)
+	_pin_household_need_good(catalog, "household_goods", tool_good, 3000)
 	_pin_household_need_good(catalog, "staple_food", goods.find("game_meat"), 1000)
 	_pin_household_need_good(catalog, "home_energy", goods.find("logs"), 1000)
 	# Hold output prices while testing job creation; market price adjustment
@@ -3321,6 +3427,10 @@ func _test_investment_capacity_is_not_gate(source_catalog: Dictionary,
 		int(report.get("goods_error", 1)) == 0)
 
 	var coverage_catalog := catalog.duplicate(true)
+	# The shortage must survive until the investment review. Other unlocked
+	# producers could open a flint quarry and refill the initially empty shelf.
+	_block_construction_except(coverage_catalog,
+		PackedInt32Array([knapping_id, hunting_id]), _luxury_blocking_good(coverage_catalog))
 	var coverage_input_quantities: PackedInt64Array = \
 		coverage_catalog.building_input_quantities
 	coverage_input_quantities[hunting_input] = 1000
@@ -3367,6 +3477,8 @@ func _test_investment_capacity_is_not_gate(source_catalog: Dictionary,
 		coverage_report = _run_day(coverage_ext, day)
 	var coverage_buildings: Dictionary = coverage_ext.get_building_cell_snapshot(0)
 	var coverage_group := (coverage_buildings.group_type_ids as PackedInt32Array).find(knapping_id)
+	_expect("hard input remains unavailable at the coverage review",
+		_good_value(coverage_ext.get_market_cell_snapshot(0), "stock", "flint") == 0)
 	_expect("missing input coverage blocks further entry",
 		coverage_group >= 0 and
 		int((coverage_buildings.building_counts_by_type as PackedInt64Array)[
@@ -4296,7 +4408,7 @@ func _test_all_survival_food_outputs_are_retained(catalog: Dictionary,
 	var output_offsets: PackedInt32Array = fixture_catalog.building_output_offsets
 	var output_quantities: PackedInt64Array = fixture_catalog.building_output_quantities.duplicate()
 	output_quantities[int(output_offsets[farm_id])] = 1
-	output_quantities[int(output_offsets[farm_id]) + 1] = 1000
+	output_quantities[int(output_offsets[farm_id]) + 1] = 1500
 	fixture_catalog.building_output_quantities = output_quantities
 	var profile := source_profile.duplicate(true)
 	profile.starvation_death_rate_q32 = 0

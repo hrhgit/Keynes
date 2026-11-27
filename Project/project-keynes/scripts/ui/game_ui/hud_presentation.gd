@@ -215,6 +215,14 @@ func _on_inspector_detail_visibility_changed(open: bool) -> void:
 		_player_controller.ensure_selected_visible()
 
 
+func _on_inspector_list_wing_visibility_changed(_open: bool) -> void:
+	_layout_right_panel()
+	_layout_overlay_legend()
+	_layout_country_action_bar()
+	_layout_gm_panel()
+	_layout_family_founding_dialog()
+
+
 func _layout_overlay_legend() -> void:
 	_hud_layout()._layout_overlay_legend()
 
@@ -282,8 +290,10 @@ static func resolve_panel_content_width(viewport_width: float,
 
 
 static func inspector_layout_for_width(viewport_width: float,
-		detail_open: bool, family_open: bool = false) -> Dictionary:
-	return GameHudLayout.inspector_layout_for_width(viewport_width, detail_open, family_open)
+		detail_open: bool, family_open: bool = false,
+		list_wing_open: bool = false) -> Dictionary:
+	return GameHudLayout.inspector_layout_for_width(
+		viewport_width, detail_open, family_open, list_wing_open)
 
 
 # 排查 Web 构建"详情框/状态栏跑到左上角"问题用的一次性诊断输出；不影响任何

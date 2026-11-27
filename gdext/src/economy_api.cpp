@@ -228,6 +228,7 @@ bool military_army_lane_split_supported(const NativeEconomyRuntime &economy) { r
 bool military_army_lane_pay_supported(const NativeEconomyRuntime &economy) { return economy.military_army_lane_pay_supported(); }
 int32_t profession_count(const NativeEconomyRuntime &economy) { return economy.profession_count(); }
 int64_t last_committed_day(const NativeEconomyRuntime &economy) { return economy.last_committed_day(); }
+int64_t newest_settlement_day(const NativeEconomyRuntime &economy) noexcept { return economy.newest_settlement_day(); }
 bool epoch_active(const NativeEconomyRuntime &economy) { return economy.epoch_active(); }
 godot::Dictionary poll_events(const NativeEconomyRuntime &economy, const godot::Dictionary &opts) { return economy.poll_events(opts); }
 godot::Dictionary trace_report(const NativeEconomyRuntime &economy) { return economy.trace_report(); }

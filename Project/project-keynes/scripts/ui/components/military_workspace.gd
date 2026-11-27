@@ -24,6 +24,7 @@ signal locate_cell_requested(cell: int)
 signal target_cells_requested(cells: PackedInt32Array)
 
 const TouchUI = preload("res://scripts/ui/touch_ui.gd")
+const TouchSliderPad = preload("res://scripts/ui/components/touch_slider_pad.gd")
 const PlayerControllerScript = preload("res://scripts/game/player_controller.gd")
 const VIEW_MODEL_SCRIPT = preload("res://scripts/ui/military_view_model.gd")
 ## 新脚本刻意不写 class_name：未进 global_script_class_cache 的类名会让引用方解析失败
@@ -91,6 +92,7 @@ var _summoned := false
 @onready var _deployment_bar: DossierStackedBar = %DeploymentBar
 @onready var _spend_bar: DossierStackedBar = %SpendBar
 @onready var _overview_insights: InsightList = %OverviewInsights
+@onready var _overview_war_banner: PanelContainer = %WarBannerCard
 @onready var _overview_war_kicker: Label = %WarKicker
 @onready var _overview_war_link: Button = %WarLink
 
@@ -169,8 +171,9 @@ func _ready() -> void:
 	for button in [_overview_war_link, _mode_headcount, _mode_budget, _quality_best,
 			_quality_cheap, _toggle_auto_retrain, _toggle_levy, _toggle_auto_discharge]:
 		button.focus_mode = Control.FOCUS_ALL
+		var target_h := 36.0 if button in [_toggle_auto_retrain, _toggle_levy, _toggle_auto_discharge] else 34.0
 		button.custom_minimum_size = Vector2(button.custom_minimum_size.x,
-			maxf(button.custom_minimum_size.y, 44.0))
+			maxf(button.custom_minimum_size.y, target_h))
 		UIAnimation.bind_tactile_button(button)
 	_mode_headcount.focus_neighbor_right = _mode_headcount.get_path_to(_mode_budget)
 	_mode_budget.focus_neighbor_left = _mode_budget.get_path_to(_mode_headcount)
@@ -184,7 +187,7 @@ func _ready() -> void:
 		card.gui_input.connect(_on_war_card_input.bind(card))
 		card.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	for button in [_mode_headcount, _mode_budget, _quality_best, _quality_cheap]:
-		(button as Button).custom_minimum_size = SMALL_BUTTON
+		(button as Button).custom_minimum_size = Vector2(0, 34.0)
 	_bind_forces()
 	_bind_armies()
 	_bind_war()
@@ -209,10 +212,11 @@ func _refresh_layout() -> void:
 func _bind_forces() -> void:
 	_target_slider.drag_started.connect(func() -> void: _slider_dragging = true)
 	_target_slider.drag_ended.connect(_on_target_drag_ended)
-	# 键盘、点击轨道、无障碍调整都不会发 `drag_ended`；只挂 drag_ended 会让这些
-	# 输入永远发不出命令，下一次 200ms 刷新再把把手写回原生旧值。所以值一变就
-	# 更新读数，非拖动状态再走一次防抖提交。
 	_target_slider.value_changed.connect(_on_target_value_changed)
+	TouchSliderPad.attach_to(_target_value, _target_slider, {
+		"title": func() -> String: return "每日军费预算" if _mode_budget.button_pressed else "目标常备兵力",
+		"commit": func(_v: float) -> void: _commit_target(),
+	})
 	_mode_headcount.pressed.connect(_on_target_mode.bind(0))
 	_mode_budget.pressed.connect(_on_target_mode.bind(1))
 	_quality_best.pressed.connect(_request.bind(
@@ -283,8 +287,8 @@ func _bind_war() -> void:
 		{"id": "actions", "label": "", "kind": "actions", "width": 64.0, "sortable": false},
 	], "name", false)
 	_front_list.row_height = 24.0
-	_front_list.label_width = 150.0
-	_front_list.value_width = 60.0
+	_front_list.label_width = 136.0
+	_front_list.value_width = 108.0
 	_front_list.selectable = true
 	# 点战线 = 打开战线档案，镜头同时落到该扇区。
 	_front_list.row_selected.connect(_on_front_selected)
@@ -568,9 +572,11 @@ func _refresh_overview() -> void:
 		_overview_insights.set_items(data.insights)
 	# 战争只在「战争」章节展开；总览留一行指路，不再重复两张战争卡。
 	var wars: Array = data.get("wars", [])
+	if _overview_war_banner != null:
+		_overview_war_banner.visible = not wars.is_empty()
 	_overview_war_kicker.visible = not wars.is_empty()
 	if not wars.is_empty():
-		_overview_war_kicker.text = "进行中的战争 %d 场" % wars.size()
+		_overview_war_kicker.text = "进行中的战争 · %d 场" % wars.size()
 	_overview_war_link.visible = not wars.is_empty()
 
 
