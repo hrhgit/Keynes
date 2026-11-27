@@ -293,9 +293,10 @@
     godot::Dictionary run_trigger_daily(int64_t day_index);
     bool trigger_should_run(int64_t day_index) const;
     // H8 ACTIVE Trigger authority. When the worker owns TRIGGER_INPUT the
-    // main thread stops running the daily kernel and instead writes the worker
-    // snapshot back into the facade, plus relays the Trigger->Effect ACK
-    // barrier when the in-worker bridge is not used.
+    // main thread stops running the daily kernel. The facade is not updated
+    // from the worker; readers use the worker's published delivery. The main
+    // thread only relays the Trigger->Effect ACK barrier when the in-worker
+    // bridge is not used.
     bool trigger_worker_authoritative() const;
     godot::Dictionary poll_trigger_worker_intent();
     godot::Dictionary submit_trigger_worker_ack(const godot::Dictionary &source);
