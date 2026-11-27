@@ -13,25 +13,28 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import world_ext_bindings as inventory
-from guard_baselines import previous_baseline
+from guard_baselines import historical_file, previous_baseline
 
 PROJECT = "Project/project-keynes"
 BASELINE = "tools/ci/script_native_access_baseline.json"
 LIVE_BASELINE = "tools/ci/script_live_access_baseline.json"
 EXCLUDED = {"tests", "tmp", "addons", ".godot"}
 FRONTEND_DIRS = ("scripts/ui/", "scripts/rendering/")
-FRONTEND_FILES = {
-    "scripts/game/player_game.gd",
-    "scripts/game/world_runtime_presentation.gd",
-    "scripts/geography/world_clock.gd",
-}
+PLAYER_GAME = "scripts/game/player_game.gd"
+FRONTEND_FILES = {PLAYER_GAME, "scripts/game/world_runtime_presentation.gd", "scripts/geography/world_clock.gd"}
 ECONOMY_FACADES = {"_economy_facade", "_economy_runtime_facade"}
+OWNER_TYPES = {"EconomyFacade": "facade", "MapGenerator": "generator", "DCWorldExt": "native"}
+OWNER_FACTORIES = {"get_economy_facade": "facade", "get_generator": "generator"}
+PROBE = "_economy_probe"
+PROBE_DIGEST = "84804519a507373b76e384bed24ece558d67ed55a89e8ff8a0e14922e9d954b3"
+HEARTBEAT_DIGEST = "cb8a83063319f379b22a32476218093aafbd5ea9e2d9e33569e4bd30c77be14d"
 WORLD_NAME = re.compile(r"(?:^|_)(?:data_core_)?world_ext$|^_?ext$|^ext_obj$|^world$|^dc$")
 # A single lexer keeps comments and quoted code out of call/func recognition.
 LEX = re.compile(
@@ -167,44 +170,66 @@ def _named_functions(tokens: list[Token]):
         yield tokens[start + 1].value, tokens[start:end]
 
 
-def _facade_names(tokens: list[Token]) -> set[str]:
-    names = set(ECONOMY_FACADES)
+def _owner_names(tokens: list[Token], inherited: dict, members: set[str] | None = None) -> dict:
+    """Track GDScript declarations and the simple aliases used by presentation code."""
+    names = inherited.copy()
+    aliases = []
     for i, token in enumerate(tokens):
-        if token.kind != "id":
+        if token.kind != "id" or (members is not None and token.value not in members):
+            continue
+        if i >= 2 and tokens[i - 1].value == "." and tokens[i - 2].value != "self":
             continue
         j = i + 1
         if j < len(tokens) and tokens[j].value == ":":
             j += 1
             if j < len(tokens) and tokens[j].kind == "id":
-                if tokens[j].value == "EconomyFacade":
-                    names.add(token.value)
+                if i and tokens[i - 1].value in {"var", "(", ","}:
+                    names[token.value] = OWNER_TYPES.get(tokens[j].value)
                 j += 1
-        if j >= len(tokens) or tokens[j].value != "=":
+        if j >= len(tokens) or tokens[j].value != "=" or tokens[j:j + 2][-1].value == "=":
             continue
         j += 1
+        owner_type = OWNER_TYPES.get(tokens[j].value) if j < len(tokens) else None
         while j < len(tokens) and tokens[j].kind == "id":
             name = tokens[j].value
+            origin = j
             j += 1
             called = [t.value for t in tokens[j:j + 2]] == ["(", ")"]
             if called:
                 j += 2
             if j >= len(tokens) or tokens[j].value != ".":
-                if (called and name == "get_economy_facade") or (not called and name in names):
-                    names.add(token.value)
+                if called and name in OWNER_FACTORIES:
+                    names[token.value] = OWNER_FACTORIES[name]
+                    if (name == "get_economy_facade" and origin >= 2
+                            and tokens[origin - 1].value == "." and tokens[origin - 2].kind == "id"):
+                        names.setdefault(tokens[origin - 2].value, "generator")
+                elif called and name == "new" and owner_type:
+                    names[token.value] = owner_type
+                elif not called:
+                    aliases.append((token.value, name))
                 break
             j += 1
+    missing = {name: alias for name, alias in aliases if not names.get(name)}
+    while missing:
+        resolved = {name: names[alias] for name, alias in missing.items() if names.get(alias)}
+        if not resolved:
+            break
+        names.update(resolved)
+        missing = {name: alias for name, alias in missing.items() if name not in resolved}
     return names
 
 
-def _live_reads(tokens: list[Token]):
-    names = _facade_names(tokens)
+def _live_reads(tokens: list[Token], inherited: dict):
+    names = _owner_names(tokens, inherited)
     positions = {token.offset: i for i, token in enumerate(tokens)}
     for token, kind, target in candidates(tokens, {"report", "get_economy_report"}, probes=False):
-        if token.value == "get_economy_report" or target in names:
+        expected = {"facade"} if token.value == "report" else {"generator", "native"}
+        if names.get(target) in expected:
             yield token
         elif kind == "call":
             i = positions[token.offset]
-            if [t.value for t in tokens[max(0, i - 4):i]] == ["get_economy_facade", "(", ")", "."]:
+            chain = [t.value for t in tokens[max(0, i - 4):i]]
+            if len(chain) == 4 and chain[1:] == ["(", ")", "."] and OWNER_FACTORIES.get(chain[0]) in expected:
                 yield token
 
 
@@ -222,20 +247,67 @@ def _function_digest(source: str, function: list[Token]) -> str:
     return hashlib.sha256(json.dumps(lines, ensure_ascii=False).encode()).hexdigest()
 
 
+def _probe_references(function: list[Token]) -> list[Token]:
+    callable_strings = {token for token, _, _ in candidates(function, {PROBE}, probes=False)}
+    return [token for i, token in enumerate(function) if token.value == PROBE and (
+        (token.kind == "id" and (i == 0 or function[i - 1].value != "func")) or token in callable_strings
+    )]
+
+
+def _approved_consumer(source: str, name: str, function: list[Token], reads: list[Token]) -> bool:
+    if name != "_process" or len(reads) != 1:
+        return False
+    start = source.rfind("\n", 0, reads[0].offset)
+    after_call = [token for token in function if token.offset > start]
+    return _function_digest(source, after_call) == HEARTBEAT_DIGEST
+
+
+def historical_live_baseline(root: Path, ref: str) -> dict:
+    source = historical_file(root, ref, f"{PROJECT}/{PLAYER_GAME}")
+    if source is None:
+        return {}
+    text = source.decode("utf-8-sig")
+    functions = dict(_named_functions(tokenize(text)))
+    owner, consumer = functions.get(PROBE, []), functions.get("_process", [])
+    if (_function_digest(text, owner) == PROBE_DIGEST
+            and _approved_consumer(text, "_process", consumer, _probe_references(consumer))):
+        return {PLAYER_GAME: {PROBE: PROBE_DIGEST}}
+    return {}
+
+
 def frontend_live_read_violations(
-    file: str, source: str, baseline: dict, tokens: list[Token] | None = None
+    file: str, source: str, baseline: dict, tokens: list[Token] | None = None,
+    *, used: set[tuple[str, str]] | None = None,
 ) -> list[str]:
     """Find known live reads, including the GDScript facade around the native call."""
-    if file not in FRONTEND_FILES and not file.startswith(FRONTEND_DIRS):
+    frontend = file in FRONTEND_FILES or file.startswith(FRONTEND_DIRS)
+    legacy_probe = PROBE in baseline.get(PLAYER_GAME, {}) and PROBE in source
+    if not frontend and not legacy_probe:
         return []
+    tokens = tokenize(source) if tokens is None else tokens
     errors = []
-    for name, function in _named_functions(tokenize(source) if tokens is None else tokens):
-        reads = list(_live_reads(function))
+    member_names = {tokens[i + 1].value for i, token in enumerate(tokens[:-1]) if token.value == "var"
+                    and token.kind == "id" and re.fullmatch(r"(?:@\w+ +)*", source[
+                        source.rfind("\n", 0, token.offset) + 1:token.offset])}
+    inherited = {name: "facade" for name in ECONOMY_FACADES}
+    inherited.update({name: "native" for name in world_variables(tokens)})
+    inherited = _owner_names(tokens, inherited, member_names)
+    functions = list(_named_functions(tokens))
+    if legacy_probe and tokens:
+        before = [token for token in tokens if not functions or token.offset < functions[0][1][0].offset]
+        functions.insert(0, ("class body", before))
+    for name, function in functions:
+        if legacy_probe:
+            calls = _probe_references(function)
+            if calls and not (file == PLAYER_GAME and _approved_consumer(source, name, function, calls)):
+                line = source.count("\n", 0, calls[0].offset) + 1
+                errors.append(f"{PROJECT}/{file}:{line}: {name} uses the live {PROBE} outside the unchanged heartbeat log")
+        reads = list(_live_reads(function, inherited)) if frontend else []
         if not reads:
             continue
-        # The existing heartbeat diagnostics read a live report. Pin the entire
-        # function so the same call cannot acquire a new consumer (e.g. the calendar).
         if baseline.get(file, {}).get(name) == _function_digest(source, function):
+            if used is not None:
+                used.add((file, name))
             continue
         for token in reads:
             line = source.count("\n", 0, token.offset) + 1
@@ -287,7 +359,7 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
     live_path = root / LIVE_BASELINE
     live_baseline = json.loads(live_path.read_text(encoding="utf-8")) if live_path.exists() else {}
     if live_path.exists():
-        previous = previous_baseline(root, LIVE_BASELINE)
+        previous = previous_baseline(root, LIVE_BASELINE, bootstrap=historical_live_baseline)
         problems.extend(live_baseline_violations(live_baseline, previous))
         if problems:
             return [], problems, 0
@@ -297,11 +369,12 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
                  for i, t in enumerate(tokens[:-2]) if t.kind == "id" and t.value == "func"
                  and tokens[i + 1].kind == "id" and tokens[i + 2].value == "("}
     refs = []
+    used = set()
     for path, source, tokens in parsed:
         world = world_variables(tokens)
         lines = source.splitlines()
         project_file = path.relative_to(root / PROJECT).as_posix()
-        problems.extend(frontend_live_read_violations(project_file, source, live_baseline, tokens))
+        problems.extend(frontend_live_read_violations(project_file, source, live_baseline, tokens, used=used))
         for token, kind, target in candidates(tokens, bindings):
             line = source.count("\n", 0, token.offset) + 1
             a = target is not None and (target in world or bool(WORLD_NAME.search(target)))
@@ -310,6 +383,10 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
                                   bindings[token.value], kind, target, a, b,
                                   not allowed(project_file, bindings[token.value], table["script_dirs"]),
                                   lines[line - 1].strip()))
+    for file, names in live_baseline.items():
+        for name in names:
+            if (file, name) not in used:
+                problems.append(f"{LIVE_BASELINE}: remove unused live read exception: {file}:{name}")
     return refs, problems, len(sources)
 
 
@@ -420,6 +497,13 @@ def main() -> int:
         else:
             baseline = {}
             problems.append(f"missing {BASELINE}; use --write-baseline for initial capture")
+        previous = previous_baseline(args.root, BASELINE)
+        if not problems and previous is not None:
+            problems.extend(baseline_errors(previous))
+            if not problems:
+                proposed = baseline if path.exists() else current
+                problems.extend(f"{BASELINE}: cannot increase historical native access allowance: {change}"
+                                for change in violations(proposed, previous))
         if not problems:
             if path.exists() or not args.write_baseline:
                 problems.extend(violations(current, baseline))
@@ -439,7 +523,7 @@ def main() -> int:
               f"{len(current)} files / {sum(map(len, current.values()))} file-module pairs / "
               f"{sum(sum(m.values()) for m in current.values())} cross-module references; {len(problems)} problems")
         return int(bool(problems))
-    except (OSError, ValueError, TypeError, KeyError) as error:
+    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:
         print(f"script native access guard: {error}", file=sys.stderr)
         return 1
 

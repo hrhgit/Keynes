@@ -19,8 +19,8 @@
 | 经济税表缓存键保留各字段的完整值 | AGENTS.md 规则 1、3 | 护栏：`check_tax_row_keys.py` 检查税相关缓存的标量键；已有错误逐项登记，基线只收紧 |
 | 生成清单与绑定和资源内容一致 | development-guide.md | 护栏：`check_generated_manifests.py` 对原生绑定清单和加载目录源指纹做重建比对；旧指纹差异逐项登记，基线只收紧 |
 | 仓库 Markdown 的相对链接和锚点可解析 | development-guide.md | 护栏：`check_markdown_links.py`；既有断链逐项登记，基线只收紧 |
-| 拒绝启动时执行器仍停止，模拟权限已释放 | AGENTS.md 规则 3、5 | 运行测试：`modifier_opening_rejection_test.gd`；Qodo：候选规则 |
-| 单个显示帧被拒绝后，同批日记录与回执仍发布一次 | AGENTS.md 规则 2、3 | 运行测试：`modifier_tax_frame_rejection_test.gd`；Qodo：候选规则 |
+| 拒绝启动时执行器仍停止，模拟权限已释放 | AGENTS.md 规则 3、5 | 运行测试：`modifier_opening_rejection_test.gd` 检查两种执行方式的停机、权限释放，以及重启后保留已提交日期和待处理命令 |
+| 单个显示帧被拒绝后，同批日记录与回执仍发布一次 | AGENTS.md 规则 2、3 | 运行测试：`modifier_tax_frame_rejection_test.gd` 检查保留上一份有效税率，并交付同批逐日记录及命令回执 |
 | 出错时直接报错，不悄悄回退（气候 native 入口完全不许回退） | development-guide.md、用户 2026-11-19 | Qodo：errors fail loudly |
 | 阶段函数不碰 Godot 对象，返回值不表示业务成功 | development-guide.md | Qodo：daily stage functions |
 | 手动推进后台日的测试要等已提交日期并接收结果 | development-guide.md | Qodo：background-day tests |
@@ -43,4 +43,4 @@
 | 工厂把有冲突的 PR 分支更新到 master，遇到受保护路径、子模块或二进制冲突时交给人 | 仓库所有者 2026-11-19 | 工厂：`watch_prs.py` 的 `decide()` 和更新流程；测试：`test_watch.py`、`test_workflow.py` |
 | 关口、解析器、白名单和校验器要用它们必须拒绝的输入来测 | AGENTS.md 规则 6 | 测试：`tools/factory/tests/test_gates_refuse.py`（名字像关口的函数没登记拒绝用例就失败）；Qodo 规则“gates are tested with inputs they must refuse” |
 
-表中 38 项按主要执行方式分为 25 项护栏或测试、7 项 Qodo 规则、4 项工厂关卡或提示词，以及 2 项文字说明。Qodo 候选规则记录在 `qodo-rules.json` 的 `candidates`，同步工具只读取 `rules`。
+表中 38 项按主要执行方式分为 25 项护栏或测试、7 项 Qodo 规则、4 项工厂关卡或提示词，以及 2 项文字说明。

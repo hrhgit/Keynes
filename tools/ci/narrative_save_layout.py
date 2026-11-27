@@ -5,12 +5,15 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+import subprocess
 
 from cpp_source import COMMENTS, read_cpp_source
-from guard_baselines import previous_baseline
+from guard_baselines import historical_file, previous_baseline
 
 BASELINE = "tools/ci/narrative_save_layouts.json"
 SOURCE = "gdext/src/runtime_narrative_save.cpp"
+CHECKPOINT = "gdext/src/runtime_narrative_checkpoint.cpp"
+RUNTIME = "gdext/src/runtime_narrative.cpp"
 DICTIONARIES = {"out": "PKNarrativeRuntime", "unrest": "PKStratumUnrest"}
 TOKENS = re.compile(COMMENTS.pattern + r"|[A-Za-z_]\w*|\d+|\S")
 EXCHANGES = re.compile(r"\bstd : : exchange \( (_\w+) , \{ \} \)")
@@ -27,15 +30,38 @@ def _body(tokens: list[str], name: str) -> list[str]:
         if tokens[i:i + 4] != ["RuntimeNarrative", ":", ":", name]:
             continue
         start = tokens.index("{", i + 4)
-        depth = 1
-        for end in range(start + 1, len(tokens)):
-            depth += int(tokens[end] == "{") - int(tokens[end] == "}")
-            if depth == 0:
-                return tokens[start + 1:end]
+        if ";" not in tokens[i + 4:start]:
+            return tokens[start + 1:_closing(tokens, start)]
     raise ValueError(f"missing body for RuntimeNarrative::{name}")
 
 
-def _version(value: str, tokens: list[str]) -> int:
+PAIRS = {"(": ")", "[": "]", "{": "}"}
+
+
+def _closing(tokens: list[str], start: int) -> int:
+    stack = [PAIRS[tokens[start]]]
+    for index in range(start + 1, len(tokens)):
+        token = tokens[index]
+        if token in PAIRS:
+            stack.append(PAIRS[token])
+        elif token == stack[-1]:
+            stack.pop()
+            if not stack:
+                return index
+    raise ValueError(f"unclosed {tokens[start]} in Narrative source")
+
+
+def _until(tokens: list[str], start: int, ends: set[str]) -> int:
+    index = start
+    while index < len(tokens) and tokens[index] not in ends:
+        index = _closing(tokens, index) + 1 if tokens[index] in PAIRS else index + 1
+    return index
+
+
+def _version(expression: list[str], tokens: list[str]) -> int:
+    if len(expression) != 1:
+        return 0
+    value = expression[0]
     if value.isdecimal():
         return int(value)
     definitions = re.findall(
@@ -47,11 +73,11 @@ def _assignments(body: list[str]):
     for i in range(len(body) - 5):
         receiver, bracket, key, close, equals, value = body[i:i + 6]
         if bracket == "[" and key.startswith('"') and close == "]" and equals == "=" and value != "=":
-            yield i, receiver, key[1:-1], value
+            yield i, receiver, key[1:-1], body[i + 5:_until(body, i + 5, {';'})]
         elif body[i + 1:i + 4] == [".", "set", "("] and i + 6 < len(body):
-            key, comma, value = body[i + 4:i + 7]
+            key, comma = body[i + 4:i + 6]
             if comma == "," and key.startswith('"'):
-                yield i, receiver, key[1:-1], value
+                yield i, receiver, key[1:-1], body[i + 6:_closing(body, i + 3)]
 
 
 def _record_fields(body: list[str], assignments: list[tuple]) -> dict[str, list[str]]:
@@ -87,13 +113,21 @@ def archive_shapes(source: str) -> dict[str, tuple[int, list[str]]]:
     result = {}
     for name, schema in DICTIONARIES.items():
         keys = {key: value for _, receiver, key, value in assignments if receiver == name}
-        if keys.get("schema") != json.dumps(schema) or "version" not in keys:
+        if keys.get("schema") != [json.dumps(schema)] or "version" not in keys:
             raise ValueError(f"{schema} missing literal schema tag or version")
         version = _version(keys.pop("version"), tokens)
         if version <= 0:
             raise ValueError(f"{schema} must write a positive integer version")
         result[schema] = version, sorted([*keys, *records[schema]])
     return result
+
+
+def historical_narrative_layout(root: Path, ref: str) -> dict:
+    source = historical_file(root, ref, SOURCE)
+    if source is None:
+        return {}
+    return {schema: {str(version): keys} for schema, (version, keys) in
+            archive_shapes(source.decode("utf-8-sig")).items()}
 
 
 def layout_violations(shapes: dict, baseline: dict, previous: dict | None = None) -> list[str]:
@@ -134,17 +168,230 @@ def layout_violations(shapes: dict, baseline: dict, previous: dict | None = None
     return errors
 
 
+def _statements(body: list[str]):
+    """Yield complete statements and control blocks in the current scope."""
+    start = index = 0
+    while index < len(body):
+        token = body[index]
+        if token in PAIRS:
+            index = _closing(body, index)
+            if token == "{":
+                yield body[start:index + 1]
+                start = index + 1
+        elif token == ";":
+            yield body[start:index + 1]
+            start = index + 1
+        index += 1
+
+
+def _field_writes(capture: list[str]):
+    for _, receiver, key, value in _assignments(capture):
+        if receiver in DICTIONARIES:
+            yield receiver, key, value
+
+
+_READ_KEY = re.compile(r'\b(state|unrest) (?:\. get \(|\[) "([^"]+)"')
+_MEMBER = re.compile(r'_\w+')
+_INTEGER = re.compile(r'(?:u?int(?:8|16|32|64)_t|int|long|short|size_t)')
+
+
+def _expression_type(tokens: list[str]) -> str | None:
+    """Recognize the explicit Variant types whose mismatch is decidable here."""
+    if not tokens:
+        return None
+    head = tokens[0]
+    if head.startswith('"') or head in {"String", "StringName"}:
+        return "STRING"
+    if head in {"true", "false"}:
+        return "BOOL"
+    if head in {"Dictionary", "Array"}:
+        return head.upper()
+    scalar = tokens[2] if tokens[:2] == ["static_cast", "<"] and len(tokens) > 2 else head
+    if _INTEGER.fullmatch(scalar):
+        return "INT"
+    if scalar in {"float", "double"}:
+        return "FLOAT"
+    number = tokens[1:] if head in {"-", "+"} else tokens
+    if number and number[0].isdecimal() and (len(number) == 1 or number[1] == "."):
+        return "FLOAT" if "." in number else "INT"
+    return None
+
+
+def _reader_types(checkpoint: list[str]) -> dict[tuple[str, str], str]:
+    expected = {}
+    for index, token in enumerate(checkpoint[:-4]):
+        if token != "fields" or checkpoint[index + 1] != "(":
+            continue
+        match = re.fullmatch(
+            r'(archive|unrest) , "[^"]*" , Variant : : (\w+) , \{ (.*?) \}',
+            " ".join(checkpoint[index + 2:_closing(checkpoint, index + 1)]),
+        )
+        if match:
+            receiver = "out" if match[1] == "archive" else "unrest"
+            expected.update({(receiver, key): match[2] for key in re.findall(r'"([^"]+)"', match[3])})
+    return expected
+
+
+def _scalar_member(tokens: list[str]) -> str | None:
+    if len(tokens) == 1 and _MEMBER.fullmatch(tokens[0]):
+        return tokens[0]
+    if tokens[:2] == ["static_cast", "<"] and tokens[-3:-2] == ["("] and tokens[-1:] == [")"]:
+        return _scalar_member(tokens[-2:-1])
+    return None
+
+
+def _restore_fields(restore: list[str]) -> dict[str, list[set[tuple[str, str]]]]:
+    fields: dict[str, list[set[tuple[str, str]]]] = {}
+    helpers = set(re.findall(
+        r'const auto (\w+) = \[ & \] \( const char \* (\w+) \) \{ return [^;{}]*'
+        r'state \. get \( \2 [^;{}]* ; \}', " ".join(restore)))
+    helper_names = {name for name, _ in helpers}
+    aliases: dict[str, set[tuple[str, str]]] = {}
+    for statement in _statements(restore):
+        split = _until(statement, 0, {"=", ";"})
+        if not 0 < split < len(statement) or statement[split] != "=" or statement[-1] != ";":
+            continue
+        name = statement[split - 1]
+        declaration = statement[:split - 1]
+        if declaration and declaration[0] not in {"const", "auto", "int64_t", "int32_t", "Dictionary", "Array", "bool"}:
+            continue
+        expression = statement[split + 1:-1]
+        value = " ".join(expression)
+        sources = {("out" if receiver == "state" else receiver, key)
+                   for receiver, key in _READ_KEY.findall(value)}
+        if (helper_call := re.fullmatch(r'(\w+) \( "([^"]+)" \)', value)) and helper_call[1] in helper_names:
+            sources.add(("out", helper_call[2]))
+        for alias in set(expression) & aliases.keys():
+            sources.update(aliases[alias])
+        if not declaration and _MEMBER.fullmatch(name):
+            fields.setdefault(name, []).append(sources)
+        else:
+            aliases[name] = sources
+    return fields
+
+
+def _roundtrip_violations(save_source: str, checkpoint_source: str) -> list[str]:
+    tokens = _tokens(save_source)
+    capture = _body(tokens, "capture")
+    restore = _restore_fields(_body(tokens, "decode_checkpoint"))
+    expected = _reader_types(_body(_tokens(checkpoint_source), "checkpoint_error"))
+    restored_fields = {field for assignments in restore.values() for sources in assignments for field in sources}
+    errors = []
+    for receiver, key, value in _field_writes(capture):
+        field = receiver, key
+        actual_type = _expression_type(value)
+        reader_type = expected.get(field)
+        if actual_type and reader_type and actual_type != reader_type and (actual_type, reader_type) != ("INT", "FLOAT"):
+            errors.append(f"{SOURCE}: {key} is saved as {actual_type} but checkpoint validation expects {reader_type}")
+        member = _scalar_member(value)
+        if member is not None and (member not in restore or any(field not in sources for sources in restore[member])):
+            errors.append(f"{SOURCE}: {member} must be restored from its saved field {key}")
+        elif field in restored_fields and (value[0].startswith('"') or len(value) == 1 and
+                                          (value[0].isdecimal() or value[0] in {"true", "false"})):
+            errors.append(f"{SOURCE}: {key} is restored into runtime state but is saved as a literal")
+    return errors
+
+
+def _install_violations(runtime_source: str) -> list[str]:
+    body = _body(_tokens(runtime_source), "configure")
+    statements = list(_statements(body))
+    steps = [" ".join(step) for step in statements]
+    checked = None
+    candidate = None
+    decoded = False
+    installed = False
+    for index, step in enumerate(steps):
+        if not checked and (match := re.fullmatch(r'(?:const )?(?:auto|String) (\w+) = checkpoint_error \( archive \) ;', step)):
+            check = re.escape(match[1])
+            if index + 1 < len(steps) and re.match(rf'if \( ! {check} \. is_empty \( \) \) \{{', steps[index + 1]):
+                block = statements[index + 1]
+                failures = list(_statements(block[block.index("{") + 1:-1]))
+                if failures and failures[-1] == ["return", "false", ";"]:
+                    checked = match[1]
+        elif checked and not candidate and (match := re.fullmatch(r'RuntimeNarrative (\w+) (?:;|\{ \})', step)):
+            candidate = match[1]
+        elif candidate and step == f"{candidate} . decode_checkpoint ( archive ) ;":
+            decoded = True
+        elif (decoded and step == f"* this = std : : move ( {candidate} ) ;"
+              and steps[index + 1:] == ["return true ;"]):
+            installed = True
+    implementation = " ".join(body)
+    direct_mutation = re.search(r'\bthis - >|(?<!\. )\b_\w+ (?:=(?!=)|\. \w+ \()', implementation)
+    if (installed and not direct_mutation and implementation.count("decode_checkpoint (") == 1
+            and implementation.count("* this") == 1 and implementation.count("return true ;") == 1):
+        return []
+    return [f"{RUNTIME}: configure must validate the archive, decode into a local candidate, "
+            "then install that candidate once before reporting success"]
+
+
+def _reachable(tokens: list[str]) -> list[str]:
+    """Ignore obvious dead branches when looking for archive data movement."""
+    result = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index] == "if":
+            start = index + 1
+            if tokens[start:start + 1] == ["constexpr"]:
+                start += 1
+            if tokens[start:start + 1] == ["("]:
+                end = _closing(tokens, start)
+                if tokens[start + 1:end] in (["false"], ["0"]) and end + 1 < len(tokens):
+                    dead = end + 1
+                    index = (_closing(tokens, dead) if tokens[dead] == "{" else _until(tokens, dead, {";"})) + 1
+                    continue
+        result.append(tokens[index])
+        index += 1
+    return result
+
+
+def _captured_queue_fields(capture: list[str], member: str) -> set[tuple[str, str]]:
+    packed = {member}
+    for index, token in enumerate(capture[:-1]):
+        if token != "for" or capture[index + 1] != "(":
+            continue
+        end = _closing(capture, index + 1)
+        header = capture[index + 2:end]
+        if len(header) < 3 or header[-2:] != [":", member] or end + 1 >= len(capture):
+            continue
+        stop = _closing(capture, end + 1) if capture[end + 1] == "{" else _until(capture, end + 1, {";"})
+        item = re.escape(header[-3])
+        packed.update(re.findall(
+            rf'\b(\w+) \. (?:push_back|append) \( {item} \)', " ".join(capture[end + 1:stop])))
+    return {(receiver, key) for receiver, key, value in _field_writes(capture)
+            if (len(value) == 1 and value[0] in packed) or value == ["encode_records", "(", member, ")"]}
+
+
+def _restores_queue(restore: list[str], member: str, fields: set[tuple[str, str]]) -> bool:
+    if not fields:
+        return False
+    code = " ".join(restore)
+    for receiver, key in fields:
+        reader = "state" if receiver == "out" else receiver
+        read = rf'\b{reader} (?:\. get \(|\[) "{re.escape(key)}"'
+        aliases = set(re.findall(rf'\b(\w+) = [^;]*?{read}', code))
+        writes = re.findall(rf'\b{member} (?:=|\. (?:push_back|emplace_back|assign|insert) \() ([^;]+) ;', code)
+        if any(re.search(read, write) or any(re.search(rf'\b{re.escape(alias)}\b', write) for alias in aliases)
+               for write in writes):
+            return True
+        callback = re.search(
+            rf'\bdecode_records \( {read} [^;]* Dictionary & (\w+) \) \{{ [^}}]*'
+            rf'\b{member} \. (?:push_back|emplace_back) \( ([^;]+) ;', code)
+        if callback and re.search(rf'\b{re.escape(callback[1])}\b', callback[2]):
+            return True
+    return False
+
+
 def drained_state_violations(save_source: str, implementations: list[tuple[str, str]]) -> list[str]:
     """Require capture and decode for Narrative members taken with std::exchange."""
     save_tokens = _tokens(save_source)
-    capture = set(_body(save_tokens, "capture"))
-    restore = set(_body(save_tokens, "decode_checkpoint"))
+    capture = _reachable(_body(save_tokens, "capture"))
+    restore = _reachable(_body(save_tokens, "decode_checkpoint"))
     errors = []
     for path, source in implementations:
         # Strip strings as well as comments so examples cannot stand in for code.
         code = " ".join(token for token in _tokens(source) if not token.startswith(('"', "'", 'R"')))
         for member in sorted(set(EXCHANGES.findall(code)) - SAME_DAY):
-            if member not in capture or member not in restore:
+            if not _restores_queue(restore, member, _captured_queue_fields(capture, member)):
                 errors.append(f"{path}: drained Narrative state {member} is missing from "
                               "checkpoint capture or restore")
     return errors
@@ -154,10 +401,12 @@ def narrative_violations(root: Path) -> list[str]:
     try:
         save_source = read_cpp_source(root / SOURCE)
         baseline = json.loads((root / BASELINE).read_text(encoding="utf-8"))
-        previous = previous_baseline(root, BASELINE)
+        previous = previous_baseline(root, BASELINE, bootstrap=historical_narrative_layout)
         errors = layout_violations(archive_shapes(save_source), baseline, previous)
+        errors.extend(_roundtrip_violations(save_source, read_cpp_source(root / CHECKPOINT)))
+        errors.extend(_install_violations(read_cpp_source(root / RUNTIME)))
         owners = sorted((root / "gdext/src").glob("runtime_narrative*.cpp"))
         return errors + drained_state_violations(
             save_source, [(path.relative_to(root).as_posix(), read_cpp_source(path)) for path in owners])
-    except (OSError, ValueError, TypeError, KeyError) as error:
+    except (OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:
         return [f"Narrative save layout: {error}"]

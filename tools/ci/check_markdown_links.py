@@ -14,9 +14,11 @@ import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from unicodedata import category
 from urllib.parse import unquote, urlsplit
@@ -25,13 +27,13 @@ from guard_baselines import previous_baseline
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = "tools/ci/markdown_links_baseline.json"
-CODE_SPAN = re.compile(r"(?<!\x60)(\x60+)(?!\x60)(.*?)" r"(?<!\x60)\1(?!\x60)")
+CODE_SPAN = re.compile(r"(?<!\x60)(\x60+)(?!\x60)(.*?)" r"(?<!\x60)\1(?!\x60)", re.S)
 ESCAPE = re.compile(r"""\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_{}|~]|\x60)""")
 FENCE = re.compile(r"^\s*(\x60{3,}|~{3,})(.*)$")
 ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s+|$)(.*)$")
 REFERENCE = re.compile(r"^ {0,3}\[(?!\^)([^\[\]]+)\]:\s*(.*)$")
-LINK_START = re.compile(r"\\.|(\[)")
-HTML_TAG = re.compile(r"<[a-zA-Z/][^<>]*>")
+INLINE_START = re.compile(r"\\.|[\x60]+|\[|<")
+HTML_TAG = re.compile(r"""</?[a-zA-Z][a-zA-Z0-9-]*(?=[\s/>])(?:[^<>'"]|'[^']*'|"[^"]*")*>""")
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,9 @@ def _closing(text: str, start: int, left: str, right: str) -> int | None:
         if enclosed:
             if char == enclosed:
                 enclosed = ""
+        elif left == "[" and char == "\x60" and (code := CODE_SPAN.match(text, index)):
+            index = code.end()
+            continue
         elif left == "(" and depth == 1 and char == "<" and not text[start + 1:index].strip():
             enclosed = ">"
         elif left == "(" and depth == 1 and char in "\"'" and text[index - 1].isspace():
@@ -141,11 +146,11 @@ def _closing(text: str, start: int, left: str, right: str) -> int | None:
 
 def _destination(spec: str) -> str | None:
     spec = spec.strip()
-    match = re.match(r"^<([^<>]*)>|^((?:\\.|[^\s\\])+)", spec)
+    match = re.match(r"^<([^<>\n]*)>|^((?:\\.|[^\s\\])+)", spec)
     if not match:
         return None
     rest = spec[match.end():].strip()
-    if rest and not ((rest[0], rest[-1]) in {('"', '"'), ("'", "'"), ("(", ")")} and len(rest) > 1):
+    if rest and not _is_title(rest):
         return None
     return _unescape(match[1] if match[1] is not None else match[2])
 
@@ -154,32 +159,51 @@ def _label(value: str) -> str:
     return " ".join(_unescape(value).casefold().split())
 
 
-def _inline_links(line: str, references: dict[str, str]):
+def _is_title(value: str) -> bool:
+    return len(value) > 1 and (value[0], value[-1]) in {('"', '"'), ("'", "'"), ("(", ")")}
+
+
+def _inline_links(text: str, references: dict[str, str], html: _HtmlLinks | None = None):
     """Yield a link's label positions, end position and destination."""
     resume = 0
-    for match in LINK_START.finditer(line):
-        if match[1] is None or match.start() < resume:
-            continue
+    for match in INLINE_START.finditer(text):
         start = match.start()
-        end = _closing(line, start, "[", "]")
+        if start < resume:
+            continue
+        if match[0].startswith("\x60"):
+            if code := CODE_SPAN.match(text, start):
+                resume = code.end()
+            continue
+        if match[0] == "<":
+            if tag := HTML_TAG.match(text, start):
+                resume = tag.end()
+                if html is not None:
+                    html.feed(tag[0])
+                    for target in html.targets:
+                        yield start, start, resume, target
+                    html.targets.clear()
+            continue
+        if match[0] != "[":
+            continue
+        end = _closing(text, start, "[", "]")
         if end is None:
             continue
         after_label = end + 1
-        following = line[after_label:after_label + 1]
+        following = text[after_label:after_label + 1]
         after_link = after_label
         if following == "(":
-            close = _closing(line, after_label, "(", ")")
+            close = _closing(text, after_label, "(", ")")
             if close is None:
                 continue
-            target = _destination(line[after_label + 1:close])
+            target = _destination(text[after_label + 1:close])
             after_link = close + 1
         else:
-            label = line[start + 1:end]
+            label = text[start + 1:end]
             if following == "[":
-                close = _closing(line, after_label, "[", "]")
+                close = _closing(text, after_label, "[", "]")
                 if close is None:
                     continue
-                label = line[after_label + 1:close] or label
+                label = text[after_label + 1:close] or label
                 after_link = close + 1
             target = references.get(_label(label))
         if target is not None:
@@ -203,15 +227,52 @@ def _heading_text(heading: str, references: dict[str, str]) -> str:
     return re.sub(r"\0(\d+)\0", lambda match: code[int(match[1])], _unescape(heading))
 
 
-def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
-    lines = _visible_lines(text)
+def _reference_definitions(lines: list[str]) -> tuple[dict[str, str], set[int]]:
     references = {}
     definitions = set()
     for index, line in enumerate(lines):
+        if index in definitions:
+            continue
         reference = REFERENCE.match(line)
-        if reference and (target := _destination(reference[2])) is not None:
-            references.setdefault(_label(reference[1]), target)
-            definitions.add(index)
+        if not reference:
+            continue
+        end = index
+        destination = reference[2].strip()
+        if not destination and index + 1 < len(lines):
+            end += 1
+            destination = lines[end].strip()
+        target = _destination(destination)
+        if target is None:
+            continue
+        if end + 1 < len(lines) and _is_title(lines[end + 1].strip()):
+            end += 1
+        references.setdefault(_label(reference[1]), target)
+        definitions.update(range(index, end + 1))
+    return references, definitions
+
+
+def _inline_blocks(lines: list[str], definitions: set[int]):
+    """Join soft line breaks without letting a destination cross a block boundary."""
+    start = 0
+    body = []
+    for index, line in enumerate(lines):
+        if not line.strip() or index in definitions or ATX_HEADING.match(line):
+            if body:
+                yield start, "\n".join(body)
+                body = []
+            if ATX_HEADING.match(line) and index not in definitions:
+                yield index, line
+            continue
+        if not body:
+            start = index
+        body.append(line)
+    if body:
+        yield start, "\n".join(body)
+
+
+def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
+    lines = _visible_lines(text)
+    references, definitions = _reference_definitions(lines)
     html = _HtmlLinks()
     headings = set()
     links = []
@@ -220,7 +281,6 @@ def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
         if index in definitions:
             paragraph = ""
             continue
-        masked = CODE_SPAN.sub(lambda match: "x" * len(match[0]), line)
         atx = ATX_HEADING.match(line)
         heading = atx[1] if atx else ""
         if not atx and paragraph and re.fullmatch(r" {0,3}(?:=+|-+)\s*", line):
@@ -233,12 +293,12 @@ def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
                 duplicate += 1
                 anchor = f"{base}-{duplicate}"
             headings.add(anchor)
-        html.feed(masked + "\n")
-        links.extend((index + 1, target) for target in html.targets)
-        html.targets.clear()
-        for start, end, _, target in _inline_links(masked, references):
-            links.append((index + 1, target))
-            links.extend((index + 1, inner) for *_, inner in _inline_links(masked[start + 1:end], references))
+    for index, text in _inline_blocks(lines, definitions):
+        for start, end, _, target in _inline_links(text, references, html):
+            line = index + 1 + text.count("\n", 0, start)
+            links.append((line, target))
+            links.extend((line + text.count("\n", start + 1, start + 1 + inner), nested)
+                         for inner, _, _, nested in _inline_links(text[start + 1:end], references, html))
     return headings | html.anchors, links
 
 
@@ -257,13 +317,17 @@ def _local_target(source: str, target: str) -> tuple[str, str] | None:
 
 
 def validate_markdown_links(root: Path, tracked_paths: set[str]) -> list[LinkProblem]:
+    return _link_problems(tracked_paths, lambda path: (root / path).read_text(encoding="utf-8"))
+
+
+def _link_problems(tracked_paths: set[str], read_markdown: Callable[[str], str]) -> list[LinkProblem]:
     markdown = {path for path in tracked_paths if PurePosixPath(path).suffix.lower() == ".md"}
     directories = {parent.as_posix() for path in tracked_paths for parent in PurePosixPath(path).parents}
     documents = {}
     problems = []
     for path in sorted(markdown):
         try:
-            documents[path] = _document((root / path).read_text(encoding="utf-8"))
+            documents[path] = _document(read_markdown(path))
         except (OSError, UnicodeError):
             problems.append(LinkProblem(path, 1, path, "could not read tracked Markdown"))
     for source, (_, destinations) in documents.items():
@@ -286,6 +350,36 @@ def validate_markdown_links(root: Path, tracked_paths: set[str]) -> list[LinkPro
     return problems
 
 
+def markdown_baseline_at(root: Path, ref: str) -> dict[str, int]:
+    """Reproduce existing broken links from the versioned base tree."""
+    tree = subprocess.check_output(["git", "ls-tree", "-r", "-z", ref], cwd=root)
+    paths = set()
+    object_ids = {}
+    for entry in filter(None, tree.split(b"\0")):
+        metadata, raw_path = entry.split(b"\t", 1)
+        _, kind, object_id = metadata.split()
+        path = raw_path.decode("utf-8")
+        paths.add(path)
+        if kind == b"blob" and PurePosixPath(path).suffix.lower() == ".md":
+            object_ids[path] = object_id
+    if not object_ids:
+        return {}
+    requested = list(dict.fromkeys(object_ids.values()))
+    data = subprocess.check_output(["git", "cat-file", "--batch"], cwd=root,
+                                   input=b"\n".join(requested) + b"\n")
+    stream = BytesIO(data)
+    contents = {}
+    for expected in requested:
+        header = stream.readline().split()
+        if len(header) != 3 or header[:2] != [expected, b"blob"]:
+            raise ValueError(f"git cat-file: expected Markdown blob {expected.decode()}")
+        contents[expected] = stream.read(int(header[2]))
+        if stream.read(1) != b"\n":
+            raise ValueError(f"git cat-file: incomplete Markdown blob {expected.decode()}")
+    problems = _link_problems(paths, lambda path: contents[object_ids[path]].decode("utf-8"))
+    return dict(Counter(problem.baseline_key for problem in problems))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
@@ -297,7 +391,7 @@ def main() -> int:
         baseline = json.loads((root / BASELINE).read_text(encoding="utf-8"))
         if not isinstance(baseline, dict) or any(type(count) is not int or count < 1 for count in baseline.values()):
             raise ValueError(f"{BASELINE}: expected positive occurrence counts")
-        previous = previous_baseline(root, BASELINE)
+        previous = previous_baseline(root, BASELINE, markdown_baseline_at)
         errors = []
         if previous is not None:
             errors.extend(f"{BASELINE}: new or increased historical entry: {key}"

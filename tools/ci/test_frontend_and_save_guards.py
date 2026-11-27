@@ -1,11 +1,20 @@
 import copy
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import check_script_native_access as script_access
 import narrative_save_layout as layout
 
 PLAYER_GAME = "scripts/game/player_game.gd"
 UNREST_FILE = "gdext/src/runtime_narrative_unrest.cpp"
+ROOT = Path(__file__).resolve().parents[2]
 
 # The live diagnostic on master. f2762d2c7 adds the calendar input below.
 HEARTBEAT = """func _economy_probe() -> Dictionary:
@@ -81,6 +90,76 @@ def unversioned_last_city_capture():
 
 
 class FrontendLiveReads(unittest.TestCase):
+    def test_ci_refuses_a_manually_increased_native_reference_count(self):
+        name = "Project/project-keynes/scripts/ui/calendar.gd"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / script_access.BASELINE
+            baseline.parent.mkdir(parents=True)
+            baseline.write_text(json.dumps({name: {"economy": 2}}), encoding="utf-8")
+            for flags in ([], ["--write-baseline"]):
+                with self.subTest(flags=flags), \
+                        patch.object(sys, "argv", ["check_script_native_access.py", "--root", directory, *flags]), \
+                        patch.object(script_access, "inspect", return_value=([], [], 0)), \
+                        patch.object(script_access, "previous_baseline", return_value={name: {"economy": 1}}), \
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as stderr:
+                    self.assertEqual(script_access.main(), 1)
+                    self.assertIn("cannot increase historical native access allowance", stderr.getvalue())
+
+    def test_legacy_live_exception_must_match_an_existing_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            baseline = root / script_access.LIVE_BASELINE
+            baseline.parent.mkdir(parents=True)
+            baseline.write_text(json.dumps(CALENDAR_BASELINE), encoding="utf-8")
+            read_site = root / script_access.PROJECT / PLAYER_GAME
+            read_site.parent.mkdir(parents=True)
+            read_site.write_text(PUBLISHED_CALENDAR, encoding="utf-8")
+            with patch.object(script_access, "previous_baseline", return_value=CALENDAR_BASELINE), \
+                    patch.object(script_access.inventory, "inventory", side_effect=lambda _: ([], [])), \
+                    patch.object(script_access.inventory, "load_table", return_value={"modules": {}}):
+                _, errors, _ = script_access.inspect(root)
+                self.assertEqual(len(errors), 1)
+                self.assertIn("remove unused live read exception", errors[0])
+                baseline.write_text("{}", encoding="utf-8")
+                self.assertEqual(script_access.inspect(root)[1], [])
+
+    def test_heartbeat_callers_cannot_use_its_live_day_for_the_calendar(self):
+        source = (ROOT / script_access.PROJECT / PLAYER_GAME).read_text(encoding="utf-8")
+        self.assertEqual(script_access.frontend_live_read_violations(PLAYER_GAME, source, CALENDAR_BASELINE), [])
+        old = '\tvar eco := _economy_probe()\n'
+        self.assertIn(old, source)
+        changed = source.replace(old, old + '\t_world_clock.set_economy_settled_day(eco["eco_day"])\n')
+        self.assertTrue(script_access.frontend_live_read_violations(PLAYER_GAME, changed, CALENDAR_BASELINE))
+        other = 'func update(player):\n\treturn Callable(player, "_economy_probe").call()\n'
+        self.assertTrue(script_access.frontend_live_read_violations(
+            "scripts/game/calendar_adapter.gd", other, CALENDAR_BASELINE))
+
+    def test_first_live_baseline_can_use_only_the_base_heartbeat_and_consumer(self):
+        source = (ROOT / script_access.PROJECT / PLAYER_GAME).read_bytes()
+        with patch.object(script_access, "historical_file", return_value=source):
+            self.assertEqual(script_access.historical_live_baseline(ROOT, "base"), CALENDAR_BASELINE)
+        changed = source.replace(b'var eco := _economy_probe()\n',
+                                 b'var eco := _economy_probe()\n\tclock.set_day(eco["eco_day"])\n')
+        self.assertNotEqual(changed, source)
+        with patch.object(script_access, "historical_file", return_value=changed):
+            self.assertEqual(script_access.historical_live_baseline(ROOT, "base"), {})
+
+    def test_live_economy_facade_members_and_local_aliases_are_detected(self):
+        for origin in ('var model: EconomyFacade', 'var model = generator.get_economy_facade()',
+                       'var model\nfunc configure(generator):\n\tself.model = generator.get_economy_facade()'):
+            with self.subTest(origin=origin):
+                source = origin + '\nfunc update():\n\tvar economy = self.model\n\treturn economy.report()\n'
+                self.assertTrue(script_access.frontend_live_read_violations(
+                    "scripts/ui/calendar.gd", source, {}))
+
+    def test_published_view_can_use_the_same_method_name(self):
+        source = """func update(publication: PublishedEconomyView):
+	var generator = publication
+	return generator.get_economy_report()
+"""
+        self.assertEqual(script_access.frontend_live_read_violations("scripts/ui/calendar.gd", source, {}), [])
+
     def test_calendar_cannot_gain_access_through_the_heartbeats_live_report(self):
         self.assertEqual(script_access.frontend_live_read_violations(PLAYER_GAME, HEARTBEAT, CALENDAR_BASELINE), [])
         self.assertEqual(script_access.frontend_live_read_violations(PLAYER_GAME, PUBLISHED_CALENDAR, {}), [])
@@ -111,6 +190,55 @@ class FrontendLiveReads(unittest.TestCase):
 
 
 class NarrativeSaveLayout(unittest.TestCase):
+    def test_saved_scalar_must_restore_from_its_own_key(self):
+        source = (ROOT / layout.SOURCE).read_text(encoding="utf-8")
+        old = '_last_pulse = state.get("last_pulse_day", 0);'
+        self.assertIn(old, source)
+        self.assertEqual(self.check_sources({}), [])
+        equivalent = source.replace(old, 'const auto pulse = state.get("last_pulse_day", 0);\n    _last_pulse = pulse;')
+        self.assertEqual(self.check_sources({layout.SOURCE: equivalent}), [])
+        changed = source.replace(old, '_last_pulse = 0;')
+        self.assertTrue(self.check_sources({layout.SOURCE: changed}))
+
+    def test_saved_seed_type_must_match_read_validation(self):
+        source = (ROOT / layout.SOURCE).read_text(encoding="utf-8")
+        old = 'out["world_seed"] = static_cast<int64_t>(_seed);'
+        self.assertIn(old, source)
+        changed = source.replace(old, 'out["world_seed"] = String::num_int64(_seed);')
+        self.assertTrue(self.check_sources({layout.SOURCE: changed}))
+
+    def test_mentioning_the_queue_without_restoring_its_contents_is_rejected(self):
+        source = unversioned_last_city_capture()
+        old = 'for (int64_t i = 0; i < clears.size(); ++i) _independence_clears.push_back(clears[i]);'
+        self.assertIn(old, source)
+        implementations = [(UNREST_FILE, HISTORICAL_DRAIN)]
+        self.assertEqual(layout.drained_state_violations(source, implementations), [])
+        changed = source.replace(old, '(void)_independence_clears;')
+        self.assertTrue(layout.drained_state_violations(changed, implementations))
+
+    def test_runtime_installs_only_the_validated_and_decoded_candidate(self):
+        path = 'gdext/src/runtime_narrative.cpp'
+        source = (ROOT / path).read_text(encoding="utf-8")
+        old = '    decoded.decode_checkpoint(archive);\n    if (decoded._country == 0) return false;\n    *this = std::move(decoded);'
+        self.assertIn(old, source)
+        for changed in ('    *this = std::move(decoded);\n    decode_checkpoint(archive);',
+                        '    if (false) { decoded.decode_checkpoint(archive); }\n    *this = std::move(decoded);'):
+            with self.subTest(changed=changed):
+                self.assertTrue(self.check_sources({path: source.replace(old, changed)}))
+
+    def check_sources(self, replacements):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = (layout.SOURCE, layout.BASELINE, 'gdext/src/runtime_narrative.cpp',
+                     'gdext/src/runtime_narrative_checkpoint.cpp')
+            for file in paths:
+                destination = root / file
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source = replacements.get(file, (ROOT / file).read_text(encoding="utf-8"))
+                destination.write_text(source, encoding="utf-8")
+            with patch.dict(os.environ, {"KEYNES_GUARD_BASE_REF": ""}):
+                return layout.narrative_violations(root)
+
     def test_next_day_drain_must_survive_a_checkpoint(self):
         implementations = [(UNREST_FILE, HISTORICAL_DRAIN)]
         errors = layout.drained_state_violations(SAVE_SOURCE, implementations)

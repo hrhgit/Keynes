@@ -1,9 +1,10 @@
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import quote
 
-from check_markdown_links import LinkProblem, validate_markdown_links
+from check_markdown_links import LinkProblem, markdown_baseline_at, validate_markdown_links
 
 FEATURE_INDEX = "docs/architecture/feature-status.md"
 CURRENT_STATE = "docs/architecture/current-state.md"
@@ -84,6 +85,44 @@ class MarkdownLinkTests(unittest.TestCase):
             LinkProblem("README.md", 1, "DOC.md", "missing repository path"),
             LinkProblem("README.md", 2, "doc.md#intro-1", "missing Markdown anchor"),
         ])
+
+    def test_checks_multiline_inline_links_and_reference_definitions(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "[inline](\n  missing-inline.md\n  \"Title\"\n)\n\n"
+                         "[ref]:\n  <missing-reference.md>\n  \"Title\"\n\n"
+                         "[reference][ref]\n",
+        }), [
+            LinkProblem("README.md", 1, "missing-inline.md", "missing repository path"),
+            LinkProblem("README.md", 10, "missing-reference.md", "missing repository path"),
+        ])
+
+    def test_preserves_literal_backticks_in_link_and_html_destinations(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "[link](doc\x60\x60name\x60\x60.md#heading)\n"
+                         "<a href='doc\x60name\x60.md#heading'>HTML link</a>\n"
+                         "[reference][ref]\n"
+                         "[ref]: <doc\x60name\x60.md#heading>\n",
+            "doc\x60\x60name\x60\x60.md": "# Heading\n",
+            "doc\x60name\x60.md": "# Heading\n",
+        }), [])
+
+    def test_links_inside_multiline_code_spans_and_across_paragraphs_are_ignored(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "A literal \x60prefix\n [x](missing.md)\x60.\n\n"
+                         "[fragment](\n\nmissing.md\n)\n",
+        }), [])
+
+    def test_bootstrap_uses_the_original_tree_and_counts_each_broken_link(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            source = root / "README.md"
+            source.write_text("[old](missing.md)\n[duplicate](missing.md)\n", encoding="utf-8")
+            subprocess.run(["git", "add", "--", source.name], cwd=root, check=True)
+            base = subprocess.check_output(["git", "write-tree"], text=True, cwd=root).strip()
+            source.write_text("[introduced](different.md)\n", encoding="utf-8")
+            key = LinkProblem(source.name, 1, "missing.md", "missing repository path").baseline_key
+            self.assertEqual(markdown_baseline_at(root, base), {key: 2})
 
 
 if __name__ == "__main__":

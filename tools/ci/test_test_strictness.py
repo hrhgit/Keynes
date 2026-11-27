@@ -22,6 +22,56 @@ await host.generate_world(int(config.base.initial_seed))
 
 
 class TestStrictness(unittest.TestCase):
+    def test_rejects_comparison_relaxed_from_exact_day_to_bounds(self):
+        findings = validate_test_diff("assert(day == 3)\n", "assert(day >= 0)\n")
+        self.assertTrue(findings, "the wider comparison accepts incorrect days")
+
+    def test_rejects_assertions_moved_into_dead_branches(self):
+        for after in ("if false:\n    assert(day == 3)\n",
+                      "if (false) {\nassert(day == 3)\n}\n",
+                      "if (false)\n{\nassert(day == 3)\n}\n",
+                      "if (false) assert(day == 3);\n"):
+            with self.subTest(after=after):
+                self.assertTrue(validate_test_diff("assert(day == 3)\n", after))
+
+    def test_assertion_in_else_remains_reachable(self):
+        before = "if (ready) {\n    prepare();\n} else {\n    assert(day == 3);\n}\n"
+        self.assertEqual(validate_test_diff(before, before.replace("(ready)", "(false)")), [])
+
+    def test_rejects_multiline_assertion_whose_expected_value_becomes_actual(self):
+        before = "self.assertEqual(\n    sample.day,\n    expected_day,\n)\n"
+        after = before.replace("expected_day", "sample.day")
+        self.assertTrue(validate_test_diff(before, after))
+
+    def test_compares_literal_timeout_expressions(self):
+        before = "const TIMEOUT_MSEC := 1000\n"
+        self.assertTrue(validate_test_diff(before, "const TIMEOUT_MSEC := 1000 * 10\n"))
+        self.assertEqual(validate_test_diff(before, "const TIMEOUT_MSEC := 250 * 4\n"), [])
+        self.assertTrue(validate_test_diff("auto timeout = 1000U;", "auto timeout = 1000U * 10U;"))
+        self.assertTrue(validate_test_diff(before, "const TIMEOUT_MSEC := (1000) * (5 + 5)\n"))
+
+    def test_timeout_consumes_a_changed_constant_even_if_the_call_is_unchanged(self):
+        before = "const DEFAULT := 1000\nrun_check(timeout=DEFAULT)\n"
+        self.assertTrue(validate_test_diff(before, before.replace("1000", "2000")))
+
+    def test_compares_named_seed_constants(self):
+        before = "const DEFAULT := 12\nconst ALTERNATE := 13\nconfig.initial_seed = DEFAULT\n"
+        self.assertTrue(validate_test_diff(before, before.replace("seed = DEFAULT", "seed = ALTERNATE")))
+        equivalent = before.replace("ALTERNATE := 13", "ALTERNATE := 12")
+        self.assertEqual(validate_test_diff(equivalent, equivalent.replace("seed = DEFAULT", "seed = ALTERNATE")), [])
+
+    def test_equivalent_attempt_and_retry_counts(self):
+        before = "run_check(retries=2)\n"
+        self.assertEqual(validate_test_diff(before, "run_check(max_attempts=3)\n"), [])
+        self.assertTrue(validate_test_diff(before, "run_check(max_attempts=4)\n"))
+        self.assertEqual(validate_test_diff(before, "run_check(maxAttempts=3)\n"), [])
+        self.assertEqual(validate_test_diff("RETRIES = 2\n", "MAX_ATTEMPTS = 3\n"), [])
+
+    def test_inline_marker_does_not_approve_adjacent_weakening(self):
+        before = "assert(day == 3)\nassert(price == 50)\n"
+        after = "assert(day >= 0) # test-guard[assertion]: The day is checked on replay\nassert(price >= 0)\n"
+        self.assertEqual([line for line, _ in validate_test_diff(before, after)], [2])
+
     def test_historical_seed_edit_needs_local_reason(self):
         self.assertEqual(validate_test_diff(SEED_BEFORE, SEED_AFTER), [
             (4, "seed change in initial_seed: 20260718 -> 20260727"),

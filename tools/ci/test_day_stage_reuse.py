@@ -2,7 +2,8 @@
 
 import unittest
 
-from check_day_stage_reuse import HOST, MODIFIER_OWNER, stage_reuse_violations
+from check_day_stage_reuse import HOST, MODIFIER_OWNER, SRC, ROOT, stage_reuse_violations
+from cpp_source import read_cpp_source
 
 
 WITHOUT_REUSE = """
@@ -28,6 +29,12 @@ def gameplay_sources(body):
                 DayExecution &day, RuntimeDomainPlan &stage) {
             """ + body + "}",
     }
+
+
+def production_sources():
+    directory = ROOT / SRC
+    paths = [directory / HOST, directory / MODIFIER_OWNER, *directory.glob("native_simulation_stage_*.cpp")]
+    return {path.name: read_cpp_source(path) for path in paths}
 
 
 class DayStageReuseTests(unittest.TestCase):
@@ -60,6 +67,31 @@ class DayStageReuseTests(unittest.TestCase):
         ))
         self.assertEqual(len(errors), 1)
         self.assertIn("must retain its completed stage", errors[0])
+
+    def test_economy_rejects_unreachable_retention(self):
+        sources = production_sources()
+        self.assertEqual(stage_reuse_violations(sources), [])
+        name = "native_simulation_stage_economy.cpp"
+        target = "day.remember_completed(stage);\n        return true;"
+        self.assertIn(target, sources[name])
+        for replacement in (
+            "if (false) { day.remember_completed(stage); }\n        return true;",
+            "if (false) day.remember_completed(stage);\n        return true;",
+            "return true;\n        day.remember_completed(stage);",
+        ):
+            with self.subTest(retention=replacement):
+                changed = {**sources, name: sources[name].replace(target, replacement, 1)}
+                self.assertTrue(any("must retain its completed stage" in error
+                                    for error in stage_reuse_violations(changed)))
+
+    def test_economy_accepts_reusing_the_result_through_a_local_variable(self):
+        sources = production_sources()
+        name = "native_simulation_stage_economy.cpp"
+        target = "if (day.reuse_completed(stage)) {"
+        self.assertIn(target, sources[name])
+        sources[name] = sources[name].replace(
+            target, "const bool reused = day.reuse_completed(stage);\n        if (reused) {", 1)
+        self.assertEqual(stage_reuse_violations(sources), [])
 
     def test_accepts_guard_that_allows_genuinely_late_orders(self):
         body = """
@@ -97,6 +129,16 @@ class DayStageReuseTests(unittest.TestCase):
         errors = stage_reuse_violations(source)
         self.assertEqual(len(errors), 1)
         self.assertIn("does not preserve same-day delivery receipts", errors[0])
+
+    def test_modifier_cannot_clear_receipts_before_installing_its_plan(self):
+        sources = production_sources()
+        self.assertEqual(stage_reuse_violations(sources), [])
+        target = "_current = std::move(_next);"
+        self.assertIn(target, sources[MODIFIER_OWNER])
+        changed = {**sources, MODIFIER_OWNER: sources[MODIFIER_OWNER].replace(
+            target, "_next.day_receipts.clear();\n        " + target, 1)}
+        self.assertTrue(any("does not preserve same-day delivery receipts" in error
+                            for error in stage_reuse_violations(changed)))
 
     def test_rejects_missing_registered_definition(self):
         sources = gameplay_sources(WITHOUT_REUSE)

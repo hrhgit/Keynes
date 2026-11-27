@@ -18,13 +18,22 @@ BASELINE = Path("tools/ci/tax_row_keys_baseline.json")
 SRC = Path("gdext/src")
 SCALAR = (r"(?:std\s*::\s*)?(?:u?int(?:8|16|32|64)_t|size_t|ptrdiff_t|"
           r"(?:signed\s+|unsigned\s+)?(?:short|int|long(?:\s+long)?|char)|signed|unsigned|bool)")
+TYPE_NAME = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*"
+KEY_TYPE = rf"(?:{SCALAR}|{TYPE_NAME})"
+CXX_ALIAS = re.compile(
+    rf"\busing\s+(?P<alias>\w+)\s*=\s*(?P<type>{KEY_TYPE})\s*;"
+    rf"|\btypedef\s+(?P<old_type>{KEY_TYPE})\s+(?P<typedef>\w+)\s*;"
+)
 CACHE = re.compile(
     rf"\b(?:using\s+(?P<alias>\w+)\s*=\s*)?(?:std\s*::\s*)?(?:unordered_map|map)"
-    rf"\s*<\s*(?P<key>{SCALAR})\s*,\s*(?P<value>[\w:]+)"
+    rf"\s*<\s*(?P<key>{KEY_TYPE})\s*,\s*(?P<value>[\w:]+)"
     r"(?:\s*,\s*[^;{}]*?)?\s*>\s*(?P<name>\w+)?\s*(?=[;{=])"
 )
 ROW = re.compile(r"(?:^|_)rows?(?:_|$)|Rows?(?:[A-Z]|$)")
 DEFAULT_ROWS = re.compile(r"tax.*default.*row")
+ID_INDEX = re.compile(r"(?:^|_)by_id$|ByI[dD]$")
+ID_VALUE = re.compile(r"(?:^|_)id$|I[dD]$")
+PACKING = re.compile(r"<<|>>|(?<!\|)\|(?!\|)|(?<!&)&(?!&)")
 LEGACY_CACHE = "settlement_default_rows"
 LEGACY_PATH = "gdext/src/economy_runtime_country_epoch_capture_tax_rows.inc"
 
@@ -41,12 +50,51 @@ def _identity(name: str, declaration: str, code: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _integer_aliases(code: str) -> set[str]:
+    alias_types = {match["alias"] or match["typedef"]: match["type"] or match["old_type"]
+                   for match in CXX_ALIAS.finditer(code)}
+    aliases = set()
+    while True:
+        recognized = {alias for alias, key in alias_types.items()
+                      if re.fullmatch(SCALAR, key) or key in aliases}
+        if recognized == aliases:
+            return aliases
+        aliases = recognized
+
+
+def _single_id_index(name: str, code: str) -> bool:
+    if not ID_INDEX.search(name):
+        return False
+    # A table indexed by an existing ID may live next to the default-row
+    # cache. Renaming a packed key's table does not give it that exemption.
+    accesses = re.compile(
+        rf"\b{name}\s*(?:\[\s*([^]\n]+)\]|\.\s*"
+        r"(?:at|count|contains|find|erase|emplace|try_emplace|insert_or_assign|lower_bound|upper_bound)"
+        r"\s*\(\s*([^,)\n]+))"
+    )
+    for access in accesses.finditer(code):
+        key = (access[1] or access[2]).strip()
+        if key.isdecimal():
+            continue
+        if not re.fullmatch(r"\w+(?:\s*(?:\.|->)\s*\w+)*", key) or not ID_VALUE.search(key):
+            return False
+        for definition in re.finditer(rf"\b{re.escape(key)}\s*=(?!=)\s*([^;]+);", code):
+            if PACKING.search(definition[1]):
+                return False
+    return True
+
+
 def _scalar_caches(path: str, source: str):
     code = code_only(source)
     default_row_scope = DEFAULT_ROWS.search(Path(path).stem)
+    aliases = _integer_aliases(code)
     for declaration in CACHE.finditer(code):
+        key = declaration["key"]
+        if not re.fullmatch(SCALAR, key) and key not in aliases:
+            continue
         name = declaration["alias"] or declaration["name"]
-        if name and (default_row_scope or ROW.search(name) or ROW.search(declaration["value"])):
+        if (name and (default_row_scope or ROW.search(name) or ROW.search(declaration["value"]))
+                and not _single_id_index(name, code)):
             line = code.count("\n", 0, declaration.start()) + 1
             yield line, name, _identity(name, declaration[0], code)
 

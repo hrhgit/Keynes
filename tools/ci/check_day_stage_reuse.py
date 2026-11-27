@@ -41,9 +41,11 @@ STAGE_WORK = {
 }
 MODIFIER_OWNER = "runtime_modifier_pod_daily_authority.inc"
 MODIFIER_PLAN = re.compile(r"\bRuntimeModifierPodAuthority::plan_day\s*\([^{}]*\)\s*\{")
+MODIFIER_COMMIT = re.compile(r"\bRuntimeModifierPodAuthority::commit_day\s*\([^{}]*\)\s*\{")
+RECEIPT_ACCESS = re.compile(r"\b(?:_current|_next)\s*\.\s*day_receipts\b(?:\s*\.\s*(\w+)\s*\()?")
 MODIFIER_DEDUP = (
     r"\bconst\s+bool\s+same_day\s*=\s*day\s*==\s*_current\.committed_day\s*;",
-    r"\bif\s*\(\s*!same_day\s*\)\s*\{\s*_next\.day_receipts\.clear\s*\(\s*\)",
+    r"\b_next\s*=\s*_current\s*;",
     r"\bconst\s+auto\s+previous\s*=\s*_next\.day_receipts\.find\s*\(\s*item\.id\s*\)\s*;"
     r"\s*if\s*\(\s*previous\s*!=\s*_next\.day_receipts\.end\s*\(\s*\)\s*\)\s*\{"
     r"[^{}]*\bcontinue\s*;",
@@ -51,6 +53,12 @@ MODIFIER_DEDUP = (
     r"\s*if\s*\(\s*previous\s*!=\s*_next\.day_receipts\.end\s*\(\s*\)\s*\)\s*\{"
     r"[^{}]*\bcontinue\s*;",
 )
+NEW_DAY_RECEIPT_RESET = re.compile(
+    r"\bif\s*\(\s*!\s*same_day\s*\)\s*\{\s*(?P<reset>_next\s*\.\s*day_receipts\s*\.\s*clear\s*\()"
+)
+RETENTION_CONDITION = {"stage_trigger_input": "trigger_ok", "stage_ideology": "ideology_ok"}
+RETENTION_SCOPE = {"stage_trigger_input": "trigger_ok || trigger_soft"}
+RETURN = re.compile(r"\breturn\b")
 
 
 def _body(code: str, start: int) -> str:
@@ -64,10 +72,20 @@ def _body(code: str, start: int) -> str:
 
 def _modifier_reuses_receipts(code: str) -> bool:
     plan = MODIFIER_PLAN.search(code)
-    if not plan:
+    commit = MODIFIER_COMMIT.search(code)
+    if not plan or not commit:
         return False
     body = _body(code, plan.end())
-    return all(re.search(pattern, body) for pattern in MODIFIER_DEDUP)
+    reset = NEW_DAY_RECEIPT_RESET.search(body)
+    if not reset or not all(re.search(pattern, body) for pattern in MODIFIER_DEDUP):
+        return False
+    allowed_reset = plan.end() + reset.start("reset")
+    for access in RECEIPT_ACCESS.finditer(code):
+        if access.start() == allowed_reset:
+            continue
+        if access[1] not in {"at", "contains", "count", "emplace", "end", "find", "size", "try_emplace"}:
+            return False
+    return bool(re.search(r"\b_current\s*=\s*std::move\s*\(\s*_next\s*\)\s*;", _body(code, commit.end())))
 
 
 def _scopes_at(body: str, position: int) -> tuple[int, ...]:
@@ -89,7 +107,10 @@ def _reuse_positions(body: str, name: str, day: str, stage: str):
     call = rf"\b{day}\s*\.\s*reuse_completed\s*\(\s*{stage}\s*\)"
     # The reuse result controls an early return. Calling the helper and then
     # still running the stage does not recognize already-completed work.
-    for branch in re.finditer(rf"\bif\s*\(\s*{call}\s*\)\s*", body):
+    direct = rf"\bif\s*\(\s*{call}\s*\)\s*"
+    local = (rf"\b(?:const\s+)?(?:bool|auto)\s+(?P<reused>\w+)\s*=\s*{call}\s*;\s*"
+             rf"if\s*\(\s*(?P=reused)\s*\)\s*")
+    for branch in re.finditer(rf"{direct}|{local}", body):
         if not _starts_statement(body, branch.start()):
             continue
         after = body[branch.end():]
@@ -110,13 +131,59 @@ def _reuse_positions(body: str, name: str, day: str, stage: str):
                 yield branch.start()
 
 
-def _reuse_before_work(body: str, name: str, day: str, stage: str) -> bool:
+def _reuse_before_work(body: str, name: str, day: str, stage: str):
     work_pattern = STAGE_WORK.get(name)
     work = [call.start() for call in re.finditer(rf"\b(?:{work_pattern})\s*\(", body)] if work_pattern else []
     for position in _reuse_positions(body, name, day, stage):
         scope = _scopes_at(body, position)
         if all(position < start and _scopes_at(body, start)[:len(scope)] == scope for start in work):
-            return True
+            yield position, max(work, default=position), scope
+
+
+def _condition_before(body: str, position: int, condition: str) -> bool:
+    expression = r"\s*".join(map(re.escape, condition.split()))
+    guard = re.search(rf"\bif\s*\(\s*{expression}\s*\)\s*$", body[:position])
+    return bool(guard and _starts_statement(body, guard.start()))
+
+
+def _has_earlier_return(body: str, reuse_at: int, retain_at: int, scope: tuple[int, ...]) -> bool:
+    for earlier in RETURN.finditer(body, reuse_at, retain_at):
+        if _starts_statement(body, earlier.start()):
+            return_scope = _scopes_at(body, earlier.start())
+            if scope[:len(return_scope)] == return_scope:
+                return True
+    return False
+
+
+def _retains_completion(body: str, name: str, day: str, stage: str, reuse: tuple) -> bool:
+    reuse_at, last_work, work_scope = reuse
+    success_condition = RETENTION_CONDITION.get(name)
+    outer_success = RETENTION_SCOPE.get(name)
+    remember = rf"\b{day}\s*\.\s*remember_completed\s*\(\s*{stage}\s*\)\s*;"
+    for call in re.finditer(remember, body):
+        if call.start() <= last_work:
+            continue
+        scope = _scopes_at(body, call.start())
+        parent_scopes = scope
+        is_statement = _starts_statement(body, call.start())
+        if success_condition:
+            # Trigger and Ideology can return after a soft completion. Only
+            # the explicitly successful path records a result to be reused.
+            if is_statement and scope and _condition_before(body, scope[-1], success_condition):
+                parent_scopes = scope[:-1]
+            elif not _condition_before(body, call.start(), success_condition):
+                continue
+        elif not is_statement:
+            continue
+        if outer_success:
+            if not parent_scopes or not _condition_before(body, parent_scopes[-1], outer_success):
+                continue
+            parent_scopes = parent_scopes[:-1]
+        if parent_scopes != work_scope:
+            continue
+        if _has_earlier_return(body, reuse_at, call.start(), scope):
+            continue
+        return True
     return False
 
 
@@ -148,10 +215,11 @@ def stage_reuse_violations(sources: dict[str, str]) -> list[str]:
                 if not _modifier_reuses_receipts(code_only(sources.get(MODIFIER_OWNER, ""))):
                     errors.append(f"{label} does not preserve same-day delivery receipts in {MODIFIER_OWNER}")
             elif name not in ALTERNATIVES:
-                if not _reuse_before_work(body, name, day, stage):
+                reuse_paths = list(_reuse_before_work(body, name, day, stage))
+                if not reuse_paths:
                     errors.append(f"{label} must return through {day}.reuse_completed({stage}) before repeating stage work")
-                elif not re.search(rf"\b{day}\s*\.\s*remember_completed\s*\(\s*{stage}\s*\)", body):
-                    errors.append(f"{label} must retain its completed stage with {day}.remember_completed({stage})")
+                elif not any(_retains_completion(body, name, day, stage, path) for path in reuse_paths):
+                    errors.append(f"{label} must retain its completed stage with {day}.remember_completed({stage}) on the success path")
     for name in sorted(registered - defined):
         errors.append(f"{HOST}: no readable definition for registered day stage {name}")
     return errors

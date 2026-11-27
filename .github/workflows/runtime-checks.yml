@@ -51,10 +51,12 @@ jobs:
       - name: Static architecture guards
         working-directory: tools/ci
         env:
-          KEYNES_GUARD_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+          KEYNES_GUARD_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ "$KEYNES_GUARD_BASE_REF" = 0000000000000000000000000000000000000000 ]; then
-            export KEYNES_GUARD_BASE_REF="$GITHUB_SHA"
+          if [ -z "$KEYNES_GUARD_BASE_REF" ] || [ "$KEYNES_GUARD_BASE_REF" = "$GITHUB_SHA" ] || \
+              [ "$KEYNES_GUARD_BASE_REF" = 0000000000000000000000000000000000000000 ]; then
+            KEYNES_GUARD_BASE_REF=$(git rev-parse --verify HEAD^) || exit 1
+            export KEYNES_GUARD_BASE_REF
           fi
           if ! git cat-file -e "$KEYNES_GUARD_BASE_REF^{commit}"; then
             git fetch --depth=1 --filter=blob:none origin "$KEYNES_GUARD_BASE_REF" || exit 1
@@ -68,7 +70,7 @@ jobs:
               check_markdown_links.py check_test_strictness.py \
               test_tax_committed_view.py test_regression_evidence.py test_runtime_load_consistency.py \
               test_day_stage_reuse.py test_tax_row_keys.py test_frontend_and_save_guards.py \
-              test_generated_manifests.py test_markdown_links.py test_test_strictness.py; do
+              test_generated_manifests.py test_markdown_links.py test_test_strictness.py test_guard_baselines.py; do
             echo "::group::$guard"
             python "$guard" || { status=1; echo "::error::$guard failed"; }
             echo "::endgroup::"

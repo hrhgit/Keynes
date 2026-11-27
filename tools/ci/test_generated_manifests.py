@@ -11,6 +11,7 @@ from check_generated_manifests import (
     PROJECT,
     _catalog_fingerprints,
     _catalog_recipe,
+    catalog_baseline_at,
     validate_binding_manifest_bytes,
     validate_catalog_manifest_bytes,
 )
@@ -26,6 +27,15 @@ CANONICAL_BINDINGS = b'{\n  "class": "DCWorldExt",\n  "count": 1,\n  "methods": 
 def catalog(*entries: tuple[str, str]) -> bytes:
     rows = ",\n".join(f'\t"{path}": "{digest}"' for path, digest in sorted(entries))
     return ("{\n" + rows + "\n}").encode("utf-8")
+
+
+def stage_sources(root: Path, files: dict[str, bytes]) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    for path, content in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
 
 
 class GeneratedManifestTests(unittest.TestCase):
@@ -105,6 +115,52 @@ class GeneratedManifestTests(unittest.TestCase):
                 {SOURCE: hashlib.sha256(b"{}").hexdigest(),
                  "res://scripts/economy/default.gd": hashlib.sha256(b"pass\n").hexdigest()},
             )
+
+    def test_reads_new_source_extension_from_index_only_if_sparse(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            source = "data/new-source.cfg"
+            path = f"{PROJECT}/{source}"
+            (root / path).parent.mkdir(parents=True)
+            actual = b"setting=value\n"
+            (root / path).write_bytes(actual)
+            subprocess.run(["git", "add", "--", path], cwd=root, check=True)
+            subprocess.run(["git", "update-index", "--skip-worktree", "--", path], cwd=root, check=True)
+            (root / path).unlink()
+            self.assertEqual(
+                _catalog_fingerprints(root, ("data/",), {"cfg"}, "data/loading_catalog_v1"),
+                {f"res://{source}": hashlib.sha256(actual).hexdigest()},
+            )
+            subprocess.run(["git", "update-index", "--no-skip-worktree", "--", path], cwd=root, check=True)
+            with self.assertRaises(FileNotFoundError):
+                _catalog_fingerprints(root, ("data/",), {"cfg"}, "data/loading_catalog_v1")
+
+            object_id = subprocess.check_output(["git", "rev-parse", ":" + path], cwd=root).strip()
+            subprocess.run(["git", "update-index", "--cacheinfo", f"120000,{object_id.decode()},{path}"],
+                           cwd=root, check=True)
+            subprocess.run(["git", "update-index", "--skip-worktree", "--", path], cwd=root, check=True)
+            with self.assertRaises(FileNotFoundError):
+                _catalog_fingerprints(root, ("data/",), {"cfg"}, "data/loading_catalog_v1")
+
+    def test_bootstrap_only_recovers_native_binding_debt_from_original_tree(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            expected = hashlib.sha256(CANONICAL_BINDINGS).hexdigest()
+            stage_sources(root, {
+                BAKE: b'\tfor dir in ["res://data"]:\n'
+                      b'\t\t_collect_sources(dir, files)\n'
+                      b'\t\tif name.get_extension() in ["json"]:\n'
+                      b'\tfile.store_string(JSON.stringify(files,"\\t",true))\n',
+                CACHE: b'const DIRECTORY := "res://data/loading_catalog_v1/"\n',
+                f"{PROJECT}/data/native_binding_manifest.json": CANONICAL_BINDINGS,
+                f"{PROJECT}/data/loading_catalog_v1/sources.json":
+                    catalog((SOURCE, STALE_HASH), ("res://data/other.json", "a" * 64)),
+                f"{PROJECT}/data/other.json": b"{}\n",
+            })
+            base = subprocess.check_output(["git", "write-tree"], text=True, cwd=root).strip()
+            (root / f"{PROJECT}/data/native_binding_manifest.json").write_bytes(b"mutated\n")
+            self.assertEqual(catalog_baseline_at(root, base), {SOURCE: [STALE_HASH, expected]})
 
 
 if __name__ == "__main__":

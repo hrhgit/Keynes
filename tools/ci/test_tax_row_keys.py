@@ -50,6 +50,39 @@ class TaxRowKeyTests(unittest.TestCase):
         source = FIXED_ROWS + "std::unordered_map<uint64_t, uint32_t> compiled_policy_ids;"
         self.assertEqual(tax_row_key_violations({TAX_ROWS: source}, {}), ([], {}))
 
+    def test_rejects_packed_key_using_integer_type_aliases(self):
+        declarations = [
+            "using PackedKey = uint64_t;",
+            "typedef std::uint64_t RawKey;\nusing PackedKey = RawKey;",
+        ]
+        for declaration in declarations:
+            with self.subTest(declaration=declaration):
+                rows = PACKED_ROWS.replace("unordered_map<uint64_t,", "unordered_map<PackedKey,")
+                errors, _ = tax_row_key_violations({TAX_ROWS: declaration + rows}, MASTER_ENTRY)
+                self.assertTrue(any("settlement_default_rows uses a scalar tax row key" in error
+                                    for error in errors))
+
+    def test_accepts_a_single_id_lookup_in_the_default_rows_file(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = """
+            std::unordered_map<uint64_t, Policy> policy_by_id;
+            const auto policy = policy_by_id.find(policy_id);
+        """
+        self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
+
+    def test_rejects_packing_in_a_table_named_like_a_single_id_index(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = PACKED_ROWS.replace("settlement_default_rows", "policy_by_id")
+        errors, _ = tax_row_key_violations({path: source}, {})
+        self.assertTrue(any("policy_by_id uses a scalar tax row key" in error for error in errors))
+
+    def test_the_master_key_collides_for_two_legal_absolute_amounts(self):
+        country, kind, mode = 5, 3, 1
+        low, high = 1, 16777217
+        prefix = (country << 40) | (kind << 32) | (mode << 24)
+        self.assertNotEqual(low, high)
+        self.assertEqual(prefix | low, prefix | high)
+
     def test_accepts_tuple_with_four_separate_fields(self):
         source = "std::map<std::tuple<int32_t, int32_t, int32_t, int32_t>, int32_t> display_default_rows;"
         self.assertEqual(tax_row_key_violations({TAX_ROWS: source}, {}), ([], {}))

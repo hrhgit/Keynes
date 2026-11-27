@@ -5,19 +5,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
 import world_ext_bindings as bindings
-from guard_baselines import previous_baseline
+from guard_baselines import historical_file, previous_baseline
 
 PROJECT = "Project/project-keynes"
 BAKE = f"{PROJECT}/tools/loading_catalog_bake.gd"
 CACHE = f"{PROJECT}/scripts/game/loading_catalog_cache.gd"
 BASELINE = "tools/ci/generated_manifests_baseline.json"
 BAKE_COMMAND = "godot --headless --path Project/project-keynes --script res://tools/prebake_loading_catalogs.gd"
+NATIVE_BINDING_SOURCE = "res://data/native_binding_manifest.json"
 
 
 def validate_binding_manifest_bytes(actual: bytes, current_bindings: list[dict]) -> list[str]:
@@ -28,10 +30,13 @@ def validate_binding_manifest_bytes(actual: bytes, current_bindings: list[dict])
 
 
 def _catalog_recipe(root: Path) -> tuple[tuple[str, ...], set[str], str]:
+    return _recipe_from_text((root / BAKE).read_text(encoding="utf-8"),
+                             (root / CACHE).read_text(encoding="utf-8"))
+
+
+def _recipe_from_text(bake: str, cache: str) -> tuple[tuple[str, ...], set[str], str]:
     # Read the producer's literal directory/extension lists so updating the
     # bake's source set also updates the static check.
-    bake = (root / BAKE).read_text(encoding="utf-8")
-    cache = (root / CACHE).read_text(encoding="utf-8")
     directories = re.search(r"(?m)^\tfor dir in (\[[^\n]+\]):\n\t\t_collect_sources\(dir, files\)$", bake)
     extensions = re.search(r"(?m)^\t\tif name\.get_extension\(\) in (\[[^\n]+\]):$", bake)
     output = re.search(r'(?m)^const DIRECTORY := "res://([\w/]+)/"$', cache)
@@ -56,17 +61,52 @@ def _catalog_recipe(root: Path) -> tuple[tuple[str, ...], set[str], str]:
 def _catalog_fingerprints(root: Path, directories: tuple[str, ...], extensions: set[str],
                           output: str) -> dict[str, str]:
     files = subprocess.check_output(
-        ["git", "ls-files", "-z", "--", *(f"{PROJECT}/{path}" for path in directories)], cwd=root,
+        ["git", "ls-files", "-t", "--stage", "-z", "--", *(f"{PROJECT}/{path}" for path in directories)], cwd=root,
     ).decode("utf-8").split("\0")
     fingerprints = {}
-    for file in filter(None, files):
+    for entry in filter(None, files):
+        metadata, file = entry.split("\t", 1)
         relative = PurePosixPath(file).relative_to(PROJECT)
         if (relative.is_relative_to(output)
             or relative.suffix[1:] not in extensions
             or any(part.startswith(".") for part in relative.parts)):
             continue
-        fingerprints[f"res://{relative}"] = hashlib.sha256((root / file).read_bytes()).hexdigest()
+        tag, mode, object_id, stage = metadata.split()
+        if stage != "0":
+            raise ValueError(f"{file}: unresolved source in the Git index")
+        try:
+            source = (root / file).read_bytes()
+        except FileNotFoundError:
+            if tag != "S" or mode not in {"100644", "100755"}:
+                raise
+            # Sparse checkout can omit a tracked source when the bake adds
+            # an extension. Use the same filters as a regular checkout.
+            source = subprocess.check_output(
+                ["git", "cat-file", "--filters", f"--path={file}", object_id], cwd=root,
+            )
+        fingerprints[f"res://{relative}"] = hashlib.sha256(source).hexdigest()
     return fingerprints
+
+
+def catalog_baseline_at(root: Path, ref: str) -> dict[str, list[str]]:
+    """Recover only the original native-binding fingerprint mismatch from Git."""
+    bake = historical_file(root, ref, BAKE)
+    cache = historical_file(root, ref, CACHE)
+    binding_manifest = historical_file(root, ref, bindings.MANIFEST)
+    if bake is None or cache is None or binding_manifest is None:
+        return {}
+    directories, extensions, output = _recipe_from_text(bake.decode("utf-8"), cache.decode("utf-8"))
+    if "data/" not in directories or "json" not in extensions:
+        return {}
+    catalog = historical_file(root, ref, f"{PROJECT}/{output}/sources.json")
+    if catalog is None:
+        return {}
+    recorded = json.loads(catalog)
+    expected = hashlib.sha256(binding_manifest).hexdigest()
+    value = recorded.get(NATIVE_BINDING_SOURCE) if isinstance(recorded, dict) else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) and value != expected:
+        return {NATIVE_BINDING_SOURCE: [value, expected]}
+    return {}
 
 
 def validate_catalog_manifest_bytes(actual: bytes, fingerprints: dict[str, str],
@@ -117,8 +157,12 @@ def _historical_catalog_sources(root: Path) -> dict[str, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=bindings.ROOT)
-    root = parser.parse_args().root
+    parser.add_argument("--require-clean-catalog", action="store_true",
+                        help="fail if the editor would reject even a known stale catalog fingerprint")
+    args = parser.parse_args()
+    root = args.root
     baselined = []
+    catalog = ""
     try:
         current, errors = bindings.inventory(root)
         errors.extend(validate_binding_manifest_bytes((root / bindings.MANIFEST).read_bytes(), current))
@@ -126,7 +170,7 @@ def main() -> int:
         catalog = f"{PROJECT}/{output}/sources.json"
         fingerprints = _catalog_fingerprints(root, directories, extensions, output)
         baseline = _historical_catalog_sources(root)
-        previous = previous_baseline(root, BASELINE)
+        previous = previous_baseline(root, BASELINE, catalog_baseline_at)
         if previous is not None:
             errors.extend(f"{BASELINE}: new or changed historical entry: {path}"
                           for path, hashes in baseline.items() if previous.get(path) != hashes)
@@ -136,8 +180,15 @@ def main() -> int:
             errors.append(f"regenerate the loading catalog with: {BAKE_COMMAND}")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         errors = [str(error)]
-    for difference in baselined:
-        print(f"catalog sources baseline: {difference}")
+    if baselined:
+        message = "The editor will reject this prebaked catalog because of known stale fingerprints."
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(f"::warning file={catalog}::{message}")
+        print(f"WARNING: {message} Regenerate with: {BAKE_COMMAND}", file=sys.stderr)
+        for difference in baselined:
+            print(f"catalog sources baseline: {difference}", file=sys.stderr)
+        if args.require_clean_catalog:
+            errors.append(f"{catalog}: --require-clean-catalog requires every fingerprint to match")
     for error in errors:
         print(error, file=sys.stderr)
     print(f"generated manifests: {len(errors)} violations, {len(baselined)} historical mismatches")
