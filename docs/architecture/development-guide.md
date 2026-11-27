@@ -156,11 +156,12 @@ skill 源文件统一放在仓库根目录的 `skills/`。各工具通过本机�
 
 ## 护栏与检查
 
-静态护栏（默认回归会先跑；PR 上由 `runtime-checks.yml` 的 `architecture-guards` 自动运行）：
+默认静态护栏以 [CI 的 Static architecture guards 步骤](../../.github/workflows/runtime-checks.yml) 为准。工厂读取同一份清单。本地可从仓库根目录用 `python3 tools/ci/<脚本名>` 逐项运行。
 
-```bash
-cd tools/ci && for g in check_size_ratchet.py check_cpp_deps.py check_cross_domain_inventory.py check_runtime_advancers.py check_runtime_switches.py check_committed_views.py check_save_contracts.py check_module_contracts.py check_resolve_apply.py check_module_api.py check_skill_mirrors.py check_module_map.py world_ext_bindings.py check_world_ext_bindings.py check_script_native_access.py test_architecture_guards.py test_regression_evidence.py; do ~/.local/bin/python3 $g >/dev/null 2>&1; echo "$g exit=$?"; done
-```
+- `check_generated_manifests.py` 根据 C++ 绑定和资源文件重新构造清单，在内存中逐字节比对。由生成工具更新清单，手工拼接的内容会报错。
+- `check_markdown_links.py` 检查仓库 Markdown 的相对链接和锚点。拆文档时保留旧锚点，或一起更新引用它的位置。
+- `check_test_strictness.py` 比较 PR 基础提交和待检查内容，查找删除断言、改动固定种子、放宽数值容差、加长超时、增加重试等写法。本地默认对比与 `origin/master` 的共同提交，也可用 `--base <提交>` 指定。它匹配常见测试函数和字面量，测试含义及计算得出的值仍由评审判断。
+- 必须调整测试时，在改动行末或紧邻的上一行用 `# test-guard[类别]: 理由` 或 `// test-guard[类别]: 理由`，记录原条件为何失效、改动后仍覆盖的行为。类别为 `assertion`、`seed`、`tolerance`、`timeout`、`retry`。删除断言时把注释放在原位置。已有的相同理由不能为下一次改动放行。例如 `# test-guard[seed]: 原开局缺天然燧石，固定到包含开局路线的地图以验证执行器停机`。
 
 构建（不同 SCons 配置共用中间文件，必须串行；跑带墙钟故障门槛的检查时不要并行编译）：
 

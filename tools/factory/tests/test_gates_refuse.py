@@ -1,8 +1,7 @@
 """Gates, parsers, allowlists and validators are tested with inputs they must refuse (AGENTS.md rule 6).
 
-Every gate-like function in the factory is listed in GATES with at least one input it must refuse.
-The AST scan fails when a new gate-named function is added without an entry, so the rule is
-enforced by this test and not by anyone remembering it.
+Every gate-like function in the factory and the listed CI guard modules has at least one refusal in GATES.
+The AST scan fails when a gate-named function in those modules is added without an entry.
 """
 
 import ast
@@ -14,15 +13,28 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 FACTORY = Path(__file__).resolve().parents[1]
+CI = FACTORY.parent / "ci"
 sys.path.insert(0, str(FACTORY))
+sys.path.insert(1, str(CI))
 
 import agent
 import checks
+import check_generated_manifests
+import check_markdown_links
+import check_script_native_access as script_access
+import narrative_save_layout as narrative_layout
 import ticket
 import verdict
 import work
 import watch_prs
+from check_day_stage_reuse import stage_reuse_violations
+from check_tax_row_keys import tax_row_key_violations
+from check_test_strictness import validate_test_diff
 from common import Result, legacy_lane_gate, load_config
+import test_frontend_and_save_guards as continued_state_inputs
+from test_day_stage_reuse import WITHOUT_REUSE, gameplay_sources
+from test_tax_row_keys import PACKED_ROWS, TAX_ROWS
+from test_test_strictness import SEED_AFTER, SEED_BEFORE
 
 CFG = load_config()
 NATIVE = CFG["checks"]["nativeRuntimeCheck"]
@@ -101,8 +113,67 @@ def refuses_legacy_owner(lane, entry):
             return legacy_lane_gate(root, lane)
 
 
+def refuses_moved_heading():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "current-state.md").write_text("[状态](feature-status.md#同日重访)\n", encoding="utf-8")
+        (root / "feature-status.md").write_text("## 按模块查阅\n", encoding="utf-8")
+        return bool(check_markdown_links.validate_markdown_links(root, {"current-state.md", "feature-status.md"}))
+
+
 # name -> list of (description, callable returning True when the gate refused the input)
 GATES = {
+    "stage_reuse_violations": [
+        ("the gameplay effect stage runs again when the day is revisited",
+         lambda: bool(stage_reuse_violations(gameplay_sources(WITHOUT_REUSE)))),
+    ],
+    "tax_row_key_violations": [
+        ("mode bits overlap a legal tax amount in the settlement cache",
+         lambda: bool(tax_row_key_violations({TAX_ROWS: PACKED_ROWS}, {})[0])),
+    ],
+    "allowed": [
+        ("a UI script is outside the owning Economy directory", lambda: not script_access.allowed(
+            "scripts/ui/calendar.gd", "economy", {"economy": ["scripts/economy"]})),
+    ],
+    "frontend_live_read_violations": [
+        ("the calendar takes simulation progress from the live Economy facade", lambda: bool(
+            script_access.frontend_live_read_violations(
+                continued_state_inputs.PLAYER_GAME, continued_state_inputs.HISTORICAL_CALENDAR,
+                continued_state_inputs.CALENDAR_BASELINE))),
+    ],
+    "live_baseline_violations": [
+        ("an additional function is added to the historical Economy access exception", lambda: bool(
+            script_access.live_baseline_violations({"scripts/ui/calendar.gd": {"read_day": "0" * 64}}, {}))),
+    ],
+    "layout_violations": [
+        ("the last-city state is captured under the same archive version", lambda: bool(
+            narrative_layout.layout_violations(
+                narrative_layout.archive_shapes(continued_state_inputs.unversioned_last_city_capture()),
+                continued_state_inputs.SAVE_BASELINE))),
+    ],
+    "drained_state_violations": [
+        ("the last-city state queued for the next day is absent from the archive", lambda: bool(
+            narrative_layout.drained_state_violations(continued_state_inputs.SAVE_SOURCE, [
+                (continued_state_inputs.UNREST_FILE, continued_state_inputs.HISTORICAL_DRAIN)]))),
+    ],
+    "validate_binding_manifest_bytes": [
+        ("a hand-edited list omits a discovered binding", lambda: bool(
+            check_generated_manifests.validate_binding_manifest_bytes(
+                b'{"class":"DCWorldExt","count":0,"methods":[]}', [{"name": "poll_runtime_commit"}]))),
+    ],
+    "validate_catalog_manifest_bytes": [
+        ("a hand-edited fingerprint disagrees with the source bytes", lambda: bool(
+            check_generated_manifests.validate_catalog_manifest_bytes(
+                b'{"res://data/native_binding_manifest.json":"stale"}',
+                {"res://data/native_binding_manifest.json": "0" * 64}, {})[0])),
+    ],
+    "validate_markdown_links": [
+        ("a heading moved out of feature-status without a retained anchor", refuses_moved_heading),
+    ],
+    "validate_test_diff": [
+        ("the stopped-worker test changes its map seed without a local reason",
+         lambda: bool(validate_test_diff(SEED_BEFORE, SEED_AFTER))),
+    ],
     "legacy_lane_gate": [
         ("the old Issue runner owns the Issue workspace", lambda: refuses_legacy_owner("issue", "run.py")),
         ("the old PR runner owns the shared workspace", lambda: refuses_legacy_owner("issue", "watch_prs.py")),
@@ -200,12 +271,16 @@ GATES = {
 }
 
 NAME_PARTS = ("matches", "touching", "scope", "gate", "parse", "classify", "validate", "allowed", "native_line", "extra_checks", "unknown_findings", "preflight")
-EXEMPT = {"gate": "registered as ticket.gate"}
+CI_GUARD_MODULES = (
+    "check_day_stage_reuse.py", "check_tax_row_keys.py", "check_generated_manifests.py",
+    "check_markdown_links.py", "check_test_strictness.py", "check_script_native_access.py",
+    "check_save_contracts.py", "narrative_save_layout.py",
+)
 
 
 def gate_functions():
     found = set()
-    for path in FACTORY.glob("*.py"):
+    for path in (*FACTORY.glob("*.py"), *(CI / name for name in CI_GUARD_MODULES)):
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.FunctionDef) and not node.name.startswith("_") and \
                     any(p in node.name for p in NAME_PARTS):

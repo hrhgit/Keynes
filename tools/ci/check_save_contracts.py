@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Enforce Country/Economy adapter ownership at the existing provider boundary."""
+"""Enforce save ownership, native section contracts, and Narrative layouts."""
 from pathlib import Path
 import argparse
 import re
+from check_save_section_contracts import REGISTRY as CPP_REGISTRY, violations as cpp_section_violations
+from narrative_save_layout import SOURCE as NARRATIVE_SOURCE, narrative_violations
+
 ROOT=Path(__file__).resolve().parents[2]
 BASE='Project/project-keynes/scripts/game/'
-from check_save_section_contracts import violations as cpp_section_violations
 
 def violations(root):
     errors=[]
@@ -31,14 +33,18 @@ def violations(root):
     for owner in ('CountryState','EconomyState'):
         if '_owned_provider(adapters[' not in composition or owner+'.archive_contract(' not in composition:
             errors.append('composition bypasses '+owner+' contract')
-    if (root / "tools/ci/cpp_save_section_contracts.json").exists():
+    if (root / CPP_REGISTRY).is_file():
         errors.extend(cpp_section_violations(root))
+    elif (root / NARRATIVE_SOURCE).is_file():
+        errors.append(f'missing native save section registry {CPP_REGISTRY}')
+    if (root / CPP_REGISTRY).is_file() or (root / NARRATIVE_SOURCE).is_file():
+        errors.extend(narrative_violations(root))
     return errors
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--root',type=Path,default=ROOT);a=p.parse_args()
     errors=violations(a.root)
     for e in errors:print(e)
-    print(f'save contracts: 2 script owners + 12 C++ domains, {len(errors)} violations')
+    print(f'save contracts: 2 script owners, 12 C++ domains and Narrative layouts, {len(errors)} violations')
     return bool(errors)
 if __name__=='__main__':raise SystemExit(main())

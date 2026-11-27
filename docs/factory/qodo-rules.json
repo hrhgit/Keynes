@@ -1,6 +1,20 @@
 {
   "scope": "/hrhgit/Project.Keynes/",
   "note": "Rules a static guard cannot decide. Each names the document it comes from; docs/factory/rule-coverage.md lists what enforces every rule. Sync with tools/factory/sync_rules.py (creates missing rules by name, never edits or deletes).",
+  "candidates": [
+    {
+      "name": "启动被拒绝后，执行器仍为停止状态",
+      "source": "PR #12；`modifier_opening_rejection_test.gd`",
+      "content": "检查启动、恢复和重用宿主的全部失败出口。可能拒绝开局帧的检查必须在执行器获准运行前完成。若启动路径分阶段取得资源，失败时须释放模拟权限，保留可用的存档和待处理命令，使调用方可以按原权限立即重新启动。",
+      "reason_for_review": "调用 start 的位置无法说明执行器何时获准运行。检查可能在回调中完成，也可能由其他函数负责撤回权限。运行用例检查拒绝时的停止状态、权限和随后重试。"
+    },
+    {
+      "name": "拒绝单个显示帧时，保留同批逐日发布",
+      "source": "PR #12；`modifier_tax_frame_rejection_test.gd`",
+      "content": "检查消费逐日发布队列后的所有退出路径。税率帧等局部显示数据被拒绝时，保留上一份可用的显示数据，报告被拒绝的原因和保留日期。已经取出的日记录、地图更新、通知和命令回执仍须交付且只交付一次。",
+      "reason_for_review": "同一个提前返回可能发生在借阅队列内容、消费内容或重新入队之后。仅查看返回语句或函数名无法判断是否丢失日记录。运行用例注入目录不匹配并核对收到的批次和后续轮询。"
+    }
+  ],
   "rules": [
     {
       "name": "Keynes: simulation results must not depend on timing or load",

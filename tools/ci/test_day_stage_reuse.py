@@ -1,0 +1,109 @@
+"""Test the same-day stage guard with the PR #11 revisit shapes."""
+
+import unittest
+
+from check_day_stage_reuse import HOST, MODIFIER_OWNER, stage_reuse_violations
+
+
+WITHOUT_REUSE = """
+    uint32_t terminal = 0;
+    for (const auto &packet : day_commands) {
+        gameplay_event_commands.push_back(packet);
+        ++terminal;
+    }
+    _gameplay_effect_generation.fetch_add(1, std::memory_order_release);
+    return true;
+"""
+
+
+def gameplay_sources(body):
+    return {
+        HOST: """
+            std::array<RuntimeModuleDescriptor<StageFunction>, 1> modules{{
+                {&NativeSimulationHost::stage_gameplay_effect},
+            }};
+        """,
+        "native_simulation_stage_gameplay_effect.cpp": """
+            bool NativeSimulationHost::stage_gameplay_effect(
+                DayExecution &day, RuntimeDomainPlan &stage) {
+            """ + body + "}",
+    }
+
+
+class DayStageReuseTests(unittest.TestCase):
+    def test_rejects_old_gameplay_effect_body(self):
+        errors = stage_reuse_violations(gameplay_sources(WITHOUT_REUSE))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("must return through day.reuse_completed(stage)", errors[0])
+
+    def test_rejects_a_comment_or_ignored_call_in_place_of_reuse(self):
+        for line in ("// if (day.reuse_completed(stage)) return true;",
+                     "day.reuse_completed(stage);"):
+            with self.subTest(line=line):
+                self.assertTrue(stage_reuse_violations(gameplay_sources(line + "\n" + WITHOUT_REUSE)))
+
+    def test_rejects_reuse_after_mutation_or_in_an_unrelated_branch(self):
+        reused = "if (day.reuse_completed(stage)) return true;"
+        for body in (
+            WITHOUT_REUSE.replace("return true;", reused + "\nreturn true;"),
+            "if (unrelated) {\n" + reused + "\n}\n" + WITHOUT_REUSE,
+            "if (unrelated)\n" + reused + "\n" + WITHOUT_REUSE,
+        ):
+            with self.subTest(body=body):
+                errors = stage_reuse_violations(gameplay_sources(body))
+                self.assertEqual(len(errors), 1)
+                self.assertIn("before repeating stage work", errors[0])
+
+    def test_requires_retaining_the_result(self):
+        errors = stage_reuse_violations(gameplay_sources(
+            "if (day.reuse_completed(stage)) return true;\n" + WITHOUT_REUSE
+        ))
+        self.assertEqual(len(errors), 1)
+        self.assertIn("must retain its completed stage", errors[0])
+
+    def test_accepts_guard_that_allows_genuinely_late_orders(self):
+        body = """
+            if (previously_completed && latest_order == day.progress.gameplay_submit_order)
+                return day.reuse_completed(stage);
+            if (!previously_completed) process_original_orders();
+            gameplay_event_commands.push_back(new_packet);
+            day.remember_completed(stage);
+            return true;
+        """
+        self.assertEqual(stage_reuse_violations(gameplay_sources(body)), [])
+
+    def test_rejects_modifier_plan_that_reapplies_same_day_deliveries(self):
+        source = {
+            HOST: """
+                std::array<RuntimeModuleDescriptor<StageFunction>, 1> modules{{
+                    {&NativeSimulationHost::stage_modifier},
+                }};
+            """,
+            "native_simulation_stage_modifier.cpp": """
+                bool NativeSimulationHost::stage_modifier(DayExecution &day, RuntimeDomainPlan &stage) {
+                    return execute_modifier_worker_stage();
+                }
+            """,
+            MODIFIER_OWNER: """
+                bool RuntimeModifierPodAuthority::plan_day(int64_t day) {
+                    _next = _current;
+                    for (const auto &item : ordered) {
+                        apply_command(_next, item.command, day, ack, changed, command_error);
+                    }
+                    return true;
+                }
+            """,
+        }
+        errors = stage_reuse_violations(source)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("does not preserve same-day delivery receipts", errors[0])
+
+    def test_rejects_missing_registered_definition(self):
+        sources = gameplay_sources(WITHOUT_REUSE)
+        errors = stage_reuse_violations({HOST: sources[HOST]})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no readable definition for registered day stage", errors[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

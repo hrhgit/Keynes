@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freeze cross-module DCWorldExt access in production GDScript.
+"""Freeze cross-module DCWorldExt access and front-end live Economy reads.
 
 Each call or exact binding-name string is one candidate. Count it only when its
 receiver is world-like (a), or no production script defines that method (b).
@@ -10,6 +10,7 @@ precision breakdown and samples; --report shows the migration backlog.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -18,10 +19,19 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import world_ext_bindings as inventory
+from guard_baselines import previous_baseline
 
 PROJECT = "Project/project-keynes"
 BASELINE = "tools/ci/script_native_access_baseline.json"
+LIVE_BASELINE = "tools/ci/script_live_access_baseline.json"
 EXCLUDED = {"tests", "tmp", "addons", ".godot"}
+FRONTEND_DIRS = ("scripts/ui/", "scripts/rendering/")
+FRONTEND_FILES = {
+    "scripts/game/player_game.gd",
+    "scripts/game/world_runtime_presentation.gd",
+    "scripts/geography/world_clock.gd",
+}
+ECONOMY_FACADES = {"_economy_facade", "_economy_runtime_facade"}
 WORLD_NAME = re.compile(r"(?:^|_)(?:data_core_)?world_ext$|^_?ext$|^ext_obj$|^world$|^dc$")
 # A single lexer keeps comments and quoted code out of call/func recognition.
 LEX = re.compile(
@@ -116,7 +126,7 @@ def dot_receiver(tokens: list[Token], dot: int) -> str | None:
     return receiver(tokens, start, dot)
 
 
-def candidates(tokens: list[Token], bindings: dict[str, str]):
+def candidates(tokens: list[Token], bindings: dict[str, str], *, probes: bool = True):
     # Stack entries: opening token, first argument start, argument number, first comma.
     stack: list[list[int]] = []
     for i, token in enumerate(tokens):
@@ -125,14 +135,18 @@ def candidates(tokens: list[Token], bindings: dict[str, str]):
                 yield token, "call", dot_receiver(tokens, i - 1)
         if token.kind == "string" and token.value in bindings:
             target = None
+            is_read = False
             if stack and tokens[stack[-1][0]].value == "(":
                 opening, first, arg, first_comma = stack[-1]
                 function = tokens[opening - 1].value if opening else ""
                 if function in REFLECTIVE and arg == 0 and opening >= 2 and tokens[opening - 2].value == ".":
                     target = dot_receiver(tokens, opening - 2)
+                    is_read = function != "has_method"
                 elif function == "Callable" and arg == 1:
                     target = receiver(tokens, first, first_comma)
-            yield token, "string", target
+                    is_read = True
+            if probes or is_read:
+                yield token, "string", target
         if token.kind != "punct":
             continue
         if token.value in ("(", "[", "{"):
@@ -143,6 +157,91 @@ def candidates(tokens: list[Token], bindings: dict[str, str]):
             if stack[-1][2] == 0:
                 stack[-1][3] = i  # Callable's receiver ends at its first comma.
             stack[-1][2] += 1
+
+
+def _named_functions(tokens: list[Token]):
+    starts = [i for i, token in enumerate(tokens[:-2])
+              if token.kind == "id" and token.value == "func"
+              and tokens[i + 1].kind == "id" and tokens[i + 2].value == "("]
+    for start, end in zip(starts, starts[1:] + [len(tokens)]):
+        yield tokens[start + 1].value, tokens[start:end]
+
+
+def _facade_names(tokens: list[Token]) -> set[str]:
+    names = set(ECONOMY_FACADES)
+    for i, token in enumerate(tokens):
+        if token.kind != "id":
+            continue
+        j = i + 1
+        if j < len(tokens) and tokens[j].value == ":":
+            j += 1
+            if j < len(tokens) and tokens[j].kind == "id":
+                if tokens[j].value == "EconomyFacade":
+                    names.add(token.value)
+                j += 1
+        if j >= len(tokens) or tokens[j].value != "=":
+            continue
+        j += 1
+        while j < len(tokens) and tokens[j].kind == "id":
+            name = tokens[j].value
+            j += 1
+            called = [t.value for t in tokens[j:j + 2]] == ["(", ")"]
+            if called:
+                j += 2
+            if j >= len(tokens) or tokens[j].value != ".":
+                if (called and name == "get_economy_facade") or (not called and name in names):
+                    names.add(token.value)
+                break
+            j += 1
+    return names
+
+
+def _live_reads(tokens: list[Token]):
+    names = _facade_names(tokens)
+    positions = {token.offset: i for i, token in enumerate(tokens)}
+    for token, kind, target in candidates(tokens, {"report", "get_economy_report"}, probes=False):
+        if token.value == "get_economy_report" or target in names:
+            yield token
+        elif kind == "call":
+            i = positions[token.offset]
+            if [t.value for t in tokens[max(0, i - 4):i]] == ["get_economy_facade", "(", ")", "."]:
+                yield token
+
+
+def _function_digest(source: str, function: list[Token]) -> str:
+    # Comments and blank lines can come and go. Preserve indentation and which
+    # tokens share a line, since both matter in GDScript.
+    lines = []
+    previous = -1
+    for token in function:
+        line_start = source.rfind("\n", 0, token.offset) + 1
+        if line_start != previous:
+            lines.append([source[line_start:token.offset]])
+            previous = line_start
+        lines[-1].append((token.kind, token.value))
+    return hashlib.sha256(json.dumps(lines, ensure_ascii=False).encode()).hexdigest()
+
+
+def frontend_live_read_violations(
+    file: str, source: str, baseline: dict, tokens: list[Token] | None = None
+) -> list[str]:
+    """Find known live reads, including the GDScript facade around the native call."""
+    if file not in FRONTEND_FILES and not file.startswith(FRONTEND_DIRS):
+        return []
+    errors = []
+    for name, function in _named_functions(tokenize(source) if tokens is None else tokens):
+        reads = list(_live_reads(function))
+        if not reads:
+            continue
+        # The existing heartbeat diagnostics read a live report. Pin the entire
+        # function so the same call cannot acquire a new consumer (e.g. the calendar).
+        if baseline.get(file, {}).get(name) == _function_digest(source, function):
+            continue
+        for token in reads:
+            line = source.count("\n", 0, token.offset) + 1
+            errors.append(f"{PROJECT}/{file}:{line}: {name} reads the live Economy report; "
+                          "read the published frame instead")
+    return errors
 
 
 def directory_errors(root: Path, table: dict) -> list[str]:
@@ -185,6 +284,13 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
     if problems:
         return [], problems, 0
     bindings = {b["name"]: b["module"] for b in rows}
+    live_path = root / LIVE_BASELINE
+    live_baseline = json.loads(live_path.read_text(encoding="utf-8")) if live_path.exists() else {}
+    if live_path.exists():
+        previous = previous_baseline(root, LIVE_BASELINE)
+        problems.extend(live_baseline_violations(live_baseline, previous))
+        if problems:
+            return [], problems, 0
     sources = [(p, p.read_text(encoding="utf-8")) for p in script_files(root)]
     parsed = [(p, source, tokenize(source)) for p, source in sources]
     functions = {tokens[i + 1].value for _, _, tokens in parsed
@@ -195,6 +301,7 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
         world = world_variables(tokens)
         lines = source.splitlines()
         project_file = path.relative_to(root / PROJECT).as_posix()
+        problems.extend(frontend_live_read_violations(project_file, source, live_baseline, tokens))
         for token, kind, target in candidates(tokens, bindings):
             line = source.count("\n", 0, token.offset) + 1
             a = target is not None and (target in world or bool(WORLD_NAME.search(target)))
@@ -203,7 +310,7 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
                                   bindings[token.value], kind, target, a, b,
                                   not allowed(project_file, bindings[token.value], table["script_dirs"]),
                                   lines[line - 1].strip()))
-    return refs, [], len(sources)
+    return refs, problems, len(sources)
 
 
 def measure(refs: list[Reference]) -> dict[str, dict[str, int]]:
@@ -226,6 +333,22 @@ def baseline_errors(baseline: dict) -> list[str]:
             if type(count) is not int or count <= 0:
                 problems.append(f"baseline: {file}/{module}: expected positive integer")
     return problems
+
+
+def live_baseline_violations(baseline: dict, previous: dict | None) -> list[str]:
+    if not isinstance(baseline, dict):
+        return [f"{LIVE_BASELINE}: expected a file/function/hash map"]
+    errors = []
+    for file, functions in baseline.items():
+        if not isinstance(functions, dict) or not functions:
+            errors.append(f"{LIVE_BASELINE}: expected function hashes for {file}")
+            continue
+        for name, digest in functions.items():
+            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                errors.append(f"{LIVE_BASELINE}: invalid hash for {file}:{name}")
+            elif previous is not None and previous.get(file, {}).get(name) != digest:
+                errors.append(f"{LIVE_BASELINE}: live read exception added or changed: {file}:{name}")
+    return errors
 
 
 def violations(current: dict, baseline: dict) -> list[str]:
