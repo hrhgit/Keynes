@@ -48,14 +48,21 @@ double elapsed_ms(const Clock::time_point &start) {
 }
 } // namespace
 
-bool NativeEconomyRuntime::evaluate_building_plan_range(
-        int32_t active_begin, int32_t end, std::string &error) {
-    error.clear();
-    if (active_begin >= end) return true;
+bool NativeEconomyRuntime::building_plan_uses_worker_pool(
+        int32_t cell_count, int64_t estimated_work) const {
     static const bool force_serial = [] {
         const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_STAGE_PLAN_SERIAL);
         return value && std::strcmp(value, "1") == 0;
     }();
+    return !force_serial && _worker_enabled && _worker_task_cap > 1 &&
+        _worker_tasks_hint != 1 && cell_count >= 2 && estimated_work >= 128 &&
+        parallel_has_real_worker_threads();
+}
+
+bool NativeEconomyRuntime::evaluate_building_plan_range(
+        int32_t active_begin, int32_t end, std::string &error) {
+    error.clear();
+    if (active_begin >= end) return true;
     const int32_t cell_count = end - active_begin;
     int64_t estimated_work = 0;
     _production_cell_weights_scratch.resize(
@@ -87,9 +94,7 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
         : static_cast<int32_t>(std::clamp<int64_t>(
             (estimated_work + 1023) / 1024, 2,
             _worker_task_cap));
-    const int32_t task_count = !force_serial && _worker_enabled &&
-            cell_count >= 2 && estimated_work >= 128 &&
-            parallel_has_real_worker_threads()
+    const int32_t task_count = building_plan_uses_worker_pool(cell_count, estimated_work)
         ? std::min({cell_count, _worker_task_cap,
             _worker_tasks_hint > 0
             ? _worker_tasks_hint : default_tasks})

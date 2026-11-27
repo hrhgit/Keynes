@@ -356,7 +356,10 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
         }
     }
 
-    if (!end_restore_internal(error)) {
+    // Owner cooldown endpoints are offsets into the decoded building table.
+    // Bind them before end_restore compacts any legacy zero-count rows.
+    if (!EconomyAuthorityTransfer::restore_owner_mobility_continuation(*this, in, error) ||
+        !end_restore_internal(error)) {
         _restore = {};
         return false;
     }

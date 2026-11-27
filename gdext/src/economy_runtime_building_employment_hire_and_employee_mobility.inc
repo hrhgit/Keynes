@@ -36,50 +36,17 @@
                         g - first];
                     const int64_t source_disposable =
                         unemployed_disposable_income(pool);
-                    const int32_t source_profession = _signatures[
-                        population_store().signature_id[pool]].profession_id;
-                    const int64_t improvement = improvement_q16(
-                        source_disposable, target_disposable);
-                    int64_t &budget = unemployed_budget_by_eth[
-                        static_cast<size_t>(source_eth)];
-                    const bool source_hungry =
-                        population_store().needs_satisfaction[pool] <
-                            Q16_ONE / 2;
-                    bool survival_food_target = false;
-                    for (int32_t oi = 0; oi < type.output_count; ++oi) {
-                        const int32_t good = _building_outputs[
-                            type.output_begin + oi].good_id;
-                        if (good >= 0 &&
-                            good < static_cast<int32_t>(
-                                _survival_food_good_mask.size()) &&
-                            _survival_food_good_mask[good] != 0) {
-                            survival_food_target = true;
-                            break;
-                        }
-                    }
-                    // Hungry cohorts switch into self-provisioning food jobs
-                    // on any positive disposable quote, without waiting for
-                    // the ordinary career hurdle.
-                    const bool hungry_food_switch = source_hungry &&
-                        survival_food_target && target_disposable > 0;
-                    const bool eligible = hungry_food_switch ||
-                        (target_disposable >= 0 &&
-                        target_disposable >= source_disposable && improvement >=
-                        transition_hurdle_q16(source_profession, owner_profession));
-                    const int64_t proportional = eligible
-                        ? candidate_allocation(source_eth, g, -1, target_sig) : 0;
-                    const int64_t capped_take = std::min({owner_need, avail, proportional});
-                    if (capped_take <= 0 || target_sig == static_cast<int32_t>(
-                            population_store().signature_id[pool])) {
-                        if (target_sig == static_cast<int32_t>(
-                                population_store().signature_id[pool]))
-                            drop(EMPLOYMENT_REJECTION_SIGNATURE_SELF);
-                        else if (!eligible)
-                            drop(EMPLOYMENT_REJECTION_HURDLE);
-                        else
-                            drop(EMPLOYMENT_REJECTION_ZERO_TAKE);
+                    const auto rejection = unemployed_owner_hire_rejection(
+                        cell, pool, owner_profession, source_disposable,
+                        target_disposable, _saturation_count);
+                    if (rejection != EMPLOYMENT_REJECTION_NONE) {
+                        drop(rejection);
                         continue;
                     }
+                    int64_t &budget = unemployed_budget_by_eth[
+                        static_cast<size_t>(source_eth)];
+                    const int64_t capped_take = std::min({owner_need, avail,
+                        candidate_allocation(source_eth, g, -1, target_sig)});
                     if (slot != nullptr) {
                         slot->take = capped_take;
                         slot->rejection_reason = EMPLOYMENT_REJECTION_NONE;
@@ -342,8 +309,8 @@
                                 signature_for_profession_ethnicity(
                                     target.profession, ethnicity);
                             if (candidate_target < 0) continue;
-                            if (!entry_savings_allows(candidate_slot,
-                                    source.profession, target.profession))
+                            if (!profession_entry_savings_allows(cell, candidate_slot,
+                                    source.profession, target.profession, _saturation_count))
                                 continue;
                             source_slot = candidate_slot;
                             target_signature = candidate_target;

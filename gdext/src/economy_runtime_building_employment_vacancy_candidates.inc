@@ -1,31 +1,3 @@
-        // Upward mobility requires per-capita savings worth the target
-        // profession's entry days of local living cost, standing in for the
-        // education the simulation does not model. Moves from a profession
-        // with an equal or higher gate stay free.
-        const int64_t entry_living_cost = cell < static_cast<int32_t>(
-                _cell_living_cost_per_capita.size())
-            ? std::max<int64_t>(0, _cell_living_cost_per_capita[cell]) : 0;
-        auto entry_savings_days = [&](int32_t profession) -> int64_t {
-            return profession >= 0 && profession < static_cast<int32_t>(
-                    _profession_entry_savings_days.size())
-                ? _profession_entry_savings_days[static_cast<size_t>(profession)] : 0;
-        };
-        auto entry_savings_allows = [&](int32_t source_slot,
-                                        int32_t source_profession,
-                                        int32_t target_profession) -> bool {
-            const int64_t required_days = entry_savings_days(target_profession);
-            if (required_days <= 0 ||
-                    entry_savings_days(source_profession) >= required_days)
-                return true;
-            if (source_slot < 0) return false;
-            const int64_t people = std::max<int64_t>(1,
-                population_store().population[source_slot]);
-            const int64_t per_capita = std::max<int64_t>(0,
-                population_store().funds[source_slot]) / people;
-            return per_capita >= saturating_mul(
-                entry_living_cost, required_days, _saturation_count);
-        };
-
         // ---- 绗?姝?鎷涗汉锛氭寜 cell-local attraction 姣斾緥浠?unemployed 姹犲閲忚縼鍥?----
         // 浼樺厛绾ч敭锛?realized_profit_margin_q16 desc, planned_utilization_q16 desc,
         //            group_index asc)銆傛帓搴忕矑搴?璺?BuildingGroup锛堣法寤虹瓚绫诲瀷锛夛紱
@@ -163,12 +135,7 @@
                 option.diagnostic_index =
                     static_cast<int32_t>(_employment_diagnostics.size());
                 EmploymentDiagnostic diagnostic;
-                // Match the recorder's dense per-cell group ordering so these
-                // rows join against the regular building rows.
-                int32_t dense_group = 0;
-                for (int32_t prior = first; prior < option.group; ++prior)
-                    if (buildings_store().group_units[prior] > 0) ++dense_group;
-                diagnostic.group_index = dense_group;
+                diagnostic.group_index = option.group;
                 diagnostic.type_id = buildings_store().type_id[option.group];
                 diagnostic.role = option.role;
                 diagnostic.target_signature = option.target_signature;
@@ -296,31 +263,26 @@
                 : living_cost_for_signature(
                     cell, candidate.target_signature, -1, _saturation_count);
             const int64_t source_disposable = unemployed_disposable_income(pool);
-            // Apply the entry-savings gate before proportional allocation so a
-            // gated vacancy cannot reserve unemployed moves it will never take.
-            if (!entry_savings_allows(pool,
-                    _signatures[source_signature].profession_id,
-                    candidate.profession))
+            const int32_t source_profession = _signatures[source_signature].profession_id;
+            // A vacancy that rejects this cohort cannot reserve any of its moves.
+            const auto owner_rejection = candidate.role < 0
+                ? unemployed_owner_hire_rejection(cell, pool, candidate.profession,
+                    source_disposable, candidate.target_disposable, _saturation_count)
+                : EMPLOYMENT_REJECTION_NONE;
+            if (owner_rejection == EMPLOYMENT_REJECTION_ENTRY_SAVINGS ||
+                (candidate.role >= 0 && !profession_entry_savings_allows(cell, pool,
+                    source_profession, candidate.profession, _saturation_count)))
                 return deny(EMPLOYMENT_REJECTION_ENTRY_SAVINGS);
             const int64_t improvement = improvement_q16(
                 source_disposable, candidate.target_disposable);
-            const int64_t hurdle = transition_hurdle_q16(
-                _signatures[source_signature].profession_id, candidate.profession);
+            const int64_t hurdle = transition_hurdle_q16(source_profession, candidate.profession);
             if (diagnostic != nullptr) {
                 diagnostic->source_disposable = source_disposable;
                 diagnostic->improvement_q16 = improvement;
                 diagnostic->hurdle_q16 = hurdle;
             }
             if (candidate.role < 0) {
-                if (candidate.target_disposable < 0)
-                    return deny(EMPLOYMENT_REJECTION_TARGET_DISPOSABLE);
-                // A funded unemployment transfer is reservation income. An
-                // owner vacancy may not consume that pool when its projected
-                // disposable return is lower than the guaranteed transfer.
-                if (source_disposable > candidate.target_disposable)
-                    return deny(EMPLOYMENT_REJECTION_HURDLE);
-                if (improvement < hurdle)
-                    return deny(EMPLOYMENT_REJECTION_HURDLE);
+                if (owner_rejection != EMPLOYMENT_REJECTION_NONE) return deny(owner_rejection);
             } else {
                 const bool desperate = population_store().needs_satisfaction[pool] <
                     _starvation_satisfaction_threshold_q16;

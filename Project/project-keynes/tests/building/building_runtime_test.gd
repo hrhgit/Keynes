@@ -2926,8 +2926,11 @@ func _test_high_unemployment_investment_catchup(
 	var knapping_id := building_ids.find("knapping_workshop")
 	var hunting_id := building_ids.find("stone_age_hunting_camp")
 	var timber_id := building_ids.find("timber_collector")
+	# This low-savings catch-up fixture needs jobs people can take directly.
+	# The old empty workshops were repeatedly approved to reopen without
+	# qualified owners. Restart and entry savings have their own fixture.
 	_block_construction_except(
-		catalog, PackedInt32Array([knapping_id, hunting_id, timber_id]),
+		catalog, PackedInt32Array([hunting_id, timber_id]),
 		_luxury_blocking_good(catalog))
 	var signatures: PackedStringArray = catalog.signature_keys
 	var artisan_sig := signatures.find("artisan|default")
@@ -2974,17 +2977,21 @@ func _test_high_unemployment_investment_catchup(
 	}, {
 		"stock": stock,
 		"price": prices,
-		"building_cells": PackedInt32Array([0, 0, 0]),
+		"building_cells": PackedInt32Array([0, 0]),
 		"building_type_ids": PackedInt32Array([
-			knapping_id, hunting_id, timber_id]),
+			hunting_id, timber_id]),
 		"building_owner_signature_ids": PackedInt32Array([
-			artisan_sig, hunter_sig, forager_sig]),
-		"building_counts": PackedInt64Array([2, 10, 3]),
+			hunter_sig, forager_sig]),
+		"building_counts": PackedInt64Array([10, 3]),
 	})
 	_expect("employment-catchup fixture injects 35 additional unemployed",
 		bool(boot.get("ok", false)))
 	if not bool(boot.get("ok", false)):
 		return
+	var opening: Dictionary = ext.get_population_cell_snapshot(0)
+	_expect("the two entry industries start with the original low-savings unemployed pool",
+		_snapshot_i64(opening, "populations", _row_for_signature(opening, unemployed_sig)) == 35
+		and _snapshot_i64(opening, "funds_by_cohort", _row_for_signature(opening, unemployed_sig)) == 35)
 	ext.set_economy_inspector_trace_cell(0)
 	var first_start_day := -1
 	var catchup_seen := false

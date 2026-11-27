@@ -172,7 +172,7 @@
             const BuildingType &type = _building_types[group.type_id];
             int64_t score_sat = 0;
             labor_expected_owner_income[static_cast<size_t>(g - first)] =
-                owner_mobility_income(group, score_sat);
+                owner_mobility_income_per_day(group, false, score_sat);
             int64_t weighted_net = 0;
             int64_t weighted_slots = 0;
             for (int32_t r = 0; r < type.employee_count; ++r) {

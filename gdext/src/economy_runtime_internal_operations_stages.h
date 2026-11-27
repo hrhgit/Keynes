@@ -43,6 +43,7 @@
     void initialize_building_role_span(BuildingGroupRef group);
     void release_building_role_span(BuildingGroupConstRef group);
     void rebuild_building_role_storage();
+    void rebuild_building_group_storage();
     void rebuild_building_cell_offsets();
     void rebuild_building_visual_snapshot();
     void publish_building_visual_changes(
@@ -105,6 +106,7 @@
     void publish_shadow_graph_stage_reference(RuntimeEconomyGraphStage stage);
     // Shared BUILDING_PLAN entry: routes through economy_kernel_prepare_building_plan
     // so sync and future worker probe worlds share one boundary (no second formula).
+    bool building_plan_uses_worker_pool(int32_t cell_count, int64_t estimated_work) const;
     bool evaluate_building_plan_range(int32_t active_begin, int32_t active_end, std::string &error);
     bool prepare_building_economic_plan(int32_t active_begin, int32_t active_end,
                                         const std::vector<int32_t> *cells_override,

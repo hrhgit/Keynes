@@ -101,6 +101,14 @@
     bool run_building_employment_cell(int32_t cell,
                                       bool allow_owner_job_reallocation,
                                       std::string &error);
+    bool profession_entry_savings_allows(int32_t cell, int32_t source_slot,
+        int32_t source_profession, int32_t target_profession, int64_t &sat) const;
+    int64_t unemployed_disposable_income_at(int32_t cell, int32_t slot, int64_t &sat) const;
+    EmploymentRejection unemployed_owner_hire_rejection(int32_t cell,
+        int32_t source_slot, int32_t target_profession, int64_t source_disposable,
+        int64_t target_disposable, int64_t &sat) const;
+    int64_t owner_mobility_income_per_day(BuildingGroupConstRef group,
+        bool reopening, int64_t &sat) const;
     void replace_employment_metrics_for_cell(int32_t cell, int64_t owner_jobs,
                                              int64_t employee_jobs,
                                              int64_t unemployed_population);

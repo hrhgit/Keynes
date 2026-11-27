@@ -344,7 +344,21 @@
             return out;
         }
     }
-    rebuild_building_cell_offsets();
+    // Some older saves retained a zero-count row until the next structural
+    // commit. Normalize the table before any cell range indexes it. The
+    // decoded cooldown pairs still refer to this layout and move with it.
+    std::vector<std::tuple<int32_t, int32_t, int32_t>> retired_buildings;
+    for (size_t row = 0; row < building_count(); ++row) {
+        const auto group = building_view(row);
+        if (group.count == 0)
+            retired_buildings.emplace_back(group.cell, group.type_id, group.owner_signature_id);
+    }
+    if (retired_buildings.empty()) {
+        rebuild_building_cell_offsets();
+    } else {
+        // The archived market and labor signals are installed below as-is.
+        rebuild_building_group_storage();
+    }
     _pending_building_topology_rebuild = false;
     if (_auto_slice_by_scale)
         _cells_per_slice = std::clamp(market_store().market_count.get(), 1, 128);

@@ -61,9 +61,20 @@ bool EconomyAuthorityTransfer::restore_owner_mobility_continuation(
     std::vector<Cooldown> rows;
     if (!decode(state, rows, error)) return false;
     runtime._owner_mobility_cooldowns.clear();
-    for (const auto &row : rows)
+    const auto live_at = [&](int32_t building_row, int32_t cell) {
+        if (static_cast<size_t>(building_row) >= runtime.building_count()) return false;
+        const auto group = runtime.building_view(static_cast<size_t>(building_row));
+        return group.cell == cell && group.count > 0;
+    };
+    for (const auto &row : rows) {
+        // Old saves may already contain dangling row references. There is no
+        // corresponding pair to cool down when either endpoint is gone.
+        if (row.source_group == row.target_group ||
+            !live_at(row.source_group, row.cell) || !live_at(row.target_group, row.cell))
+            continue;
         runtime._owner_mobility_cooldowns.push_back(
             {row.cell, row.source_group, row.target_group, row.until_day});
+    }
     return true;
 }
 } // namespace pk

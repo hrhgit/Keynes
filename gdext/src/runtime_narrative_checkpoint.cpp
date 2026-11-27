@@ -198,6 +198,9 @@ String RuntimeNarrative::checkpoint_error(const Dictionary &archive, int32_t wor
     if (unrest_version != 1 && unrest_version != UNREST_CHECKPOINT_VERSION)
         return "stratum_unrest.version";
     const Variant cancellations = unrest.get("pending_independence_clears", Variant());
+    const auto valid_unrest_cell = [world_cell_count](int64_t cell) {
+        return cell >= 0 && cell < world_cell_count;
+    };
     if (unrest_version == UNREST_CHECKPOINT_VERSION) {
         const Variant schema = unrest.get("schema", Variant());
         if (!has_type(schema, Variant::STRING) || String(schema) != "PKStratumUnrest")
@@ -208,7 +211,7 @@ String RuntimeNarrative::checkpoint_error(const Dictionary &archive, int32_t wor
         std::unordered_set<int32_t> seen;
         for (int64_t index = 0; index < cells.size(); ++index) {
             const int32_t cell = cells[index];
-            if (cell < 0 || cell >= world_cell_count || !seen.insert(cell).second)
+            if (!valid_unrest_cell(cell) || !seen.insert(cell).second)
                 return "stratum_unrest.pending_independence_clears";
         }
     } else if (unrest.has("pending_independence_clears")) {
@@ -218,12 +221,20 @@ String RuntimeNarrative::checkpoint_error(const Dictionary &archive, int32_t wor
     if (!error.is_empty()) return error;
     error = fields(unrest, "stratum_unrest.", Variant::ARRAY, {"pending_independence", "pending_stage_checks"});
     if (!error.is_empty()) return error;
-    error = records(unrest, "pending_independence", [](const Dictionary &row, const String &path) {
-        return fields(row, String("stratum_unrest.") + path, Variant::INT, {"cell", "owner_handle", "queued_day"});
+    const auto unrest_row_error = [&](const Dictionary &row, const String &path,
+            std::initializer_list<const char *> keys) -> String {
+        const String unrest_path = String("stratum_unrest.") + path;
+        const Variant cell = row.get("cell", Variant());
+        if (cell.get_type() != Variant::INT || !valid_unrest_cell(int64_t(cell)))
+            return unrest_path + String("cell");
+        return fields(row, unrest_path, Variant::INT, keys);
+    };
+    error = records(unrest, "pending_independence", [&](const Dictionary &row, const String &path) {
+        return unrest_row_error(row, path, {"owner_handle", "queued_day"});
     });
     if (!error.is_empty()) return error;
-    return records(unrest, "pending_stage_checks", [](const Dictionary &row, const String &path) {
-        return fields(row, String("stratum_unrest.") + path, Variant::INT, {"cell", "owner_handle", "profession", "stage"});
+    return records(unrest, "pending_stage_checks", [&](const Dictionary &row, const String &path) {
+        return unrest_row_error(row, path, {"owner_handle", "profession", "stage"});
     });
 }
 

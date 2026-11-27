@@ -56,7 +56,7 @@
                 group.owner_signature_id >= static_cast<int32_t>(_signatures.size())) continue;
             // Suspended survival-food lots can receive owners, but only
             // active incumbents are sources for the opportunity gradient.
-            const int64_t income = owner_mobility_income(group, _saturation_count);
+            const int64_t income = owner_mobility_income_per_day(group, false, _saturation_count);
             projected_owner_income[g - first] = income;
             const int64_t owner_target = group_owner_target[g - first];
             if ((type.kind != 2 || is_merchant_service_post(type)) &&
@@ -250,8 +250,8 @@
                             signature_for_profession_ethnicity(
                                 target.profession, source_eth);
                         if (target_signature < 0) continue;
-                        if (!entry_savings_allows(slot, source_profession,
-                                target.profession)) continue;
+                        if (!profession_entry_savings_allows(cell, slot, source_profession,
+                                target.profession, _saturation_count)) continue;
                         candidate_source_slot = slot;
                         candidate_target_signature = target_signature;
                         break;
@@ -371,9 +371,9 @@
                 if (candidate_target_signature < 0) continue;
                 const int64_t source_income =
                     projected_owner_income[candidate - first];
-                if (!entry_savings_allows(source_slot_candidate,
+                if (!profession_entry_savings_allows(cell, source_slot_candidate,
                         source_signature.profession_id,
-                        target_owner_profession)) continue;
+                        target_owner_profession, _saturation_count)) continue;
                 const int64_t improvement = improvement_q16(
                     source_income, target_income);
                 const int64_t base_hurdle = transition_hurdle_q16(
@@ -531,8 +531,8 @@
                         signature_for_profession_ethnicity(target_owner_profession,
                             source_eth);
                     if (candidate_target_signature < 0) continue;
-                    if (!entry_savings_allows(candidate_employee_slot,
-                            candidate.profession, target_owner_profession))
+                    if (!profession_entry_savings_allows(cell, candidate_employee_slot,
+                            candidate.profession, target_owner_profession, _saturation_count))
                         continue;
                     const int64_t candidate_source_cost = living_cost_for_signature(
                         cell, candidate_source_signature, -1, _saturation_count);

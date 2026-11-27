@@ -87,7 +87,13 @@
     } else if (_modifier_runtime != nullptr) {
         modifier_api::clear_domain(*_modifier_runtime, ModifierApi::ECONOMY);
     }
-    if (_modifier_runtime != nullptr) refresh_building_modifier_factors();
+    if (_modifier_runtime != nullptr) {
+        for (const auto &[cell, type, owner] : retired_buildings) {
+            modifier_api::retire_building_identity(
+                *_modifier_runtime, cell, type, owner, _current_day.get());
+        }
+        refresh_building_modifier_factors();
+    }
     {
         std::unordered_set<int64_t> stable_family_ids;
         std::unordered_set<uint64_t> visible_family_names;

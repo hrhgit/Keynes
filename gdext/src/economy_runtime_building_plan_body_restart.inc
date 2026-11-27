@@ -103,34 +103,42 @@
                 group.cell, group.owner_signature_id);
             int64_t owner_slot_cash = owner_slot >= 0
                 ? std::max<int64_t>(0, population_store().funds[owner_slot]) : 0;
-            // Suspension moves the owner, including savings, into unemployment.
-            // Quote the cash that idle recruits would carry back with them;
-            // an empty canonical slot must not force a wealthy former owner to
-            // borrow (or reject them because the old lot has overdue debt).
-            // This is eligibility only: employment transfers the actual share,
-            // and production independently caps purchases by installed cash.
+            const bool vacancy_expired = group.filled_owner < group.count &&
+                group.severe_loss_cycles >= _building_severe_loss_cycles.get();
+            const int64_t owners_needed = type.owner_slots_per_building <= 0 ? 0
+                : (vacancy_expired ? group.count : 1);
+            int64_t hireable_owner_labor = std::max<int64_t>(0, group.filled_owner);
             int64_t recruitable = std::max<int64_t>(0,
                 saturating_mul(group.count, type.owner_slots_per_building,
-                    _saturation_count) - (owner_slot >= 0
-                    ? population_store().population[owner_slot] : 0));
-            population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
-                if (recruitable <= 0 || slot == owner_slot || is_merchant_slot(slot)) return;
-                const int64_t people = population_store().population[slot];
-                if (people <= 0) return;
-                const uint32_t signature = population_store().signature_id[slot];
-                if (signature >= _signatures.size()) return;
-                const int32_t profession = _signatures[signature].profession_id;
-                if (profession != _unemployed_profession_id &&
-                    profession != type.owner_profession_id) return;
-                const int64_t idle = std::max<int64_t>(0, people -
-                    population_store().owner_employed[slot] -
-                    population_store().employee_employed[slot]);
-                const int64_t moving = std::min(recruitable, idle);
-                owner_slot_cash = saturating_add(owner_slot_cash,
-                    mul_div_sat(std::max<int64_t>(0, population_store().funds[slot]),
-                        moving, people, _saturation_count), _saturation_count);
-                recruitable -= moving;
-            });
+                    _saturation_count) - hireable_owner_labor);
+            if (recruitable > 0 && _employment_mobility_daily_q16.get() > 0) {
+                const int64_t target_income = owner_mobility_income_per_day(
+                    group, true, _saturation_count);
+                // Workers already attached to other jobs are matched in the
+                // employment pass. Count only this lot's incumbents and the
+                // local unemployed pool eligible for its advertised vacancies.
+                population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
+                    if (recruitable <= 0) return;
+                    const uint32_t signature = population_store().signature_id[slot];
+                    if (signature >= _signatures.size() ||
+                        _signatures[signature].profession_id != _unemployed_profession_id)
+                        return;
+                    const int64_t source_income = unemployed_disposable_income_at(
+                        group.cell, slot, _saturation_count);
+                    if (unemployed_owner_hire_rejection(group.cell, slot, type.owner_profession_id,
+                            source_income, target_income, _saturation_count) != EMPLOYMENT_REJECTION_NONE)
+                        return;
+                    const int64_t people = population_store().population[slot];
+                    const int64_t moving = std::min(recruitable, people);
+                    hireable_owner_labor += moving;
+                    // Quote only the savings these eligible recruits could
+                    // carry. The actual hire and purchases settle separately.
+                    owner_slot_cash = saturating_add(owner_slot_cash,
+                        mul_div_sat(std::max<int64_t>(0, population_store().funds[slot]),
+                            moving, people, _saturation_count), _saturation_count);
+                    recruitable -= moving;
+                });
+            }
             // Restart finance bills only hard inputs and employee wages. Soft
             // tools are optional productivity bought from the recruited
             // owners' carried savings; billing them, or owner livelihood
@@ -148,34 +156,6 @@
                 (_merchant_credit_runtime_mode.get() != 0 &&
                  group.merchant_debt_delinquent_cycles == 0 &&
                  credit_needed <= cell_credit_remaining);
-            const bool vacancy_expired = group.filled_owner < group.count &&
-                group.severe_loss_cycles >= _building_severe_loss_cycles.get();
-            // Released owners can return from unemployment or another
-            // profession. An expired vacancy needs at least one candidate
-            // per building. Unemployed cohorts cannot take a new seat when
-            // mobility is disabled, though existing jobs can still transfer.
-            const int64_t owners_needed = type.owner_slots_per_building <= 0 ? 0
-                : (vacancy_expired ? group.count : 1);
-            int64_t hireable_owner_labor = owner_slot >= 0
-                ? std::max<int64_t>(0, population_store().population[owner_slot]) : 0;
-            if (hireable_owner_labor < owners_needed) {
-                population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
-                    if (hireable_owner_labor >= owners_needed ||
-                        slot == owner_slot || is_merchant_slot(slot)) return;
-                    const uint32_t sig = population_store().signature_id[slot];
-                    if (sig >= _signatures.size()) return;
-                    const int32_t profession = _signatures[sig].profession_id;
-                    if (vacancy_expired &&
-                        (profession_is_state_service_only(profession) ||
-                         (profession == _unemployed_profession_id &&
-                          _employment_mobility_daily_q16.get() <= 0)))
-                        return;
-                    hireable_owner_labor = saturating_add(
-                        hireable_owner_labor,
-                        std::max<int64_t>(0, population_store().population[slot]),
-                        _saturation_count);
-                });
-            }
             const bool owner_available = hireable_owner_labor >= owners_needed;
             const bool executable = owner_available && physical_inputs_available &&
                 physical_resources_available && finance_available;

@@ -300,6 +300,31 @@ func _test_story_archive() -> void:
 		rejected.get("code") == "narrative_archive_invalid"
 		and "pending_independence_clears" in String(rejected.get("message", ""))
 		and unpublished.capture_gameplay_narrative() == saved)
+	var rows := {
+		"pending_independence": {"cell": 5, "owner_handle": 1, "queued_day": 17},
+		"pending_stage_checks": {"cell": 5, "owner_handle": 1, "profession": 0, "stage": 2},
+	}
+	for queue in rows:
+		var valid := saved.duplicate(true)
+		valid.stratum_unrest[queue] = [rows[queue].duplicate()]
+		_expect("%s accepts the last cell through both restore entrances" % queue,
+			unpublished.submit_gameplay_narrative(&"restore", valid).get("ok", false)
+			and ext.configure_gameplay_narrative(packet, valid)
+			and ext.capture_gameplay_narrative().stratum_unrest[queue][0].cell == 5)
+		before = ext.capture_gameplay_narrative()
+		for cell in [-1, 6, 0x100000000]:
+			var invalid := valid.duplicate(true)
+			invalid.stratum_unrest[queue][0].cell = cell
+			rejected = unpublished.submit_gameplay_narrative(&"restore", invalid)
+			_expect("%s stages only valid cell indices (%d)" % [queue, cell],
+				rejected.get("code") == "narrative_archive_invalid"
+				and ("%s[0].cell" % queue) in String(rejected.get("message", ""))
+				and unpublished.capture_gameplay_narrative() == valid)
+			Engine.print_error_messages = false
+			rejected_configure = not ext.configure_gameplay_narrative(packet, invalid)
+			Engine.print_error_messages = print_errors
+			_expect("%s installs only valid cell indices (%d)" % [queue, cell],
+				rejected_configure and ext.capture_gameplay_narrative() == before)
 
 
 func _test_state_probe_contract() -> void:

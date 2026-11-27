@@ -1,57 +1,5 @@
         const int32_t n_eth = static_cast<int32_t>(_ethnicity_ids.size());
 
-        // Owner mobility prefers the previous committed cycle's settled
-        // cashflow. Speculative shadow demand must not invent industrial
-        // owner moves. Never-operated vacancies are different: with no
-        // settled period, mobility income was permanently 0, so UI
-        // opportunity quotes looked huge while nobody would transfer into
-        // empty wild_tuber_patch / wild_wheat_stand shells. Use the
-        // counterfactual opportunity (already gated for knapping shadow)
-        // as a per-owner discovery signal until the first settled period.
-        auto owner_mobility_income = [&](BuildingGroupConstRef group,
-                                         int64_t &sat) -> int64_t {
-            if (group.type_id < 0 || group.type_id >= static_cast<int32_t>(
-                    _building_types.size()) || group.count <= 0) return 0;
-            // Suspended survival-food lots still need a discovery income so
-            // empty hunting camps rank as mobility targets. Other suspended
-            // shells stay at zero (planned_owner_demand already zeros them).
-            if (group.operating_state == 1) {
-                const BuildingType &suspended_type =
-                    _building_types[group.type_id];
-                bool survival_food = false;
-                for (int32_t oi = 0; oi < suspended_type.output_count; ++oi) {
-                    const int32_t good = _building_outputs[
-                        suspended_type.output_begin + oi].good_id;
-                    if (good >= 0 &&
-                        good < static_cast<int32_t>(
-                            _survival_food_good_mask.size()) &&
-                        _survival_food_good_mask[good] != 0) {
-                        survival_food = true;
-                        break;
-                    }
-                }
-                if (!survival_food) return 0;
-            }
-            const bool has_settled = group.last_output > 0 ||
-                group.last_sold > 0 || group.last_market_receipt > 0 ||
-                group.last_in_kind_livelihood_value > 0 ||
-                group.last_input_cost > 0 || group.last_base_wages_paid > 0;
-            if (!has_settled || group.operating_state == 1) {
-                int64_t quote_sat = 0;
-                EconomyCostProbe::record("owner_quote.call.emp_settle_gate",
-                                          _current_day.get(), 0.0, 1);
-                const OwnerOpportunityQuote quote = owner_opportunity_quote(
-                    group, Q16_ONE, Q16_ONE, quote_sat);
-                sat = saturating_add(sat, quote_sat, sat);
-                if (!quote.feasible || quote.executable_capacity_q16 <= 0)
-                    return 0;
-                // Per-owner disposable (quote already ÷ owner seats).
-                return std::max<int64_t>(0,
-                    quote.disposable_survival_power_per_day);
-            }
-            return projected_owner_income_per_day(group, sat);
-        };
-
         auto schedule_suspended_survival_restart = [&](BuildingGroupRef group) {
             if (group.operating_state != 1 || group.filled_owner <= 0) return;
             if (group.filled_owner < group.count &&
@@ -307,40 +255,6 @@
             return std::max<int64_t>(0, population_store().epoch_expense[slot]) /
                 people / days;
         };
-        auto unemployed_disposable_income = [&](int32_t slot) -> int64_t {
-            if (slot < 0 || slot >= static_cast<int32_t>(
-                    population_store().population.size())) return 0;
-            const int32_t signature = static_cast<int32_t>(
-                population_store().signature_id[slot]);
-            if (signature < 0 || signature >= static_cast<int32_t>(
-                    _signatures.size())) return 0;
-            const int32_t profession = _signatures[signature].profession_id;
-            if (profession != _unemployed_profession_id) return 0;
-            // Savings and proportional ledger/EMA values carried into the
-            // unemployed cohort are stocks or prior-period attribution, not
-            // current employment income. A funded negative income tax is the
-            // one current reservation-income source and must remain visible.
-            const int32_t income_rate = frozen_tax_rate(
-                cell, CountryApi::TAX_INCOME, profession);
-            if (income_rate >= 0) return 0;
-            const int64_t daily_floor = living_cost_for_signature(
-                cell, signature, _living_cost_base_plan_id,
-                _saturation_count);
-            const int64_t signed_transfer = expected_resolved_fiscal_transfer(
-                cell, CountryApi::TAX_INCOME, profession,
-                daily_floor, 1, _saturation_count);
-            const int64_t funded_transfer = std::max<int64_t>(0, saturating_sub(
-                0, signed_transfer, _saturation_count));
-            // A funded unemployment lane is reservation income during the
-            // employment decision itself. Settlement runs later in the same
-            // epoch, so expose the already reserved floor here as well.
-            const int32_t fulfillment = static_cast<int32_t>(std::clamp<int64_t>(
-                _fiscal_fulfillment_q16[static_cast<size_t>(cell) *
-                    ACTIVE_TAX_KIND_COUNT + CountryApi::TAX_INCOME],
-                0, Q16_ONE));
-            const int64_t funded_period_floor = mul_div_sat(
-                saturating_mul(daily_floor, std::max<int64_t>(1, _epoch_days.get()),
-                    _saturation_count),
-                fulfillment, Q16_ONE, _saturation_count);
-            return std::max<int64_t>(funded_transfer, funded_period_floor);
+        auto unemployed_disposable_income = [&](int32_t slot) {
+            return unemployed_disposable_income_at(cell, slot, _saturation_count);
         };

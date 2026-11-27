@@ -4,10 +4,13 @@ extends "res://tests/building/building_runtime_test.gd"
 func _run() -> void:
 	_test_vacant_looms(false)
 	_test_vacant_looms(true)
+	_test_vacant_looms(false, true)
+	_test_vacant_looms(false, true, true)
 	print("building recovery occupancy: %d failures" % failures)
 
 
-func _test_vacant_looms(block_mobility: bool) -> void:
+func _test_vacant_looms(block_mobility: bool, require_savings := false,
+		fund_savings := false) -> void:
 	var catalog := EconomyCatalogScript.compile_native_catalog()
 	var profile: Dictionary = load("res://data/economy/default_economy.tres").to_native_profile()
 	profile.market_runtime_mode = "ACTIVE"
@@ -22,6 +25,8 @@ func _test_vacant_looms(block_mobility: bool) -> void:
 	profile.starvation_death_rate_q32 = 0
 	if block_mobility:
 		profile.employment_mobility_daily_q16 = 0
+	if fund_savings:
+		profile.employment_mobility_daily_q16 = 65536
 	var birth_rates: PackedInt64Array = catalog.signature_birth_rate_q32
 	birth_rates.fill(0)
 	catalog.signature_birth_rate_q32 = birth_rates
@@ -33,6 +38,10 @@ func _test_vacant_looms(block_mobility: bool) -> void:
 	var artisan := signatures.find("artisan|default")
 	var merchant := signatures.find("merchant|default")
 	var unemployed := signatures.find("unemployed|default")
+	if require_savings:
+		var entry_days: PackedInt32Array = catalog.profession_entry_savings_days
+		entry_days[catalog.signature_profession_ids[artisan]] = 36500
+		catalog.profession_entry_savings_days = entry_days
 	_strip_building_inputs(catalog, loom)
 	_strip_building_resources(catalog, loom)
 	_clear_building_climate(catalog, loom)
@@ -55,17 +64,20 @@ func _test_vacant_looms(block_mobility: bool) -> void:
 		CountryTestHelper.configure_all_technologies(ext, catalog, 1, 293))
 	_expect("vacancy fixture's economy configures",
 		bool(ext.configure_economy(catalog, profile, 1, 293).get("ok", false)))
+	var funds := 100_000_000
+	if require_savings:
+		funds = 2_000_000_000 if fund_savings else 0
 	var people := {
 		"cell_indices": PackedInt32Array([0, 0]),
 		"signature_ids": PackedInt32Array([artisan, merchant]),
 		"population": PackedInt64Array([1, 1]),
-		"funds": PackedInt64Array([100_000_000, 100_000_000]),
+		"funds": PackedInt64Array([funds, 100_000_000]),
 	}
-	if block_mobility:
+	if block_mobility or require_savings:
 		people.cell_indices.append(0)
 		people.signature_ids.append(unemployed)
 		people.population.append(1)
-		people.funds.append(100_000_000)
+		people.funds.append(funds)
 	_expect("one owner starts with two looms",
 		bool(ext.bootstrap_economy(people, {
 			"stock": stock,
@@ -84,9 +96,22 @@ func _test_vacant_looms(block_mobility: bool) -> void:
 		and _snapshot_i64(suspended, "severe_loss_cycles", 0) == 1)
 	var review := _run_day(ext, 1)
 	var reduced: Dictionary = ext.get_building_cell_snapshot(0)
-	print("vacancy review: mobility_blocked=%s approvals=%s retired=%s counts=%s margin=%s" % [
-		block_mobility, review.get("recovery_approved"), review.get("recovery_liquidated_buildings"),
+	print("vacancy review: mobility_blocked=%s savings_required=%s funded=%s approvals=%s retired=%s counts=%s margin=%s" % [
+		block_mobility, require_savings, fund_savings, review.get("recovery_approved"), review.get("recovery_liquidated_buildings"),
 		reduced.get("group_counts"), reduced.get("last_margin_gap_q16")])
+	if fund_savings:
+		_expect("two eligible candidates justify restarting both looms",
+			int(review.get("recovery_approved", 0)) == 1
+			and int(review.get("recovery_liquidated_buildings", -1)) == 0)
+		var resumed := _run_day(ext, 2)
+		var active: Dictionary = ext.get_building_cell_snapshot(0)
+		_expect("actual hiring accepts the same funded candidates",
+			bool(resumed.get("done", false)) and not bool(resumed.get("fatal", false))
+			and _snapshot_i64(active, "group_counts", 0) == 2
+			and (active.operating_state as PackedByteArray)[0] == 0
+			and _snapshot_i64(active, "filled_owner", 0) == 2
+			and _snapshot_i64(active, "last_output", 0) > 0)
+		return
 	var rejection_description := "positive restart quote cannot preserve an expired vacant lot"
 	if block_mobility:
 		var population: Dictionary = ext.get_population_cell_snapshot(0)
@@ -95,13 +120,21 @@ func _test_vacant_looms(block_mobility: bool) -> void:
 			_snapshot_i64(population, "populations", pool_row) == 2
 			and _snapshot_i64(reduced, "filled_owner", 0) == 0)
 		rejection_description = "unavailable unemployed people cannot prevent vacancy liquidation"
+	if require_savings:
+		var population: Dictionary = ext.get_population_cell_snapshot(0)
+		var pool_row := _row_for_signature(population, unemployed)
+		_expect("two people without savings remain in a cell that allows mobility",
+			pool_row >= 0 and _snapshot_i64(population, "populations", pool_row) == 2
+			and _snapshot_i64(population, "funds_by_cohort", pool_row) == 0
+			and profile.employment_mobility_daily_q16 > 0)
+		rejection_description = "people who cannot meet entry savings cannot prevent liquidation"
 	_expect(rejection_description,
 		bool(review.get("done", false)) and not bool(review.get("fatal", false))
 		and _snapshot_i64(reduced, "last_margin_gap_q16", 0) > 0
 		and int(review.get("recovery_approved", -1)) == 0
 		and int(review.get("recovery_liquidated_buildings", 0)) == 1
 		and _snapshot_i64(reduced, "group_counts", 0) == 1)
-	if block_mobility:
+	if block_mobility or require_savings:
 		return
 	var next_review := _run_day(ext, 2)
 	var resumed := _run_day(ext, 3)

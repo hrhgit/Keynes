@@ -3,7 +3,6 @@
 #include "economy_runtime_building_investment_internal.h"
 #include "economy_runtime_variant_helpers.h"
 #include "fault_taxonomy.h"
-#include "parallel_dispatcher.h"
 #include "pk_build_id.h"
 #include "runtime_economy_ecp2.h"
 #include <algorithm>
@@ -22,59 +21,9 @@ namespace pk {
 using namespace godot;
 
 bool EconomyInvariantProbe::run(std::string &error) {
+    if (!run_building_row_references(error) || !run_building_plan_counter(error)) return false;
     if (!run_frozen_tax_view(error) || !run_economy_command_revisit(false, error) ||
         !run_economy_command_revisit(true, error) || !run_demand_basis_cache(error)) return false;
-    {
-        constexpr int32_t cells = 24;
-        auto economy = std::make_unique<NativeEconomyRuntime>();
-        economy->_cell_count = cells;
-        economy->_epoch_active = true;
-        economy->_epoch_days = 1;
-        economy->_epoch_country_count = 1;
-        economy->_epoch_cell_country.assign(cells, 0);
-        economy->_epoch_country_building_available = {1};
-        economy->_building_types.resize(1);
-        economy->_building_restart_margin_q16 = 0;
-        economy->_worker_tasks_hint = 4;
-        economy->_merchant_offsets.assign(cells + 1, 0);
-        economy->_building_recovery_liquidation_eligible.assign(cells, 0);
-        economy->market_store().cell_to_market.assign(cells, -1);
-        economy->population_store().clear(cells);
-        // With no required labour or inputs and a break-even threshold, each
-        // independent cell supplies exactly one approval to the plan join.
-        for (int32_t cell = 0; cell < cells; ++cell) {
-            NativeEconomyRuntime::BuildingGroup group;
-            group.cell = cell;
-            group.type_id = 0;
-            group.count = 1;
-            group.operating_state = 1;
-            economy->append_building_group(group);
-            economy->_epoch_plan_cells.push_back(cell);
-            economy->_building_cell_offsets.push_back(cell);
-        }
-        economy->_building_cell_offsets.push_back(cells);
-        NativeEconomyRuntime::BuildingPlanResult task;
-        if (!economy->prepare_building_economic_plan(
-                0, 1, &economy->_epoch_plan_cells, task, error)) return false;
-        if (task.recovery_approved != 1 ||
-            economy->building_view(0).pending_operating_state != 0) {
-            error = "recovery_counter_fixture_did_not_approve";
-            return false;
-        }
-        if (economy->_recovery_restarted != 0) {
-            error = "building_plan_task_wrote_shared_recovery_count";
-            return false;
-        }
-        economy->building_at(0).pending_operating_state = 255;
-        if (!economy->evaluate_building_plan_range(0, cells, error)) return false;
-        if (economy->_recovery_restarted != cells ||
-            economy->_recovery_approved != cells ||
-            (parallel_has_real_worker_threads() &&
-                economy->_building_plan_worker_parallel_dispatches == 0)) {
-            error = "building_plan_did_not_reduce_all_recovery_counts";
-            return false;
-        }
-    }
     {
         auto economy = std::make_unique<NativeEconomyRuntime>();
         economy->_cell_count = 2;
