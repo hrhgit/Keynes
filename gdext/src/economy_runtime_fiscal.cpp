@@ -22,14 +22,16 @@ void NativeEconomyRuntime::record_cohort_fiscal(int32_t slot,
     }
 }
 
-template<bool WantMode>
+template<bool WantMode, bool Settlement>
 int32_t NativeEconomyRuntime::frozen_tax_value(int32_t cell, int32_t kind, int32_t item) const {
     constexpr int32_t inactive = WantMode ? CountryApi::TAX_MODE_PERCENT_BP : 0;
     if (kind < 0 || kind >= CountryApi::TAX_KIND_COUNT || item < 0 ||
         cell < 0 || static_cast<size_t>(cell) >= _epoch_cell_country.size()) return inactive;
-    const auto mask = static_cast<uint8_t>(1U << kind);
-    if ((_epoch_active_tax_mask & mask) == 0 || (!_epoch_cell_active_tax_mask.empty() &&
-        (_epoch_cell_active_tax_mask[cell] & mask) == 0)) return inactive;
+    if constexpr (Settlement) {
+        const auto mask = static_cast<uint8_t>(1U << kind);
+        if ((_epoch_active_tax_mask & mask) == 0 || (!_epoch_cell_active_tax_mask.empty() &&
+            (_epoch_cell_active_tax_mask[cell] & mask) == 0)) return inactive;
+    }
     const int32_t country = _epoch_cell_country[cell];
     if (country < 0 || country >= _epoch_country_count) return inactive;
     const std::vector<int32_t> *national;
@@ -86,11 +88,17 @@ int32_t NativeEconomyRuntime::frozen_tax_value(int32_t cell, int32_t kind, int32
 }
 
 int32_t NativeEconomyRuntime::frozen_tax_rate(int32_t cell, int32_t kind, int32_t item) const {
-    return frozen_tax_value<false>(cell, kind, item);
+    return frozen_tax_value<false, true>(cell, kind, item);
 }
 
 int32_t NativeEconomyRuntime::frozen_tax_mode(int32_t cell, int32_t kind, int32_t item) const {
-    return frozen_tax_value<true>(cell, kind, item);
+    return frozen_tax_value<true, true>(cell, kind, item);
+}
+
+std::pair<int32_t, int32_t> NativeEconomyRuntime::applicable_frozen_tax(
+        int32_t cell, int32_t kind, int32_t item) const {
+    return {frozen_tax_value<false, false>(cell, kind, item),
+            frozen_tax_value<true, false>(cell, kind, item)};
 }
 
 int64_t NativeEconomyRuntime::fiscal_escrow_total() const {

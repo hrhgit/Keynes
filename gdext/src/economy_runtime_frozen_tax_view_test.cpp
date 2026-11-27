@@ -50,7 +50,14 @@ bool EconomyInvariantProbe::run_frozen_tax_view(std::string &error) {
     for (int32_t cell = -1; cell < 4; ++cell) {
         for (int32_t kind = 0; kind < CountryApi::TAX_KIND_COUNT; ++kind) {
             for (int32_t item = 0; item < 2; ++item) {
-                const int32_t representative = cell < 0 ? 0 : cell;
+                // The empty cell has the same policy as cell 2. Keep the independent
+                // settlement assertion: no tax is assessed on the empty cell itself.
+                const int32_t representative = cell < 0 ? 0 : (cell == 1 ? 2 : cell);
+                if (cell == 1 && (economy->frozen_tax_rate(cell, kind, item) != 0 ||
+                                  economy->frozen_tax_mode(cell, kind, item) != CountryApi::TAX_MODE_PERCENT_BP)) {
+                    error = "empty_cell_settlement_applied_tax";
+                    return false;
+                }
                 if (!frame->lookup(resident, cell, kind, item, rate, mode) ||
                     rate != economy->frozen_tax_rate(representative, kind, item) ||
                     mode != economy->frozen_tax_mode(representative, kind, item)) {

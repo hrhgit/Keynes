@@ -127,7 +127,9 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 
 PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`world_runtime_daily_adapter_part3.gd:118` 经 `world_runtime_daily_adapter_part2.gd:80` 调用 `world_runtime_modifier_writeback.gd:15`。适配器检查 Modifier 授权位 `0x040`，经 `map_generator.gd:79` 和 `map_rules_initializer.gd:99` 调用原生 `apply_runtime_modifier_snapshot`。
 
-整图会话的全国税率、地块税率、综合面板税率使用最近领取的提交。Economy 随帧发布结算时已取整的有效税率、计税方式和当时的国家税策。开局及读档首帧用同帧 Country 和 `ModifierReadView` 计算起始显示值。领取时先安装，再发 `map_fields_received`；帧末释放地图显示批次后仍可查询。公开的修正求值、解释和列表等查询仍使用主线程镜像。
+整图会话的全国、地块和综合面板从 Economy 冻结的税表读取税率和计税方式。已占地块即使当天无人纳税，也显示适用的税策。综合面板的国库、国家修订号和已完成科技来自已领取当天的 Country 日尾。
+
+开局及读档首帧用同帧 Country 和 `ModifierReadView` 计算起始显示值。开局税率帧在执行器启动前校验。日常领取时先安装，再发 `map_fields_received`。税率帧被拒时，领取结果用 `modifier_display_error` 和 `modifier_display_retained_day` 报告错误及保留的税率日期，当天记录、地图和通知照常发布。帧末仍可查询已领取的税率。公开的修正求值、解释和列表等查询仍使用主线程镜像。
 
 整图执行器在日尾更新 Effect、Trigger、Ideology 的规则对象并发布读视图。Effect 报告、Trigger 发展进度、Ideology 卡片与回执从这些视图取得。部分授权下，回退查询仍读旧适配对象，后台结果未进入这些查询时，读到的是开局、读档或本地适配的数据。见 [模块地图](module-map.md#每日域模块)。
 

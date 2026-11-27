@@ -183,6 +183,16 @@ NativeCountryRuntime *DCWorldExt::country_query_runtime() const {
     const auto snapshot = tail && tail->country.snapshot
         ? tail->country.snapshot : _runtime_host->country_asset_snapshot();
     if (!snapshot) return source;
+    auto *view = country_query_runtime_from_snapshot(snapshot);
+    if (!view) view = country_runtime_from(_country_query_runtime);
+    view->mirror_era_reward_reference(source->era_reward_reference_pod());
+    return view;
+}
+
+NativeCountryRuntime *DCWorldExt::country_query_runtime_from_snapshot(
+        const std::shared_ptr<const RuntimeCountryPodSnapshot> &snapshot) const {
+    auto *source = country_runtime_from(_country_runtime);
+    if (!source || !snapshot) return nullptr;
     if (_country_query_runtime == nullptr)
         _country_query_runtime = new NativeCountryRuntime(*source);
     auto *view = country_runtime_from(_country_query_runtime);
@@ -219,9 +229,9 @@ NativeCountryRuntime *DCWorldExt::country_query_runtime() const {
                     static_cast<int64_t>(snapshot->cell_count),
                     static_cast<int64_t>(snapshot->technology_count)));
             }
+            return nullptr;
         }
     }
-    view->mirror_era_reward_reference(source->era_reward_reference_pod());
     return view;
 }
 
@@ -313,16 +323,11 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
     if (_country_runtime == nullptr) return country_unavailable();
     const bool fiscal = (section_mask & 2) != 0;
     const bool published_fiscal = fiscal && uses_published_modifier_tax();
-    // Resolve the ordinary replica first: it may advance even while the
-    // display still holds yesterday's country and its fiscal assessment.
-    const NativeCountryRuntime *detail = nullptr;
-    if (!published_fiscal || (section_mask & (1 | 8)) != 0)
-        detail = fiscal ? country_query_runtime_for_tax() : country_query_runtime();
-    const auto *runtime = published_fiscal ? published_tax_country() : detail;
+    const auto *runtime = published_fiscal ? country_query_runtime_from_snapshot(_display_country_snapshot)
+        : (fiscal ? country_query_runtime_for_tax() : country_query_runtime());
     if (!runtime) return country_unavailable();
     Dictionary summary = runtime->country_summary(handle);
     if (!static_cast<bool>(summary.get("ok", false))) return summary;
-    if (published_fiscal && detail && !detail->valid_handle(handle)) detail = runtime;
 
     Dictionary out;
     // Plan §18.2: the country checkpoint's ABI, exposed so a probe can cross-check it.
@@ -339,7 +344,7 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
     out["country_generation"] = static_cast<int64_t>(runtime->generation());
     out["country_state_version"] = summary.get("state_version", 0);
     out["revision"] = summary.get("state_version", 0);
-    out["published_day"] = published_fiscal ? Variant(_modifier_read_view->committed_day())
+    out["published_day"] = published_fiscal ? Variant(_display_country_day)
                                              : runtime->report().get("last_committed_day", -1);
     out["summary"] = summary;
 
@@ -348,9 +353,9 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
     revisions["country_generation"] = static_cast<int64_t>(runtime->generation());
 
     if ((section_mask & 1) != 0) {
-        Dictionary research = detail->research_snapshot(handle);
+        Dictionary research = runtime->research_snapshot(handle);
         out["research"] = research;
-        out["research_signals"] = detail->research_signal_snapshot(handle);
+        out["research_signals"] = runtime->research_signal_snapshot(handle);
         // Progress-only days must bust the GDScript section cache even when
         // the player reopens the panel without a territory dirty bit.
         revisions["research_progress_total"] = research.get("progress_total", 0);
@@ -390,7 +395,7 @@ Dictionary DCWorldExt::get_country_ui_snapshot(int64_t handle,
         revisions["ideology_support_revision"] = support_revision;
     }
     if ((section_mask & 8) != 0) {
-        Dictionary politics = detail->political_regime_snapshot(handle);
+        Dictionary politics = runtime->political_regime_snapshot(handle);
         out["politics"] = politics;
         revisions["politics_state_version"] = politics.get(
             "state_version", int64_t{0});

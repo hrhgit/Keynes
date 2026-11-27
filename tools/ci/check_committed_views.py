@@ -83,11 +83,19 @@ def tax_display_violations(bindings, packing):
     panel = consumer_body(bindings, "DCWorldExt::get_country_ui_snapshot")
     if re.search(live + r"|\btax_policy_snapshot\b", panel) or not re.search(r"\bget_country_tax_policy_snapshot\s*\(", panel):
         errors.append("country panel bypasses the national tax query")
-    frame_source = re.search(r"(\w+)\s*=\s*published_fiscal\s*\?\s*published_tax_country\s*\(\s*\)", panel)
-    if (not frame_source or not re.search(
-            rf"\bsummary\s*=\s*{frame_source[1]}\s*->\s*country_summary\s*\(", panel)
-            or not re.search(r"published_fiscal\s*=\s*fiscal\s*&&\s*uses_published_modifier_tax\s*\(", panel)):
-        errors.append("country panel checks the fiscal identity outside the received frame")
+    frame_source = re.search(r"(\w+)\s*=\s*published_fiscal\s*\?\s*country_query_runtime_from_snapshot"
+                             r"\s*\(\s*_display_country_snapshot\s*\)", panel)
+    fields = ("country_summary", "generation", "completed_technology_ids", "treasury_snapshot",
+              "research_snapshot", "research_signal_snapshot", "political_regime_snapshot")
+    if (not frame_source or any(not re.search(rf"\b{frame_source[1]}\s*->\s*{field}\s*\(", panel) for field in fields)
+            or not re.search(rf"\bsummary\s*=\s*{frame_source[1]}\s*->\s*country_summary\s*\(", panel)
+            or not re.search(r"published_fiscal\s*=\s*fiscal\s*&&\s*uses_published_modifier_tax\s*\(", panel)
+            or not re.search(r"published_fiscal\s*\?\s*Variant\s*\(\s*_display_country_day\s*\)", panel)):
+        errors.append("fiscal panel Country data must come from the received day tail")
+    replica = consumer_body(bindings, "DCWorldExt::country_query_runtime_from_snapshot")
+    if (re.search(live + r"|\b(?:_runtime_host|_frozen_tax_view|country_query_runtime|published_tax_country)\b", replica)
+            or not re.search(r"apply_committed_read_snapshot\s*\(\s*\*\s*snapshot\s*\)", replica)):
+        errors.append("Country replica must install the selected immutable snapshot")
     country = consumer_body(bindings, "DCWorldExt::published_tax_country")
     if re.search(live, country) or "_modifier_read_country" not in country or "_frozen_tax_view" not in country:
         errors.append("tax policy must use the received Country snapshot")

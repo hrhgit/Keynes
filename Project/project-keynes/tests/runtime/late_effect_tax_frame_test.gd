@@ -74,7 +74,9 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, _stall: bool) -> D
 		var frozen: Dictionary = ext.sample_effect_metric_probe(55, cell, handle)
 		var national: Dictionary = country.tax_policy_snapshot(handle)
 		var local: Dictionary = country.cell_tax_policy_snapshot(cell)
-		var panel: Dictionary = country.ui_snapshot(handle, 2).get("tax_policy", {})
+		var ui: Dictionary = country.ui_snapshot(handle, 3)
+		var panel: Dictionary = ui.get("tax_policy", {})
+		_check_panel_day_tail(country, handle, day, ui)
 		var report: Dictionary = ext.get_runtime_thread_report()
 		var owner: Dictionary = ext.get_runtime_modifier_snapshot(report.modifier_pod_snapshot_generation - 1)
 		var bucket: int = owner.bucket_stat_ids.find(stat)
@@ -109,3 +111,23 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, _stall: bool) -> D
 					rates.size() == national.profession_ids.size() and rates.size() > 0 and rates.count(0) == rates.size())
 			clock.pause(false)
 	return {"day": 3}
+
+func _check_panel_day_tail(country, handle: int, day: int, panel: Dictionary) -> void:
+	# The owner and display are both on D at this read boundary. Use the
+	# independent Country query before requesting the next simulated day.
+	var tail: Dictionary = country.snapshot(handle)
+	var treasury: Dictionary = country.treasury_snapshot(handle)
+	var summary: Dictionary = panel.get("summary", {})
+	_expect("D%d fiscal panel publishes the same Country day" % day, panel.get("published_day") == day)
+	_expect("D%d fiscal panel summary and treasury match end-of-day cash (%s vs %s)" %
+		[day, summary.get("cash"), treasury.get("cash")],
+		summary.get("cash") == treasury.get("cash") and panel.get("treasury") == treasury)
+	_expect("D%d fiscal panel uses the end-of-day Country generation (%s vs %s) and revision (%s vs %s)" %
+		[day, panel.get("country_generation"), tail.get("generation"), panel.get("revision"), tail.get("state_version")],
+		panel.get("country_generation") == tail.get("generation") and panel.get("revision") == tail.get("state_version")
+		and summary.get("state_version") == tail.get("state_version"))
+	var completed: PackedStringArray = panel.get("country_snapshot", {}).get("technology_ids", PackedStringArray())
+	_expect("D%d fiscal panel includes all completed technologies (%s vs %s)" % [day, completed, tail.get("technology_ids")],
+		completed == tail.get("technology_ids") and summary.get("technology_count") == tail.get("technology_count"))
+	if day == 2:
+		_expect("D2 Country completed the technology granted after the tax freeze", "tech.animal_husbandry" in tail.get("technology_ids", []))

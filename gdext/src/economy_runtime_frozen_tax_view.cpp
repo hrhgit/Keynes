@@ -17,11 +17,6 @@ bool EconomyFrozenTaxView::lookup(uint64_t handle, int32_t cell, int32_t kind, i
     rate = national_rates[kind][index];
     mode = national_modes[kind][index];
     if (cell < 0) return true;
-    if ((cell_active_mask[cell] & (1u << kind)) == 0) {
-        rate = 0;
-        mode = CountryApi::TAX_MODE_PERCENT_BP;
-        return true;
-    }
     const uint32_t policy = cell_policy[cell];
     if (policy != 0) {
         const auto &values = local_differences[policy][kind];
@@ -50,24 +45,21 @@ void NativeEconomyRuntime::publish_frozen_tax_view(int64_t sample_day,
     view->national_modes = {_epoch_income_tax_modes, _epoch_consumption_tax_modes, _epoch_business_tax_modes,
                             _epoch_import_tax_modes, _epoch_export_tax_modes};
     view->cell_policy = _epoch_cell_compiled_tax_policy;
-    view->cell_active_mask = _epoch_cell_active_tax_mask;
     view->local_differences.resize(_epoch_compiled_cell_tax_policies.size());
 
     // A compiled policy ID identifies a (country, local policy) pair. Read its
-    // final values from the same accessor as settlement, once per distinct row.
+    // applicable values once per distinct row, whether that cell had taxpayers or not.
     std::vector<bool> captured(view->local_differences.size());
     for (size_t cell = 0; cell < view->cell_policy.size(); ++cell) {
         const uint32_t policy = view->cell_policy[cell];
-        if (!policy || !view->cell_active_mask[cell] || captured[policy]) continue;
+        if (!policy || captured[policy]) continue;
         captured[policy] = true;
         const size_t slot = static_cast<size_t>(_epoch_cell_country[cell]);
         for (int32_t kind = 0; kind < CountryApi::TAX_KIND_COUNT; ++kind) {
-            if ((view->cell_active_mask[cell] & (1u << kind)) == 0) continue;
             const size_t count = view->item_counts[kind];
             for (size_t item = 0; item < count; ++item) {
                 const auto id = static_cast<int32_t>(item);
-                const int32_t rate = frozen_tax_rate(static_cast<int32_t>(cell), kind, id);
-                const int32_t mode = frozen_tax_mode(static_cast<int32_t>(cell), kind, id);
+                const auto [rate, mode] = applicable_frozen_tax(static_cast<int32_t>(cell), kind, id);
                 const size_t index = slot * count + item;
                 if (rate != view->national_rates[kind][index] || mode != view->national_modes[kind][index])
                     view->local_differences[policy][kind].push_back({id, rate, mode});

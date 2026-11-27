@@ -133,6 +133,8 @@ Dictionary DCWorldExt::configure_country(const Dictionary &catalog,
     delete static_cast<NativeCountryRuntime *>(_country_query_runtime);
     _country_query_runtime = nullptr;
     _country_query_snapshot.reset();
+    _display_country_snapshot.reset();
+    _display_country_day = -1;
     _tax_query_snapshot.reset();
     _tax_query_runtime.reset();
     if (_country_runtime == nullptr) _country_runtime = candidate.release();

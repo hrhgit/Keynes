@@ -29,7 +29,9 @@
     int32_t epoch_country_index(uint64_t handle) const;
     bool advance_fiscal_reservation(std::string &error);
     bool advance_fiscal_settlement(std::string &error);
-    template<bool WantMode> int32_t frozen_tax_value(int32_t cell, int32_t kind, int32_t item) const;
+    template<bool WantMode, bool Settlement>
+    int32_t frozen_tax_value(int32_t cell, int32_t kind, int32_t item) const;
+    std::pair<int32_t, int32_t> applicable_frozen_tax(int32_t cell, int32_t kind, int32_t item) const;
     int32_t frozen_tax_rate(int32_t cell, int32_t kind, int32_t item) const;
     int32_t frozen_tax_mode(int32_t cell, int32_t kind, int32_t item) const;
     int64_t apply_fiscal_tax(int32_t cell, int32_t kind, int64_t base,

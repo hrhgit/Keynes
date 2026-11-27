@@ -47,7 +47,6 @@ private:
     std::array<size_t, KIND_COUNT> item_counts{};
     std::vector<uint64_t> country_handles;
     std::vector<uint32_t> cell_policy;
-    std::vector<uint8_t> cell_active_mask;
     std::vector<std::array<std::vector<LocalValue>, KIND_COUNT>> local_differences;
 };
 
