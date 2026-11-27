@@ -239,8 +239,9 @@ bool NativeEconomyRuntime::start_epoch(int64_t day_index, std::string &error) {
                 for (int32_t g = _building_cell_offsets[cell];
                      g < _building_cell_offsets[cell + 1]; ++g) {
                     const auto group = building_view(static_cast<size_t>(g));
-                    if (group.count > 0 && group.severe_loss_cycles >=
-                            std::min(2, _building_severe_loss_cycles.get())) {
+                    if (group.count > 0 && (group.operating_state != 0 ||
+                            group.severe_loss_cycles >=
+                                std::min(2, _building_severe_loss_cycles.get()))) {
                         needs_lifecycle_review = true;
                         break;
                     }
@@ -374,9 +375,8 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
     }
     _epoch_begin_construction_csr_ms = elapsed_ms(construction_csr_started);
     const auto recovery_apply_started = Clock::now();
-    // Apply recovery offers still pending in older checkpoints. Current
-    // recovery reviews open positions before employment in the same period.
-    _building_reopened_groups.clear();
+    // Normalize old checkpoint lanes. A legacy reopening offer returns to
+    // planning so it goes through the same hiring and execution as a new one.
     for (const int32_t cell : _epoch_building_cells) {
         if (_building_cell_offsets.size() != static_cast<size_t>(_cell_count.get() + 1))
             continue;
@@ -388,25 +388,15 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
                 continue;
             }
             auto group = building_at(static_cast<size_t>(g));
-            const bool applying_pending = group.pending_operating_state <= 1;
-            if (applying_pending) {
-                if (group.operating_state != 0 && group.pending_operating_state == 0)
-                    _building_reopened_groups.push_back(g);
-                group.operating_state = group.pending_operating_state;
-                group.pending_operating_state = 255;
-            }
-            if (group.operating_state > 1) {
+            if (group.pending_operating_state == 1 || group.operating_state > 1)
                 group.operating_state = 1;
-                group.recovery_cycles = 0;
-                group.recovery_cooldown_cycles = 0;
-            }
+            group.pending_operating_state = 255;
             // These lanes are retained only for binary compatibility. The
             // lifecycle no longer has a probe or cooldown phase.
             group.recovery_cycles = 0;
             group.recovery_cooldown_cycles = 0;
         }
     }
-    std::sort(_building_reopened_groups.begin(), _building_reopened_groups.end());
     _epoch_begin_recovery_apply_ms = elapsed_ms(recovery_apply_started);
     {
     EconomyCostProbe probe("epoch_vectors", day_index, _market_signals.good_ids.size());
@@ -418,12 +408,7 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
     _building_planned_capacity_before_climate_q16.assign(
         building_count(), Q16_ONE);
     _building_owner_livelihood_credit.assign(building_count(), 0);
-    _building_merchant_credit_limit.assign(building_count(), 0);
-    _building_recovery_probe_capacity_q16.assign(building_count(), 0);
-    _building_recovery_liquidation_eligible.assign(building_count(), 0);
-    _building_review_owner_vacancy.assign(building_count(), 0);
-    for (const int32_t group : _building_reopened_groups)
-        _building_review_owner_vacancy[group] = 1;
+    _building_lifecycle.assign(building_count(), {});
     _production_input_reserve.assign(_market_signals.good_ids.size(), 0);
     _construction_material_reserve.assign(_market_signals.good_ids.size(), 0);
     _epoch_business_demand_ema = _market_signals.business_demand_ema;

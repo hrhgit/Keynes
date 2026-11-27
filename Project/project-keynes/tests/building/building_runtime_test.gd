@@ -2985,6 +2985,11 @@ func _test_high_unemployment_investment_catchup(
 		bool(boot.get("ok", false)))
 	if not bool(boot.get("ok", false)):
 		return
+	var opening_population: Dictionary = ext.get_population_cell_snapshot(0)
+	var opening_unemployed := _row_for_signature(opening_population, unemployed_sig)
+	_expect("employment-catchup starts with 35 unemployed and exactly 35 cash",
+		_snapshot_i64(opening_population, "populations", opening_unemployed) == 35
+		and _snapshot_i64(opening_population, "funds_by_cohort", opening_unemployed) == 35)
 	ext.set_economy_inspector_trace_cell(0)
 	var first_start_day := -1
 	var catchup_seen := false

@@ -160,31 +160,10 @@ NativeEconomyRuntime::advance_building_commit_chunk(
     }
     if (_building_commit_phase == 2) {
         _executed_substage = "recovery_review";
-        // Track B (user-approved): recovery review is a slow-moving lifecycle
-        // pass; review groups every N days and skip the scan in between.
-        static const bool commit_track_b_enabled = [] {
-            const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B);
-            return !(value && std::strcmp(value, "0") == 0);
-        }();
-        static const int32_t commit_track_b_cadence = [] {
-            const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B_COMMIT_CADENCE);
-            const int32_t parsed = value ? std::atoi(value) : 0;
-            return parsed > 0 ? std::min<int32_t>(parsed, 30) : 4;
-        }();
-        static const int32_t commit_track_b_offset = [] {
-            const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B_RECOVERY_OFFSET);
-            const int32_t parsed = value ? std::atoi(value) : 0;
-            return parsed != 0 ? std::abs(parsed) : 1;
-        }();
-        const bool commit_due = ((_current_day.get() - commit_track_b_offset) %
-            commit_track_b_cadence + commit_track_b_cadence) %
-            commit_track_b_cadence == 0;
         const int32_t phase_end = _building_review_phase_offsets.size() >= 2
                                       ? _building_review_phase_offsets[1]
                                       : 0;
-        const bool skip_throttled_commit = commit_track_b_enabled &&
-            commit_track_b_cadence > 1 && !commit_due;
-        if (skip_throttled_commit) {
+        if (!building_liquidation_due()) {
             EconomyCostProbe::record("building_commit.track_b_recovery_skip",
                                      _current_day.get(), 0.0, 1u);
             _building_commit_cursor = phase_end;

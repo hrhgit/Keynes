@@ -42,7 +42,9 @@ bool EconomyInvariantProbe::run(std::string &error) {
             group.operating_state = 1;
             economy->append_building_group(group);
         }
-        economy->_building_recovery_liquidation_eligible.assign(3, 1);
+        economy->_building_lifecycle.resize(3);
+        for (auto &review : economy->_building_lifecycle)
+            review.retirement = NativeEconomyRuntime::BuildingLifecycleReview::Retirement::Unprofitable;
         economy->_building_cell_offsets = {0, 0, 3};
         economy->review_recovery_building_group(0);
         if (economy->building_view(0).count != 1) {

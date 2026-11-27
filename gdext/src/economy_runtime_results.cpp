@@ -121,6 +121,8 @@ int64_t NativeEconomyRuntime::MarketResult::capacity_bytes() const {
 }
 
 void NativeEconomyRuntime::ProductionResult::reset() {
+    released_reopening_jobs = false;
+    reopening_suspensions = 0;
     ok = true;
     cell = -1;
     error.clear();

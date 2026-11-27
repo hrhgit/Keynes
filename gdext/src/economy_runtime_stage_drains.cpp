@@ -473,8 +473,6 @@ bool NativeEconomyRuntime::run_building_production_drain(int64_t &work_done,
     _building_cell_cursor = 0;
     _building_funded_capacity_q16.resize(building_count(), 0);
     _building_working_capital_allocated.resize(building_count(), 0);
-    _building_recovery_probe_capacity_q16.resize(building_count(), 0);
-    _building_recovery_liquidation_eligible.resize(building_count(), 0);
     const int32_t total_cells = static_cast<int32_t>(cells.size());
     if (total_cells > 0) {
         if (_production_results_scratch.size() < static_cast<size_t>(total_cells)) {

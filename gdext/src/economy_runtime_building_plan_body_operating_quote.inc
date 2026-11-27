@@ -185,16 +185,14 @@
             group.last_quoted_market_receipt = 0;
             group.last_quoted_operating_cost = 0;
             group.last_maintenance_due = 0;
-            if (type.kind != 2 && group.operating_state == 2) {
-                group.operating_state = 1;
-                group.pending_operating_state = 255;
-                invalidate_cell_monetary_units(group.cell);
-            }
             // Missing a technologically available hard input is a recoverable
             // execution blockage, not evidence of a realized operating loss.
             // Keep the installed group active/idle so it retains a labor claim
             // and can resume as soon as the input chain supplies it.
-            if (group.operating_state != 0) ++_loss_suspended_building_groups;
+            if (group.operating_state == 1) {
+                review_expired_building_vacancy(group_index);
+                ++_loss_suspended_building_groups;
+            }
             continue;
         }
         for (int32_t r = 0; r < type.employee_count; ++r) {
@@ -387,10 +385,8 @@
         group.last_margin_gap_q16 = static_cast<int32_t>(margin_gap);
         bool suspended_now = false;
         // A pending restart from an older save has no previous active period
-        // to assess. Current recovery offers are opened after this assessment.
-        if (type.kind != 2 && group.operating_state == 0 &&
-            !std::binary_search(_building_reopened_groups.begin(),
-                                _building_reopened_groups.end(), group_index)) {
+        // to assess. Recovery offers are opened after this assessment.
+        if (type.kind != 2 && group.operating_state == 0) {
             // 停业沿用实际经营收支；业主生活成本属于岗位机会评价。
             // 不可把单座单日生活报价加到整组已结算的成本中。
             const bool settled_production = group.last_output > 0 ||
@@ -467,7 +463,8 @@
                 realized_after_tax_margin <= _building_severe_loss_threshold_q16.get();
             if (realized_severe_loss) {
                 // A realized operating loss already consumes this review.
-                _building_review_owner_vacancy[group_index] = 0;
+                _building_lifecycle[group_index].employment =
+                    BuildingLifecycleReview::Employment::None;
                 const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
                 group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
                     threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));

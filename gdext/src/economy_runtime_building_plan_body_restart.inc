@@ -14,8 +14,13 @@
                 const int64_t required_q16 = std::clamp<int64_t>(
                     item.required_q16, 0, Q16_ONE);
                 if (required_q16 <= 0) continue;
+                // Like the resource gate below, one building can reopen the
+                // staffed portion. Production allocates the actual stock to
+                // the staffed group. Keep the full-group soft bonus quote.
+                const int64_t input_days = required_q16 == Q16_ONE
+                    ? std::max(1, _epoch_days.get()) : building_days;
                 const int64_t effective = saturating_mul(
-                    building_days, item.quantity, _saturation_count);
+                    input_days, item.quantity, _saturation_count);
                 bool candidate_available = false;
                 int64_t best_unit_cost = std::numeric_limits<int64_t>::max();
                 for (int32_t c = item.candidate_begin;
@@ -182,21 +187,23 @@
             }
             const bool offer_jobs = physical_requirements_met &&
                 recovery_profit_margin >= _building_restart_margin_q16.get();
-            if (offer_jobs) {
-                // Employment decides who takes the openings and whether
-                // the vacancy streak ends. The normal production path
-                // settles any purchases against actual balances.
+            if (offer_jobs && (building_mobility_days(group.cell) > 0 ||
+                    group.filled_owner >= group.count)) {
+                // Open jobs only when the normal matching stage can try them
+                // or the lot is already staffed. The purchase is settled by
+                // production against actual balances after hiring.
                 group.operating_state = 0;
                 group.pending_operating_state = 255;
-                _building_review_owner_vacancy[group_index] = 1;
+                _building_lifecycle[group_index].employment =
+                    BuildingLifecycleReview::Employment::Reopen;
                 invalidate_cell_monetary_units(group.cell);
                 ++_recovery_approved;
-            } else {
-                const bool vacancy_expired = group.filled_owner < group.count &&
-                    group.severe_loss_cycles >= _building_severe_loss_cycles.get();
+            } else if (!offer_jobs) {
+                review_expired_building_vacancy(group_index);
+                auto &review = _building_lifecycle[group_index];
                 // Preserve the review of executable but unprofitable lots.
-                bool finance_available = false;
-                if (physical_requirements_met && !vacancy_expired) {
+                if (physical_requirements_met &&
+                        review.retirement == BuildingLifecycleReview::Retirement::None) {
                     const int32_t owner_slot = find_cohort_slot(
                         group.cell, group.owner_signature_id);
                     const int64_t owner_cash = owner_slot >= 0
@@ -208,12 +215,12 @@
                         _saturation_count);
                     const int64_t credit_needed = restart_cost -
                         std::min(restart_cost, owner_cash);
-                    finance_available = credit_needed == 0 ||
+                    const bool finance_available = credit_needed == 0 ||
                         (_merchant_credit_runtime_mode.get() != 0 &&
                          group.merchant_debt_delinquent_cycles == 0 &&
                          credit_needed <= cell_credit_remaining);
+                    if (finance_available)
+                        review.retirement = BuildingLifecycleReview::Retirement::Unprofitable;
                 }
-                _building_recovery_liquidation_eligible[group_index] =
-                    vacancy_expired || finance_available;
             }
         }

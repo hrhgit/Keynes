@@ -173,6 +173,8 @@
     };
 
     struct ProductionResult {
+        bool released_reopening_jobs = false;
+        int64_t reopening_suspensions = 0;
         bool ok = true;
         int32_t cell = -1;
         std::string error;
@@ -259,6 +261,14 @@
 
         void reset();
         int64_t capacity_bytes() const;
+    };
+
+    struct BuildingLifecycleReview {
+        enum class Employment : uint8_t { None, Observe, Reopen };
+        enum class Retirement : uint8_t { None, Vacancy, Unprofitable, Retired };
+        Employment employment = Employment::None;
+        Retirement retirement = Retirement::None;
+        int64_t vacant_buildings = 0;
     };
 
     struct BuildingPlanResult {

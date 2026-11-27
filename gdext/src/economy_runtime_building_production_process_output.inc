@@ -44,19 +44,10 @@
             const int64_t group_budget = g < static_cast<int32_t>(
                 _building_working_capital_allocated.size())
                 ? _building_working_capital_allocated[g] : 0;
-            // `_building_merchant_credit_limit` is populated by the review
-            // pass when it already reserved a restart.  For an ACTIVE group
-            // with no pre-existing reservation, derive a bounded request from
-            // the frozen input quote so a poor owner can still finance normal
-            // operating inputs.  This is deliberately input-only credit;
-            // wages and owner livelihood remain ordinary settled obligations.
-            int64_t requested_credit = g < static_cast<int32_t>(
-                _building_merchant_credit_limit.size())
-                ? std::max<int64_t>(0, _building_merchant_credit_limit[g]) : 0;
+            int64_t requested_credit = 0;
             // Military v1: an explicitly state-owned building is financed by
             // the treasury and never borrows merchant operating credit.
             const bool state_owned_group = type.kind == 3;
-            if (state_owned_group) requested_credit = 0;
             bool survival_output = false;
             bool cycle_flow_output = false;
             for (int32_t oi = 0; oi < type.output_count; ++oi) {
@@ -79,7 +70,7 @@
                 : std::clamp<int64_t>(
                     std::min<int64_t>(intent_scale_q16, industrial_probe_floor),
                     0, Q16_ONE);
-            if (requested_credit <= 0 && !state_owned_group &&
+            if (!state_owned_group &&
                 _merchant_credit_runtime_mode.get() == 2 &&
                 credit_floor_scale > 0) {
                 // Hunter/collector livelihood and bounded industrial probe

@@ -157,7 +157,6 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
     // Legacy probe planner storage is retained only so old object files and
     // save diagnostics stay ABI-compatible. The planner branch below is
     // permanently disabled; suspended buildings never purchase or produce.
-    thread_local std::vector<std::pair<int32_t, int64_t>> recovery_probe_goods;
     ++owner_seen_generation;
     owner_seen_key.resize(_signatures.size(), 0);
     owner_output_flags.resize(_signatures.size());
@@ -591,7 +590,8 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
         }
         if (type.kind != 2 && type.owner_slots_per_building > 0 &&
                 group.operating_state == 0)
-            _building_review_owner_vacancy[group_index] = 1;
+            _building_lifecycle[group_index].employment =
+                BuildingLifecycleReview::Employment::Observe;
 #include "economy_runtime_building_plan_body_operating_quote.inc"
 #include "economy_runtime_building_plan_body_restart.inc"
 #include "economy_runtime_building_plan_body_utilization.inc"

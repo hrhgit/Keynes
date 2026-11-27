@@ -15,6 +15,7 @@ bool EconomyInvariantProbe::run_building_plan_counter(std::string &error) {
     economy->_cell_count = cells;
     economy->_epoch_active = true;
     economy->_epoch_days = 1;
+    economy->_current_day = 0;
     economy->_epoch_country_count = 1;
     economy->_epoch_cell_country.assign(cells, 0);
     economy->_epoch_country_building_available = {1};
@@ -25,8 +26,7 @@ bool EconomyInvariantProbe::run_building_plan_counter(std::string &error) {
     economy->_worker_task_cap = 4;
     economy->_worker_tasks_hint = 4;
     economy->_merchant_offsets.assign(cells + 1, 0);
-    economy->_building_recovery_liquidation_eligible.assign(cells, 0);
-    economy->_building_review_owner_vacancy.assign(cells, 0);
+    economy->_building_lifecycle.resize(cells);
     economy->market_store().cell_to_market.assign(cells, -1);
     economy->population_store().clear(cells);
     // With no required labour or inputs and a break-even threshold, each
@@ -124,9 +124,16 @@ bool EconomyInvariantProbe::run_building_portfolio_share(std::string &error) {
     economy->market_store().cell_to_market.assign(1, 0);
     economy->_building_construction_candidate_offsets = {0};
     economy->_building_types.resize(2);
+    economy->_merchant_offsets = {0, 0};
+    economy->_signatures.resize(2);
+    auto &population = economy->population_store();
+    population.clear(1);
+    const int32_t sponsors[] = {population.allocate_slot(0, 0), population.allocate_slot(0, 1)};
+    for (const int32_t sponsor : sponsors) population.population.write_scalar(sponsor, 5);
     economy->_investment_max_type_owner_share_q16 = NativeEconomyRuntime::Q16_ONE / 2;
     for (const int64_t first_slots : {2, 1}) {
         NativeEconomyRuntime::BuildingInvestmentCellContext review(0);
+        review.market = 0;
         review.cell_population = 10;
         review.employment_gap = 4;
         review.portfolio_size = 2;
@@ -135,7 +142,8 @@ bool EconomyInvariantProbe::run_building_portfolio_share(std::string &error) {
         for (int32_t type = 0; type < 2; ++type) {
             auto &candidate = review.portfolio[type];
             candidate.plan.type_id = type;
-            candidate.plan.sponsor = type;
+            candidate.plan.sponsor = sponsors[type];
+            candidate.plan.owner_signature_id = type;
             candidate.plan.max_batch_count = 1;
             candidate.plan.request.reason = NativeEconomyRuntime::INVESTMENT_REQUEST_EMPLOYMENT_CATCHUP;
             candidate.willing_population = economy->_building_types[type].owner_slots_per_building;
@@ -151,6 +159,36 @@ bool EconomyInvariantProbe::run_building_portfolio_share(std::string &error) {
             review.portfolio[1].plan.allocated_count != (balanced ? 1 : 0)) {
             error = balanced ? "balanced_investment_portfolio_trimmed"
                              : "indivisible_investment_portfolio_lost_single_project";
+            return false;
+        }
+    }
+    for (const int64_t second_slots : {2, 3}) {
+        NativeEconomyRuntime::BuildingInvestmentCellContext review(0);
+        review.market = 0;
+        review.cell_population = 10;
+        review.employment_gap = second_slots == 2 ? 6 : 8;
+        review.portfolio_size = 2;
+        economy->_building_types[0].owner_slots_per_building = 1;
+        economy->_building_types[1].owner_slots_per_building = second_slots;
+        for (int32_t type = 0; type < 2; ++type) {
+            auto &candidate = review.portfolio[type];
+            candidate.plan.type_id = type;
+            candidate.plan.sponsor = sponsors[type];
+            candidate.plan.owner_signature_id = type;
+            candidate.plan.max_batch_count = type == 0 ? second_slots : 2;
+            candidate.plan.request.reason = NativeEconomyRuntime::INVESTMENT_REQUEST_EMPLOYMENT_CATCHUP;
+            candidate.jobs_per_building = economy->_building_types[type].owner_slots_per_building;
+            candidate.willing_population = candidate.jobs_per_building * candidate.plan.max_batch_count;
+            candidate.desired_count = candidate.plan.max_batch_count;
+            // Prefer the seat-heavy type in the initial allocation; both
+            // cases have a feasible alternative with equally divided seats.
+            candidate.score_q16 = type == 0 ? 1 : 2;
+        }
+        economy->investment_allocate_portfolio(review);
+        if (review.portfolio[0].plan.allocated_count != second_slots ||
+            review.portfolio[1].plan.allocated_count != 1) {
+            error = second_slots == 2 ? "feasible_investment_portfolio_1_to_2_missed"
+                                      : "feasible_investment_portfolio_1_to_3_missed";
             return false;
         }
     }
@@ -183,7 +221,10 @@ bool EconomyInvariantProbe::run_building_row_references(std::string &error) {
     runtime._owner_mobility_cooldowns = {{0, 1, 2, 40}, {0, 0, 2, 50}};
     runtime._person_building_offsets = {0, 1, 2, 2, 3};
     runtime._person_building_indices = {10, 20, 30};
-    runtime._building_reopened_groups = {0, 2};
+    using Review = NativeEconomyRuntime::BuildingLifecycleReview;
+    runtime._building_lifecycle.resize(4);
+    runtime._building_lifecycle[0].employment = Review::Employment::Reopen;
+    runtime._building_lifecycle[2].employment = Review::Employment::Reopen;
     runtime._building_funded_capacity_q16 = {1, 2, 3, 4};
     const int32_t first_live_role = runtime.building_view(1).employee_fill_begin;
     runtime._building_employee_filled.write_scalar(first_live_role, 7);
@@ -206,7 +247,9 @@ bool EconomyInvariantProbe::run_building_row_references(std::string &error) {
     }
     if (runtime._person_building_offsets != std::vector<int32_t>{0, 1, 1, 2} ||
         runtime._person_building_indices != std::vector<int32_t>{20, 30} ||
-        runtime._building_reopened_groups != std::vector<int32_t>{1} ||
+        runtime._building_lifecycle.size() != 3 ||
+        runtime._building_lifecycle[0].employment != Review::Employment::None ||
+        runtime._building_lifecycle[1].employment != Review::Employment::Reopen ||
         runtime._building_funded_capacity_q16 != std::vector<int64_t>{2, 3, 4}) {
         error = "building_compaction_left_stale_group_ranges";
         return false;

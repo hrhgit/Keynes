@@ -111,6 +111,7 @@ TESTS = (
     "tests/ideology/ideology_social_media_worker_test.gd",
     "tests/building/building_runtime_test.gd",
     "tests/building/building_recovery_occupancy_test.gd",
+    "tests/building/building_lifecycle_test.gd",
     "tests/building/building_tombstone_restore_test.gd",
     "tests/economy/economy_test_bootstrap_test.gd",
     "tests/economy/bootstrap_catalog_contract_test.gd",

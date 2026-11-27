@@ -49,6 +49,11 @@
     void publish_building_visual_changes(
         const std::vector<int32_t> &changed_cells);
     void rebuild_building_review_buckets();
+    bool building_liquidation_due() const;
+    int64_t building_mobility_days(int32_t cell) const;
+    void review_expired_building_vacancy(int32_t group_index);
+    void observe_building_employment(int32_t begin, int32_t end, bool mobility_due);
+    void finish_building_reopenings(int32_t begin, int32_t end, ProductionResult &result);
     void review_recovery_building_group(int32_t group_index);
     void finalize_household_building_cell(int32_t cell, int64_t &saturation,
                                           int64_t &restarted,
@@ -336,6 +341,8 @@
     bool run_building_employment_drain(int64_t &work_done, std::string &error);
     bool run_building_production_drain(int64_t &work_done, std::string &error);
     struct BuildingInvestmentCellContext;
+    bool quote_investment_portfolio(BuildingInvestmentCellContext &ctx,
+                                    int32_t *rejected_invoice = nullptr) const;
     enum class InvestmentPreflightResult : uint8_t {
         Skip = 0,
         Ready = 1,

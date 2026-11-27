@@ -133,44 +133,10 @@ bool NativeEconomyRuntime::run_building_employment_cell(
     int64_t stay_q16 = Q16_ONE;
     const int64_t daily_mobility_q16 = std::clamp<int64_t>(
         _employment_mobility_daily_q16.get(), 0, Q16_ONE);
-    // Track B (user-approved): job mobility lanes are cadence-limited. Skip days
-    // run no mobility at all; refresh days apply the accumulated multi-day
-    // probability, keeping the long-run transition rate close to exact mode.
-    static const bool track_b_enabled = [] {
-        const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B);
-        return !(value && std::strcmp(value, "0") == 0);
-    }();
-    static const int32_t track_b_mobility_cadence = [] {
-        const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B_MOBILITY_CADENCE);
-        const int32_t parsed = value ? std::atoi(value) : 0;
-        return parsed > 0 ? std::min<int32_t>(parsed, 30) : 5;
-    }();
-    static const int32_t track_b_mobility_spread = [] {
-        const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_TRACK_B_MOBILITY_SPREAD);
-        const int32_t parsed = value ? std::atoi(value) : 0;
-        return parsed > 0 ? std::min<int32_t>(parsed, 32) : 1;
-    }();
-    int64_t mobility_days = std::max(1, _epoch_days.get());
-    if (track_b_enabled && track_b_mobility_spread > 1) {
-        const int32_t mobility_phase = static_cast<int32_t>(
-            ((_current_day.get() % track_b_mobility_spread) +
-             track_b_mobility_spread) % track_b_mobility_spread);
-        if (cell >= 0 && (cell % track_b_mobility_spread) == mobility_phase) {
-            mobility_days *= track_b_mobility_spread;
-        } else {
-            mobility_days = 0;
-            EconomyCostProbe::record("employment.track_b_mobility_skip",
-                                     _current_day.get(), 0.0, 1u);
-        }
-    } else if (track_b_enabled && track_b_mobility_cadence > 1) {
-        if ((_current_day.get() % track_b_mobility_cadence) != 0) {
-            mobility_days = 0;
-            EconomyCostProbe::record("employment.track_b_mobility_skip",
-                                     _current_day.get(), 0.0, 1u);
-        } else {
-            mobility_days *= track_b_mobility_cadence;
-        }
-    }
+    const int64_t mobility_days = building_mobility_days(cell);
+    if (mobility_days == 0)
+        EconomyCostProbe::record("employment.track_b_mobility_skip",
+                                 _current_day.get(), 0.0, 1u);
     for (int32_t d = 0; d < mobility_days; ++d) {
         stay_q16 = mul_div_sat(stay_q16,
             Q16_ONE - daily_mobility_q16, Q16_ONE, _saturation_count);
@@ -330,37 +296,7 @@ bool NativeEconomyRuntime::run_building_employment_cell(
                  SUBJECT_BUILDING_GROUP, cell, first, last - first,
                  local_owner, local_employee, local_unemployed, last - first,
                  event_legs.empty() ? nullptr : &event_legs);
-    // Complete the vacancy part of this period's lifecycle review after
-    // hiring and job changes. An expired lot that fails its hiring opportunity
-    // can still enter liquidation on the usual review date.
-    const int32_t vacancy_limit = _building_severe_loss_cycles.get();
-    for (int32_t g = first; g < last; ++g) {
-        if (static_cast<size_t>(g) >= _building_review_owner_vacancy.size() ||
-            _building_review_owner_vacancy[g] == 0) continue;
-        _building_review_owner_vacancy[g] = 0;
-        const auto view = building_view(static_cast<size_t>(g));
-        if (view.cell != cell || view.count <= 0 || view.operating_state != 0 ||
-            !building_available(cell, view.type_id, true)) continue;
-        const BuildingType &type = _building_types[view.type_id];
-        if (type.kind == 2 || type.kind == 3 || type.owner_slots_per_building <= 0)
-            continue;
-        auto group = building_at(static_cast<size_t>(g));
-        if (group.filled_owner >= group.count) {
-            group.severe_loss_cycles = 0;
-            group.recovery_failed_reviews = 0;
-            continue;
-        }
-        const bool already_expired = group.severe_loss_cycles >= vacancy_limit;
-        group.severe_loss_cycles = static_cast<uint16_t>(std::min(
-            vacancy_limit, static_cast<int32_t>(group.severe_loss_cycles) + 1));
-        if (group.severe_loss_cycles >= vacancy_limit) {
-            group.operating_state = 1;
-            group.pending_operating_state = 255;
-            group.recovery_cycles = 0;
-            ++_loss_suspended_building_groups;
-            _building_recovery_liquidation_eligible[g] = already_expired;
-        }
-    }
+    observe_building_employment(first, last, mobility_days > 0);
     EconomyCostProbe::record("employment.cell_hire", _current_day.get(),
                              elapsed_ms(employment_hire_started));
     EconomyCostProbe::record("employment.hire_ownerjob", _current_day.get(),

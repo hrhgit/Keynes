@@ -98,16 +98,12 @@ void NativeEconomyRuntime::clear_building_groups() {
     _building_investment_payback_days.clear();
     _building_investment_rejection.clear();
     _owner_mobility_cooldowns.clear();
-    _building_reopened_groups.clear();
     _building_survival_utilization_floor_q16.clear();
     _building_planned_capacity_before_climate_q16.clear();
     _building_funded_capacity_q16.clear();
     _building_working_capital_allocated.clear();
     _building_owner_livelihood_credit.clear();
-    _building_merchant_credit_limit.clear();
-    _building_recovery_probe_capacity_q16.clear();
-    _building_recovery_liquidation_eligible.clear();
-    _building_review_owner_vacancy.clear();
+    _building_lifecycle.clear();
     _employment_diagnostics.clear();
     _family_clamp_traces.clear();
     _person_building_offsets.clear();
@@ -163,10 +159,6 @@ void NativeEconomyRuntime::permute_building_group_columns(
     };
     remap_diagnostics(_employment_diagnostics);
     remap_diagnostics(_family_clamp_traces);
-    for (int32_t &row : _building_reopened_groups) row = new_row(row);
-    _building_reopened_groups.erase(std::remove(_building_reopened_groups.begin(),
-        _building_reopened_groups.end(), -1), _building_reopened_groups.end());
-    std::sort(_building_reopened_groups.begin(), _building_reopened_groups.end());
 
     // Retain live groups' person ranges for any reads before the next person
     // stage checks job bindings against stable building handles.
@@ -205,10 +197,7 @@ void NativeEconomyRuntime::permute_building_group_columns(
     remap_lanes(_building_funded_capacity_q16, int64_t{0});
     remap_lanes(_building_working_capital_allocated, int64_t{0});
     remap_lanes(_building_owner_livelihood_credit, int64_t{0});
-    remap_lanes(_building_merchant_credit_limit, int64_t{0});
-    remap_lanes(_building_recovery_probe_capacity_q16, int64_t{0});
-    remap_lanes(_building_recovery_liquidation_eligible, uint8_t{0});
-    remap_lanes(_building_review_owner_vacancy, uint8_t{0});
+    remap_lanes(_building_lifecycle, BuildingLifecycleReview{});
 
 #define PK_BUILDING_GROUP_GATHER(TYPE, NAME, COLUMN) \
     gather_column(store.COLUMN, order);
