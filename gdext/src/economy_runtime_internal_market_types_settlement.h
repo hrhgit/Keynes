@@ -88,6 +88,11 @@
         std::vector<int64_t> price_demand_delta_per_capita_daily;
     };
 
+    struct CohortLookupCounts {
+        int64_t calls = 0;
+        int64_t steps = 0;
+    };
+
     struct MarketResult {
         struct FoodAccessEntry {
             int32_t cell = -1;
@@ -96,6 +101,7 @@
         bool ok = true;
         int32_t market = -1;
         std::string error;
+        CohortLookupCounts cohort_lookups;
         int64_t processed_cohorts = 0;
         int64_t processed_rules = 0;
         int64_t processed_needs = 0;

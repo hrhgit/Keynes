@@ -33,6 +33,7 @@ public:
 private:
     static bool run_building_plan_counter(std::string &error);
     static bool run_building_row_references(std::string &error);
+    static bool run_building_portfolio_share(std::string &error);
     static bool run_economy_command_revisit(bool pod_owner, std::string &error);
     static bool run_demand_basis_cache(std::string &error);
     static bool run_frozen_tax_view(std::string &error);

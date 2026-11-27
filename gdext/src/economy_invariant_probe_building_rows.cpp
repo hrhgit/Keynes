@@ -1,6 +1,10 @@
 #include "economy_invariant_probe.h"
 #include "economy_runtime.h"
+#include "economy_runtime_building_investment_internal.h"
+#include "parallel_dispatcher.h"
+#include "runtime_switch_registry.h"
 
+#include <cstring>
 #include <memory>
 
 namespace pk {
@@ -15,10 +19,14 @@ bool EconomyInvariantProbe::run_building_plan_counter(std::string &error) {
     economy->_epoch_cell_country.assign(cells, 0);
     economy->_epoch_country_building_available = {1};
     economy->_building_types.resize(1);
+    economy->_signatures.resize(1);
     economy->_building_restart_margin_q16 = 0;
+    economy->_worker_enabled = true;
+    economy->_worker_task_cap = 4;
     economy->_worker_tasks_hint = 4;
     economy->_merchant_offsets.assign(cells + 1, 0);
     economy->_building_recovery_liquidation_eligible.assign(cells, 0);
+    economy->_building_review_owner_vacancy.assign(cells, 0);
     economy->market_store().cell_to_market.assign(cells, -1);
     economy->population_store().clear(cells);
     // With no required labour or inputs and a break-even threshold, each
@@ -28,17 +36,36 @@ bool EconomyInvariantProbe::run_building_plan_counter(std::string &error) {
         group.cell = cell;
         group.type_id = 0;
         group.count = 1;
+        group.owner_signature_id = 0;
         group.operating_state = 1;
+        group.severe_loss_cycles = 3;
         economy->append_building_group(group);
+        const int32_t slot = economy->population_store().allocate_slot(cell, 0);
+        economy->population_store().population.write_scalar(slot, 1);
         economy->_epoch_plan_cells.push_back(cell);
         economy->_building_cell_offsets.push_back(cell);
     }
     economy->_building_cell_offsets.push_back(cells);
+    NativeEconomyRuntime::MarketResult market;
+    auto *previous_market_sink = economy->_market_result_sink;
+    economy->_market_result_sink = &market;
+    const int32_t found = economy->find_cohort_slot(0, 0);
+    economy->_market_result_sink = previous_market_sink;
+    if (economy->_scan_calls_find_signature != 0 ||
+        economy->_scan_steps_find_signature != 0) {
+        error = "household_market_task_wrote_shared_cohort_lookup_counts";
+        return false;
+    }
+    if (found < 0 || market.cohort_lookups.calls != 1 ||
+        market.cohort_lookups.steps != 1) {
+        error = "household_market_task_did_not_record_cohort_lookup";
+        return false;
+    }
     NativeEconomyRuntime::BuildingPlanResult task;
     if (!economy->prepare_building_economic_plan(
             0, 1, &economy->_epoch_plan_cells, task, error)) return false;
     if (task.recovery_approved != 1 ||
-        economy->building_view(0).pending_operating_state != 0) {
+        economy->building_view(0).operating_state != 0) {
         error = "recovery_counter_fixture_did_not_approve";
         return false;
     }
@@ -46,18 +73,86 @@ bool EconomyInvariantProbe::run_building_plan_counter(std::string &error) {
         error = "building_plan_task_wrote_shared_recovery_count";
         return false;
     }
-    economy->building_at(0).pending_operating_state = 255;
+    const bool isolated_lookups = economy->_scan_calls_find_signature == 0 &&
+        economy->_scan_steps_find_signature == 0;
+    const bool streak_preserved = economy->building_view(0).severe_loss_cycles == 3;
+    economy->building_at(0).operating_state = 1;
+    economy->building_at(0).severe_loss_cycles = 3;
+    economy->_scan_calls_find_signature = 0;
+    economy->_scan_steps_find_signature = 0;
     if (!economy->evaluate_building_plan_range(0, cells, error)) return false;
-    // Each cell in this fixture has one building with no inputs, jobs or
-    // outputs, so the planner estimates nine units of work per cell.
+    const char *serial = runtime_switch_value(RuntimeSwitch::PK_ECONOMY_STAGE_PLAN_SERIAL);
     const bool expect_parallel =
-        economy->building_plan_uses_worker_pool(cells, cells * 9);
+        parallel_has_real_worker_threads() && !(serial && std::strcmp(serial, "1") == 0);
+    if (economy->_building_plan_worker_parallel_dispatches != (expect_parallel ? 1 : 0)) {
+        error = "building_plan_did_not_dispatch_parallel_work";
+        return false;
+    }
     if (economy->_recovery_restarted != cells ||
-        economy->_recovery_approved != cells ||
-        economy->_building_plan_worker_parallel_dispatches !=
-            (expect_parallel ? 1 : 0)) {
+        economy->_recovery_approved != cells) {
         error = "building_plan_did_not_reduce_all_recovery_counts";
         return false;
+    }
+    if (!isolated_lookups) {
+        error = "building_plan_task_wrote_shared_cohort_lookup_counts";
+        return false;
+    }
+    int64_t task_calls = 0;
+    for (const auto &result : economy->_building_plan_results_scratch)
+        task_calls += result.cohort_lookups.calls;
+    // Every recovery candidate looks up its existing owner once for sorting.
+    // Quote memoization can change how many additional lookups a task needs.
+    // Each lookup visits exactly one cohort in this fixture.
+    if (task.cohort_lookups.calls <= 0 ||
+        task.cohort_lookups.steps != task.cohort_lookups.calls ||
+        task_calls < cells || economy->_scan_calls_find_signature != task_calls ||
+        economy->_scan_steps_find_signature != task_calls) {
+        error = "building_plan_did_not_reduce_all_cohort_lookup_counts";
+        return false;
+    }
+    if (!streak_preserved) {
+        error = "building_plan_approval_cleared_the_vacancy_streak";
+        return false;
+    }
+    return true;
+}
+
+bool EconomyInvariantProbe::run_building_portfolio_share(std::string &error) {
+    auto economy = std::make_unique<NativeEconomyRuntime>();
+    economy->_cell_count = 1;
+    economy->market_store().market_count = 1;
+    economy->market_store().cell_to_market.assign(1, 0);
+    economy->_building_construction_candidate_offsets = {0};
+    economy->_building_types.resize(2);
+    economy->_investment_max_type_owner_share_q16 = NativeEconomyRuntime::Q16_ONE / 2;
+    for (const int64_t first_slots : {2, 1}) {
+        NativeEconomyRuntime::BuildingInvestmentCellContext review(0);
+        review.cell_population = 10;
+        review.employment_gap = 4;
+        review.portfolio_size = 2;
+        economy->_building_types[0].owner_slots_per_building = first_slots;
+        economy->_building_types[1].owner_slots_per_building = 2;
+        for (int32_t type = 0; type < 2; ++type) {
+            auto &candidate = review.portfolio[type];
+            candidate.plan.type_id = type;
+            candidate.plan.sponsor = type;
+            candidate.plan.max_batch_count = 1;
+            candidate.plan.request.reason = NativeEconomyRuntime::INVESTMENT_REQUEST_EMPLOYMENT_CATCHUP;
+            candidate.willing_population = economy->_building_types[type].owner_slots_per_building;
+            candidate.jobs_per_building = candidate.willing_population;
+            candidate.desired_count = 1;
+            candidate.score_q16 = 2 - type;
+        }
+        economy->investment_allocate_portfolio(review);
+        // Equal pairs fit the cap. An indivisible 1:2 pair cannot fit, but
+        // the highest ranked single project is within the existing rules.
+        const bool balanced = first_slots == 2;
+        if (review.portfolio[0].plan.allocated_count != 1 ||
+            review.portfolio[1].plan.allocated_count != (balanced ? 1 : 0)) {
+            error = balanced ? "balanced_investment_portfolio_trimmed"
+                             : "indivisible_investment_portfolio_lost_single_project";
+            return false;
+        }
     }
     return true;
 }

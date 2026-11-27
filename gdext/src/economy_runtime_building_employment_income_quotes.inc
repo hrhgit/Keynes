@@ -1,34 +1,5 @@
         const int32_t n_eth = static_cast<int32_t>(_ethnicity_ids.size());
 
-        auto schedule_suspended_survival_restart = [&](BuildingGroupRef group) {
-            if (group.operating_state != 1 || group.filled_owner <= 0) return;
-            if (group.filled_owner < group.count &&
-                group.severe_loss_cycles >= _building_severe_loss_cycles.get()) return;
-            if (group.type_id < 0 || group.type_id >= static_cast<int32_t>(
-                    _building_types.size())) return;
-            const BuildingType &type = _building_types[group.type_id];
-            bool survival_food = false;
-            for (int32_t oi = 0; oi < type.output_count; ++oi) {
-                const int32_t good =
-                    _building_outputs[type.output_begin + oi].good_id;
-                if (good >= 0 &&
-                    good < static_cast<int32_t>(
-                        _survival_food_good_mask.size()) &&
-                    _survival_food_good_mask[good] != 0) {
-                    survival_food = true;
-                    break;
-                }
-            }
-            if (!survival_food) return;
-            // Employment refill is the unlock for labour-empty SUSPENDED_LOSS
-            // food lots. Apply ACTIVE at the next due-cell boundary so this
-            // period's production slice stays on the frozen operating state.
-            group.pending_operating_state = 0;
-            group.severe_loss_cycles = 0;
-            group.recovery_failed_reviews = 0;
-            group.recovery_cooldown_cycles = 0;
-        };
-
         auto owner_mobility_cooldown_active = [&](int32_t source_group,
                                                   int32_t target_group) -> bool {
             for (const OwnerMobilityCooldown &entry : _owner_mobility_cooldowns) {

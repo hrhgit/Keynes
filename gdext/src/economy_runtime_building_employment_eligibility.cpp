@@ -76,28 +76,16 @@ NativeEconomyRuntime::unemployed_owner_hire_rejection(
 }
 
 int64_t NativeEconomyRuntime::owner_mobility_income_per_day(
-        BuildingGroupConstRef group, bool reopening, int64_t &sat) const {
+        BuildingGroupConstRef group, int64_t &sat) const {
     if (group.type_id < 0 || static_cast<size_t>(group.type_id) >= _building_types.size() ||
             group.count <= 0) return 0;
-    if (group.operating_state == 1 && !reopening) {
-        const BuildingType &type = _building_types[group.type_id];
-        bool survival_food = false;
-        for (int32_t oi = 0; oi < type.output_count; ++oi) {
-            const int32_t good = _building_outputs[type.output_begin + oi].good_id;
-            if (static_cast<size_t>(good) < _survival_food_good_mask.size() &&
-                    _survival_food_good_mask[good] != 0) {
-                survival_food = true;
-                break;
-            }
-        }
-        if (!survival_food) return 0;
-    }
+    if (group.operating_state != 0) return 0;
     const bool has_settled = group.last_output > 0 || group.last_sold > 0 ||
         group.last_market_receipt > 0 || group.last_in_kind_livelihood_value > 0 ||
         group.last_input_cost > 0 || group.last_base_wages_paid > 0;
     // Active owners compare settled returns, using a counterfactual income
     // only when the lot has not yet settled.
-    if (has_settled && (reopening || group.operating_state != 1))
+    if (has_settled)
         return projected_owner_income_per_day(group, sat);
     int64_t quote_sat = 0;
     EconomyCostProbe::record("owner_quote.call.emp_settle_gate", _current_day.get(), 0.0, 1);

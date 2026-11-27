@@ -107,6 +107,7 @@ void NativeEconomyRuntime::clear_building_groups() {
     _building_merchant_credit_limit.clear();
     _building_recovery_probe_capacity_q16.clear();
     _building_recovery_liquidation_eligible.clear();
+    _building_review_owner_vacancy.clear();
     _employment_diagnostics.clear();
     _family_clamp_traces.clear();
     _person_building_offsets.clear();
@@ -207,6 +208,7 @@ void NativeEconomyRuntime::permute_building_group_columns(
     remap_lanes(_building_merchant_credit_limit, int64_t{0});
     remap_lanes(_building_recovery_probe_capacity_q16, int64_t{0});
     remap_lanes(_building_recovery_liquidation_eligible, uint8_t{0});
+    remap_lanes(_building_review_owner_vacancy, uint8_t{0});
 
 #define PK_BUILDING_GROUP_GATHER(TYPE, NAME, COLUMN) \
     gather_column(store.COLUMN, order);

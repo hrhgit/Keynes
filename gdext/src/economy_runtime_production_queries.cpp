@@ -283,13 +283,8 @@ int64_t NativeEconomyRuntime::planned_owner_demand(
     // A suspended producer is not an employment target. Keeping its owner
     // demand alive used to pin proprietors to a zero-output lot while its hard
     // inputs were unavailable. That made upstream food vacancies impossible
-    // to staff and created a starvation loop. Recovery is decided by the
-    // economic plan above; when it becomes viable, pending_operating_state is
-    // flipped to ACTIVE and the next employment pass hires by the normal
-    // income comparison.
-    if (group.operating_state == 1) {
-        return 0;
-    }
+    // to staff and created a starvation loop. The economic plan opens a
+    // viable lot before employment, which then uses the normal hiring rules.
     return 0;
 }
 

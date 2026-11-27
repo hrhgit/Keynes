@@ -99,6 +99,12 @@ bool NativeEconomyRuntime::prepare_building_economic_plan(
         BuildingPlanResult &result, std::string &error) {
     LivingCostMemoScope memo(*this, true);
     result.reset();
+    struct RestorePlanSink {
+        BuildingPlanResult *&sink;
+        BuildingPlanResult *previous;
+        ~RestorePlanSink() { sink = previous; }
+    } restore_sink{_building_plan_result_sink, _building_plan_result_sink};
+    _building_plan_result_sink = &result;
     NativeEconomyBuildingPlanExecutor executor;
     executor.runtime = this;
     executor.legacy_result = &result;

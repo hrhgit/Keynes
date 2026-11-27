@@ -54,9 +54,7 @@
             const BuildingType &type = _building_types[group.type_id];
             if (group.owner_signature_id < 0 ||
                 group.owner_signature_id >= static_cast<int32_t>(_signatures.size())) continue;
-            // Suspended survival-food lots can receive owners, but only
-            // active incumbents are sources for the opportunity gradient.
-            const int64_t income = owner_mobility_income_per_day(group, false, _saturation_count);
+            const int64_t income = owner_mobility_income_per_day(group, _saturation_count);
             projected_owner_income[g - first] = income;
             const int64_t owner_target = group_owner_target[g - first];
             if ((type.kind != 2 || is_merchant_service_post(type)) &&
@@ -475,7 +473,6 @@
                 source_group.filled_owner -= 1;
                 target_group.filled_owner = saturating_add(
                     target_group.filled_owner, 1, _saturation_count);
-                schedule_suspended_survival_restart(target_group);
                 {
                     int64_t realloc_sat = 0;
                     EconomyCostProbe::record("owner_quote.call.emp_realloc_owner",
@@ -592,7 +589,6 @@
                 _building_employee_filled.write_scalar(candidate.fill_index, _building_employee_filled[candidate.fill_index] - (1), market_mutation_sink());
                 target_group.filled_owner = saturating_add(
                     target_group.filled_owner, 1, _saturation_count);
-                schedule_suspended_survival_restart(target_group);
                 {
                     int64_t realloc_sat = 0;
                     EconomyCostProbe::record("owner_quote.call.emp_realloc_employee",

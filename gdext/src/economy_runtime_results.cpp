@@ -6,6 +6,8 @@ namespace pk {
 
 thread_local NativeEconomyRuntime::ProductionResult *
     NativeEconomyRuntime::_production_result_sink = nullptr;
+thread_local NativeEconomyRuntime::BuildingPlanResult *
+    NativeEconomyRuntime::_building_plan_result_sink = nullptr;
 thread_local NativeEconomyRuntime::MarketResult *
     NativeEconomyRuntime::_market_result_sink = nullptr;
 thread_local std::vector<int32_t> *
@@ -15,6 +17,7 @@ void NativeEconomyRuntime::MarketResult::reset() {
     ok = true;
     market = -1;
     error.clear();
+    cohort_lookups = {};
     processed_cohorts = 0;
     processed_rules = 0;
     processed_needs = 0;
@@ -121,6 +124,7 @@ void NativeEconomyRuntime::ProductionResult::reset() {
     ok = true;
     cell = -1;
     error.clear();
+    cohort_lookups = {};
     saturation_count = 0;
     processed_building_groups = 0;
     climate_profiled_building_groups = 0;

@@ -239,7 +239,8 @@ bool NativeEconomyRuntime::start_epoch(int64_t day_index, std::string &error) {
                 for (int32_t g = _building_cell_offsets[cell];
                      g < _building_cell_offsets[cell + 1]; ++g) {
                     const auto group = building_view(static_cast<size_t>(g));
-                    if (group.count > 0 && group.severe_loss_cycles >= 2) {
+                    if (group.count > 0 && group.severe_loss_cycles >=
+                            std::min(2, _building_severe_loss_cycles.get())) {
                         needs_lifecycle_review = true;
                         break;
                     }
@@ -373,9 +374,8 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
     }
     _epoch_begin_construction_csr_ms = elapsed_ms(construction_csr_started);
     const auto recovery_apply_started = Clock::now();
-    // Recovery outcomes are committed only when this cell becomes due again.
-    // This keeps employment and the published operating state on the same
-    // frozen-cycle boundary instead of changing state after hiring has settled.
+    // Apply recovery offers still pending in older checkpoints. Current
+    // recovery reviews open positions before employment in the same period.
     _building_reopened_groups.clear();
     for (const int32_t cell : _epoch_building_cells) {
         if (_building_cell_offsets.size() != static_cast<size_t>(_cell_count.get() + 1))
@@ -394,10 +394,6 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
                     _building_reopened_groups.push_back(g);
                 group.operating_state = group.pending_operating_state;
                 group.pending_operating_state = 255;
-                if (group.operating_state == 0) {
-                    group.severe_loss_cycles = 0;
-                    group.recovery_failed_reviews = 0;
-                }
             }
             if (group.operating_state > 1) {
                 group.operating_state = 1;
@@ -425,6 +421,9 @@ bool NativeEconomyRuntime::finish_epoch_start_after_fiscal(
     _building_merchant_credit_limit.assign(building_count(), 0);
     _building_recovery_probe_capacity_q16.assign(building_count(), 0);
     _building_recovery_liquidation_eligible.assign(building_count(), 0);
+    _building_review_owner_vacancy.assign(building_count(), 0);
+    for (const int32_t group : _building_reopened_groups)
+        _building_review_owner_vacancy[group] = 1;
     _production_input_reserve.assign(_market_signals.good_ids.size(), 0);
     _construction_material_reserve.assign(_market_signals.good_ids.size(), 0);
     _epoch_business_demand_ema = _market_signals.business_demand_ema;

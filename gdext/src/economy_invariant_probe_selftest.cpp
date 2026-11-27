@@ -21,7 +21,8 @@ namespace pk {
 using namespace godot;
 
 bool EconomyInvariantProbe::run(std::string &error) {
-    if (!run_building_row_references(error) || !run_building_plan_counter(error)) return false;
+    if (!run_building_row_references(error) || !run_building_plan_counter(error) ||
+        !run_building_portfolio_share(error)) return false;
     if (!run_frozen_tax_view(error) || !run_economy_command_revisit(false, error) ||
         !run_economy_command_revisit(true, error) || !run_demand_basis_cache(error)) return false;
     {

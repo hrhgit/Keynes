@@ -178,10 +178,8 @@ void NativeEconomyRuntime::finalize_household_building_cell(
                 saturation);
         group.realized_profit_margin_q16 = static_cast<int32_t>(
             std::clamp<int64_t>(margin, -Q16_ONE, Q16_ONE));
-        // Suspended buildings are evaluated by the unified economic plan
-        // above. There is no reduced-capacity trial settlement here: a viable
-        // building is scheduled ACTIVE for the next frozen boundary, while a
-        // non-viable building remains fully suspended.
+        // Planning opens viable recovery offers before employment. Household
+        // settlement only records the realized margin.
         (void)restarted;
         (void)failed;
     }

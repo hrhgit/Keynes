@@ -163,6 +163,9 @@
     // financially executable but still economically unviable.
     std::vector<int64_t> _building_recovery_probe_capacity_q16;
     std::vector<uint8_t> _building_recovery_liquidation_eligible;
+    // A due group's actual trading loss has already counted for this period.
+    // Employment must not count a second observation for the same group.
+    std::vector<uint8_t> _building_review_owner_vacancy;
     // Rows reopened at this epoch boundary, before they have had a chance to hire.
     std::vector<int32_t> _building_reopened_groups;
 #include "economy_runtime_internal_state_members_building_and_market.h"

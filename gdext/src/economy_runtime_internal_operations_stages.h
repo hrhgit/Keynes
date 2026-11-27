@@ -178,6 +178,7 @@
     int32_t find_building_group(int32_t cell, int32_t type_id,
                                 int32_t owner_signature_id) const;
     int32_t find_cohort_slot(int32_t cell, int32_t signature_id) const;
+    void merge_cohort_lookup_counts(const CohortLookupCounts &counts) const;
     int64_t credit_local_merchants(int32_t cell, int64_t amount,
                                    int32_t cashflow_source = CASHFLOW_MERCHANT_BUSINESS,
                                    int64_t *saturation_override = nullptr);

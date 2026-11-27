@@ -194,8 +194,6 @@
             // execution blockage, not evidence of a realized operating loss.
             // Keep the installed group active/idle so it retains a labor claim
             // and can resume as soon as the input chain supplies it.
-            if (type.kind != 2 && group.operating_state == 0)
-                group.severe_loss_cycles = 0;
             if (group.operating_state != 0) ++_loss_suspended_building_groups;
             continue;
         }
@@ -387,11 +385,9 @@
         group.sample_unit_input_cost = input_cost;
         group.sample_unit_maintenance_cost = maintenance_cost;
         group.last_margin_gap_q16 = static_cast<int32_t>(margin_gap);
-        const bool owner_shortfall = group.count > 0 &&
-            group.filled_owner < group.count;
         bool suspended_now = false;
-        // The previous period of a just-reopened group was spent suspended.
-        // Let this period's employment run before counting another vacancy.
+        // A pending restart from an older save has no previous active period
+        // to assess. Current recovery offers are opened after this assessment.
         if (type.kind != 2 && group.operating_state == 0 &&
             !std::binary_search(_building_reopened_groups.begin(),
                                 _building_reopened_groups.end(), group_index)) {
@@ -469,10 +465,9 @@
             const bool realized_severe_loss = settled_production &&
                 !positive_self_employment &&
                 realized_after_tax_margin <= _building_severe_loss_threshold_q16.get();
-            if (realized_severe_loss || owner_shortfall) {
-                // Count consecutive severe losses or owner-shortfall reviews.
-                // A single observation remains visible to employment and audit
-                // while the configured hysteresis threshold decides suspension.
+            if (realized_severe_loss) {
+                // A realized operating loss already consumes this review.
+                _building_review_owner_vacancy[group_index] = 0;
                 const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
                 group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
                     threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
@@ -482,40 +477,7 @@
                     suspended_now = true;
                     invalidate_cell_monetary_units(group.cell);
                 }
-            } else {
-                // A staffed building with no settled loss may simply be blocked
-                // by labor, inputs, resources or working capital. None of those
-                // conditions advances the lifecycle counter.
-                group.severe_loss_cycles = 0;
             }
             group.pending_operating_state = 255;
             group.recovery_cooldown_cycles = 0;
-            if (!suspended_now && group.severe_loss_cycles >= _building_severe_loss_cycles.get()) {
-                group.operating_state = 1;
-                group.recovery_cycles = 0;
-                suspended_now = true;
-                invalidate_cell_monetary_units(group.cell);
-            }
-        }
-        // Service buildings do not participate in producer profit/loss
-        // classification, but an owner-shortfall service group still has a
-        // finite lifecycle and must be eligible for the same liquidation path.
-        if (type.kind == 2 && group.operating_state == 0 && owner_shortfall) {
-            const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
-            group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
-                threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
-            if (group.severe_loss_cycles >= threshold) {
-                group.operating_state = 1;
-                group.recovery_cycles = 0;
-                group.pending_operating_state = 255;
-                suspended_now = true;
-                invalidate_cell_monetary_units(group.cell);
-            }
-        }
-        if (type.kind == 2 && group.operating_state == 1 &&
-            group.filled_owner < group.count &&
-            group.severe_loss_cycles >= _building_severe_loss_cycles.get() &&
-            group_index < static_cast<int32_t>(
-                _building_recovery_liquidation_eligible.size())) {
-            _building_recovery_liquidation_eligible[group_index] = 1;
         }

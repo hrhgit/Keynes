@@ -158,6 +158,7 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
     for (int32_t task = 0; task < task_count; ++task) {
         const BuildingPlanResult &task_result =
             _building_plan_results_scratch[task];
+        merge_cohort_lookup_counts(task_result.cohort_lookups);
         _building_plan_worker_cpu_ms += task_result.worker_ms;
         _saturation_count += task_result.saturation_count;
         _merchant_credit_budget = saturating_add(
@@ -176,7 +177,7 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
             _recovery_approved,
             task_result.recovery_approved,
             _saturation_count);
-        // Every approval in this plan queues a restart at the next boundary.
+        // Keep the legacy restart diagnostic as the count of offers opened.
         _recovery_restarted = saturating_add(
             _recovery_restarted,
             task_result.recovery_approved,

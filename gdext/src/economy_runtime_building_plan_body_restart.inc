@@ -99,66 +99,8 @@
                     }
                 }
             }
-            const int32_t owner_slot = find_cohort_slot(
-                group.cell, group.owner_signature_id);
-            int64_t owner_slot_cash = owner_slot >= 0
-                ? std::max<int64_t>(0, population_store().funds[owner_slot]) : 0;
-            const bool vacancy_expired = group.filled_owner < group.count &&
-                group.severe_loss_cycles >= _building_severe_loss_cycles.get();
-            const int64_t owners_needed = type.owner_slots_per_building <= 0 ? 0
-                : (vacancy_expired ? group.count : 1);
-            int64_t hireable_owner_labor = std::max<int64_t>(0, group.filled_owner);
-            int64_t recruitable = std::max<int64_t>(0,
-                saturating_mul(group.count, type.owner_slots_per_building,
-                    _saturation_count) - hireable_owner_labor);
-            if (recruitable > 0 && _employment_mobility_daily_q16.get() > 0) {
-                const int64_t target_income = owner_mobility_income_per_day(
-                    group, true, _saturation_count);
-                // Workers already attached to other jobs are matched in the
-                // employment pass. Count only this lot's incumbents and the
-                // local unemployed pool eligible for its advertised vacancies.
-                population_store().for_each_in_cell(group.cell, [&](int32_t slot) {
-                    if (recruitable <= 0) return;
-                    const uint32_t signature = population_store().signature_id[slot];
-                    if (signature >= _signatures.size() ||
-                        _signatures[signature].profession_id != _unemployed_profession_id)
-                        return;
-                    const int64_t source_income = unemployed_disposable_income_at(
-                        group.cell, slot, _saturation_count);
-                    if (unemployed_owner_hire_rejection(group.cell, slot, type.owner_profession_id,
-                            source_income, target_income, _saturation_count) != EMPLOYMENT_REJECTION_NONE)
-                        return;
-                    const int64_t people = population_store().population[slot];
-                    const int64_t moving = std::min(recruitable, people);
-                    hireable_owner_labor += moving;
-                    // Quote only the savings these eligible recruits could
-                    // carry. The actual hire and purchases settle separately.
-                    owner_slot_cash = saturating_add(owner_slot_cash,
-                        mul_div_sat(std::max<int64_t>(0, population_store().funds[slot]),
-                            moving, people, _saturation_count), _saturation_count);
-                    recruitable -= moving;
-                });
-            }
-            // Restart finance bills only hard inputs and employee wages. Soft
-            // tools are optional productivity bought from the recruited
-            // owners' carried savings; billing them, or owner livelihood
-            // (paid by the lot's own output, cash or in kind), made every
-            // suspended lot with delinquent merchant debt need credit it could
-            // never get, so a profitable hunting camp stayed shut forever
-            // while its cell starved.
-            const int64_t restart_cost = saturating_add(
-                saturating_mul(restart_hard_input_unit_cost, building_days,
-                    _saturation_count), saturating_mul(employee_wages,
-                    building_days, _saturation_count), _saturation_count);
-            const int64_t credit_needed = std::max<int64_t>(0,
-                restart_cost - std::min(restart_cost, owner_slot_cash));
-            const bool finance_available = credit_needed == 0 ||
-                (_merchant_credit_runtime_mode.get() != 0 &&
-                 group.merchant_debt_delinquent_cycles == 0 &&
-                 credit_needed <= cell_credit_remaining);
-            const bool owner_available = hireable_owner_labor >= owners_needed;
-            const bool executable = owner_available && physical_inputs_available &&
-                physical_resources_available && finance_available;
+            const bool physical_requirements_met =
+                physical_inputs_available && physical_resources_available;
             // Counterfactual restart margin must match the executable soft path:
             // unstocked soft inputs cut throughput and drop out of operating cost.
             int64_t recovery_profit_margin = expected_profit_margin;
@@ -218,7 +160,7 @@
             // Owner-retained output is income for every building, including a
             // suspended one. Revalue it at the current market price in the
             // same recovery decision; do not create a food-only exception.
-            if (executable) {
+            if (physical_requirements_met) {
                 int64_t quote_sat = 0;
                 EconomyCostProbe::record("owner_quote.call.plan_recovery",
                                           _current_day.get(), 0.0, 1);
@@ -238,27 +180,40 @@
                 _saturation_count = saturating_add(_saturation_count, quote_sat,
                     _saturation_count);
             }
-            // Recovery must be able to bootstrap an empty owner roster. The
-            // employment pass only advertises vacancies for ACTIVE groups, so
-            // requiring an already seated owner here creates a circular gate.
-            const bool viable = executable &&
+            const bool offer_jobs = physical_requirements_met &&
                 recovery_profit_margin >= _building_restart_margin_q16.get();
-            if (group_index < static_cast<int32_t>(
-                    _building_recovery_liquidation_eligible.size())) {
-                _building_recovery_liquidation_eligible[group_index] =
-                    !viable && (vacancy_expired || executable);
-            }
-            if (viable) {
-                group.pending_operating_state = 0;
-                group.severe_loss_cycles = 0;
-                group.recovery_failed_reviews = 0;
-                group.recovery_cooldown_cycles = 0;
-                if (credit_needed > 0) {
-                    _building_merchant_credit_limit[group_index] = credit_needed;
-                    _merchant_credit_committed = saturating_add(
-                        _merchant_credit_committed, credit_needed, _saturation_count);
-                    cell_credit_remaining -= credit_needed;
-                }
+            if (offer_jobs) {
+                // Employment decides who takes the openings and whether
+                // the vacancy streak ends. The normal production path
+                // settles any purchases against actual balances.
+                group.operating_state = 0;
+                group.pending_operating_state = 255;
+                _building_review_owner_vacancy[group_index] = 1;
+                invalidate_cell_monetary_units(group.cell);
                 ++_recovery_approved;
+            } else {
+                const bool vacancy_expired = group.filled_owner < group.count &&
+                    group.severe_loss_cycles >= _building_severe_loss_cycles.get();
+                // Preserve the review of executable but unprofitable lots.
+                bool finance_available = false;
+                if (physical_requirements_met && !vacancy_expired) {
+                    const int32_t owner_slot = find_cohort_slot(
+                        group.cell, group.owner_signature_id);
+                    const int64_t owner_cash = owner_slot >= 0
+                        ? std::max<int64_t>(0, population_store().funds[owner_slot]) : 0;
+                    const int64_t restart_cost = saturating_add(
+                        saturating_mul(restart_hard_input_unit_cost, building_days,
+                            _saturation_count),
+                        saturating_mul(employee_wages, building_days, _saturation_count),
+                        _saturation_count);
+                    const int64_t credit_needed = restart_cost -
+                        std::min(restart_cost, owner_cash);
+                    finance_available = credit_needed == 0 ||
+                        (_merchant_credit_runtime_mode.get() != 0 &&
+                         group.merchant_debt_delinquent_cycles == 0 &&
+                         credit_needed <= cell_credit_remaining);
+                }
+                _building_recovery_liquidation_eligible[group_index] =
+                    vacancy_expired || finance_available;
             }
         }

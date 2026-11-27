@@ -589,6 +589,9 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             if (group.operating_state != 0) ++_loss_suspended_building_groups;
             continue;
         }
+        if (type.kind != 2 && type.owner_slots_per_building > 0 &&
+                group.operating_state == 0)
+            _building_review_owner_vacancy[group_index] = 1;
 #include "economy_runtime_building_plan_body_operating_quote.inc"
 #include "economy_runtime_building_plan_body_restart.inc"
 #include "economy_runtime_building_plan_body_utilization.inc"

@@ -567,6 +567,12 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
         if (portfolio[i].plan.allocated_count > 0) ++active_types;
     if (active_types >= 2 &&
         _investment_max_type_owner_share_q16.get() < Q16_ONE) {
+        const auto allocated = [](const Candidate &candidate) {
+            return candidate.plan.allocated_count > 0;
+        };
+        const auto end = portfolio.begin() + portfolio_size;
+        const auto best = std::find_if(portfolio.begin(), end, allocated);
+        const int64_t best_count = best->plan.allocated_count;
         for (int32_t pass = 0; pass < 4; ++pass) {
             bool changed = false;
             int64_t total_owner_slots = 0;
@@ -597,6 +603,14 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
                 }
             }
             if (!changed) break;
+        }
+        // Some small portfolios cannot meet the share cap in whole buildings.
+        // Keep the highest-ranked feasible project if diversification would
+        // leave no work. The share cap applies only to multi-type portfolios.
+        if (std::none_of(portfolio.begin(), end, allocated)) {
+            best->plan.allocated_count = best_count;
+            active_types = 1;
+            return;
         }
         // A bounded second pass redistributes capacity released by the
         // concentration correction without reopening the candidate scan.

@@ -176,6 +176,7 @@
         bool ok = true;
         int32_t cell = -1;
         std::string error;
+        CohortLookupCounts cohort_lookups;
         int64_t saturation_count = 0;
         int64_t processed_building_groups = 0;
         int64_t climate_profiled_building_groups = 0;
@@ -263,6 +264,7 @@
     struct BuildingPlanResult {
         bool ok = true;
         std::string error;
+        CohortLookupCounts cohort_lookups;
         int64_t saturation_count = 0;
         int64_t merchant_credit_budget = 0;
         int64_t merchant_credit_committed = 0;
