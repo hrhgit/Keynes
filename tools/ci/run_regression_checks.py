@@ -87,6 +87,7 @@ TESTS = (
     "tests/runtime/native_world_handshake_test.gd",
     "tests/runtime/runtime_world_lifecycle_test.gd",
     "tests/runtime/runtime_world_rules_rebuild_test.gd",
+    "tests/runtime/runtime_modifier_pod_test.gd",
     "tests/runtime/modifier_same_day_reapply_test.gd",
     "tests/runtime/runtime_inline_coordinator_save_test.gd",
     "tests/runtime/startup_save_boundary_test.gd",

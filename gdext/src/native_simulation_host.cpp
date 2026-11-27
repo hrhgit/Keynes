@@ -412,6 +412,18 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
         commit.continuation_pending = 1;
         return commit;
     }
+    // Narrative reads today's journal. Finish it only after recoverable day
+    // barriers; expose its reader slot once the remaining day tail succeeds.
+    const bool publish_events = commit.preflight_ok &&
+        (active_requested & runtime_domain_mask(RuntimeDomainId::EVENTS)) && day.progress.events_planned;
+    if (publish_events && !publish_day_events(plan.context.day, _events_authority.report(), {})) {
+        auto &failed = plan.stages[static_cast<size_t>(RuntimeDomainId::EVENTS) - 1];
+        failed.completed = 0;
+        commit.completed_domain_mask &= ~runtime_domain_mask(RuntimeDomainId::EVENTS);
+        --commit.completed_stage_count;
+        commit.work_units -= failed.work_units;
+        commit.preflight_ok = 0;
+    }
     if (commit.preflight_ok != 0) {
         for (const auto stage : day_tail_stages) {
             if (const char *error = (this->*stage)(day)) {
@@ -423,6 +435,7 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
     }
     if (publish_modifier)
         finish_modifier_day_publication(modifier_slot, commit.preflight_ok != 0);
+    if (publish_events && commit.preflight_ok) publish_events_snapshot();
     return commit;
 }
 

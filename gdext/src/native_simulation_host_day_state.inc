@@ -69,7 +69,11 @@
         std::array<RuntimeDomainPlan, RUNTIME_DOMAIN_STAGE_COUNT> finished{};
         std::vector<RuntimeCommandPacket> event_commands;
         uint64_t gameplay_submit_order = 0;
+        bool events_planned = false;
+        uint64_t events_submit_order = 0;
+        size_t produced_event_packets = 0;
         bool counted_opinion_wait = false;
+        bool economy_commands_changed = false;
     } _day_progress;
     std::shared_ptr<RuntimeDayTail> _executor_day_tail;
     std::shared_ptr<VisionResearchState> _executor_vision;

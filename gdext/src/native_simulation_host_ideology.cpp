@@ -377,17 +377,6 @@ void NativeSimulationHost::stage_ideology_modifier_commands(
     auto make_command = [&](const RuntimeIdeologyPodModifierRow &row,
                             int32_t definition_id) {
         RuntimeModifierPodCommand command;
-        uint64_t hash = 1469598103934665603ull;
-        for (uint64_t value : {row.transition_id, row.source_id,
-                               row.definition_key_hash,
-                               static_cast<uint64_t>(row.ordinal),
-                               static_cast<uint64_t>(row.opcode),
-                               _ideology_modifier_sequence}) {
-            hash ^= value; hash *= 1099511628211ull;
-        }
-        command.request_id = hash == 0 ? 1 : hash;
-        command.producer_id = 0x49444530u; // IDE0
-        command.sequence = _ideology_modifier_sequence++;
         command.requested_day = day;
         command.effective_day = day;
         command.opcode = row.opcode;
@@ -416,21 +405,30 @@ void NativeSimulationHost::stage_ideology_modifier_commands(
             inflight.submitted = 2;
             continue;
         }
-        std::vector<RuntimeModifierPodCommand> batch;
-        batch.reserve(inflight.rows.size());
+        RuntimeModifierPodAtomicBatch batch;
+        batch.request_id = inflight.intent.source_id;
+        batch.producer_id = 0x49444530u; // IDE0: transition
+        batch.commands.reserve(inflight.rows.size());
         for (const auto &row : inflight.rows) {
-            batch.push_back(make_command(row, resolve(row)));
+            batch.commands.push_back(make_command(row, resolve(row)));
         }
         inflight.batch_index =
             static_cast<int32_t>(_ideology_day_modifier_batches.size());
         _ideology_day_modifier_batches.push_back(std::move(batch));
         inflight.submitted = 1;
     }
-    // Loose synergy rows: each synergy add/remove pair is its own batch.
+    // Each synergy row is independent. A later transition can legitimately
+    // toggle the same synergy again, even on the same day.
     for (const auto &row : _ideology_loose_modifier_rows) {
         const int32_t definition_id = resolve(row);
-        if (definition_id >= 0)
-            _ideology_day_modifier_batches.push_back({make_command(row, definition_id)});
+        if (definition_id < 0) continue;
+        RuntimeModifierPodAtomicBatch batch;
+        batch.request_id = row.synergy_transition_id;
+        batch.producer_id = 0x49444531u; // IDE1: synergy
+        // The low word of source_id is the synergy id + 1.
+        batch.sequence = (row.source_id << 32u) | row.ordinal;
+        batch.commands.push_back(make_command(row, definition_id));
+        _ideology_day_modifier_batches.push_back(std::move(batch));
     }
 }
 

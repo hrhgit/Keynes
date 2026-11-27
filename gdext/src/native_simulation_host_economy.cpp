@@ -347,7 +347,7 @@ bool NativeSimulationHost::worker_run_stage_ops_slice(
             error = "economy_commit_fault_injected_before";
             return false;
         }
-        if (!_economy_pod_authority.commit_epoch(error)) {
+        if (!_economy_pod_authority.commit_epoch(error, RuntimeEconomyPodAuthority::CommitBoundary::HostDay)) {
             return false;
         }
         const auto &replay = _economy_pod_authority.replay_report();
@@ -446,27 +446,33 @@ bool NativeSimulationHost::execute_economy_worker_stage(
     input.investment_cycle_days = 20;
     input.valid = true;
 
-    _economy_pod_authority.reset();
-    _economy_pod_authority.attach_stage_ops(_economy_stage_ops.get());
+    // A parity replay has no ownership of production queues, committed data
+    // or ring readers. Its stage references and diagnostic outputs are shared.
+    const bool production_replay = _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
+        _economy_production_runtime != nullptr;
+    auto isolated = production_replay ? std::make_unique<RuntimeEconomyPodAuthority>() : nullptr;
+    auto &replay_authority = isolated ? *isolated : _economy_pod_authority;
+    replay_authority.reset();
+    replay_authority.attach_stage_ops(_economy_stage_ops.get());
     for (uint32_t stage = 0; stage < RUNTIME_ECONOMY_GRAPH_STAGE_COUNT; ++stage) {
         if (_economy_stage_reference_present[stage].load(
                 std::memory_order_acquire) == 0) {
             continue;
         }
-        _economy_pod_authority.set_stage_reference(
+        replay_authority.set_stage_reference(
             static_cast<RuntimeEconomyGraphStage>(stage), day,
             _economy_reference_generation.load(std::memory_order_acquire),
             _economy_stage_reference_hash[stage].load(std::memory_order_acquire),
             _economy_stage_reference_work[stage].load(std::memory_order_acquire));
     }
-    if (!_economy_pod_authority.plan_epoch(input, error)) return false;
+    if (!replay_authority.plan_epoch(input, error)) return false;
     for (size_t i = 0; i < RUNTIME_ECONOMY_GRAPH_STAGE_COUNT; ++i) {
-        if (!_economy_pod_authority.advance_stage(error)) return false;
+        if (!replay_authority.advance_stage(error)) return false;
     }
-    if (!_economy_pod_authority.commit_epoch(error)) return false;
+    if (!replay_authority.commit_epoch(error)) return false;
 
     const RuntimeEconomyPodReplayReport &replay =
-        _economy_pod_authority.replay_report();
+        replay_authority.replay_report();
     _economy_replay_completed_stage_mask.store(replay.completed_stage_mask,
                                                std::memory_order_release);
     _economy_replay_stage_cursor.store(replay.stage_cursor,
@@ -494,7 +500,7 @@ bool NativeSimulationHost::execute_economy_worker_stage(
 
     RuntimeEconomyCommittedSnapshot snap;
     std::string snap_error;
-    if (_economy_pod_authority.snapshot(snap, snap_error)) {
+    if (!production_replay && replay_authority.snapshot(snap, snap_error)) {
         _economy_pod_ready.store(true, std::memory_order_release);
         _economy_pod_committed.store(snap.committed, std::memory_order_release);
         _economy_pod_authority_ready.store(snap.authority_ready,
@@ -518,7 +524,7 @@ bool NativeSimulationHost::execute_economy_worker_stage(
         _economy_pod_operation_gate_mask.store(snap.operation_gate_mask,
                                                std::memory_order_release);
         _economy_pod_parity_ready_mask.store(
-            _economy_pod_authority.parity_ready_mask(),
+            replay_authority.parity_ready_mask(),
             std::memory_order_release);
     }
     _economy_shadow_cache_day = day;
@@ -528,5 +534,7 @@ bool NativeSimulationHost::execute_economy_worker_stage(
     _economy_shadow_cache_valid = true;
     return true;
 }
+
+#include "native_simulation_host_economy_revisit_selftest.inc"
 
 } // namespace pk

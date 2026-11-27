@@ -57,6 +57,7 @@ class ModifierRuntime;
 class EffectRuntime;
 class CountryAiRuntime;
 class NativeSimulationHost final : public EconomyHostPort, public CountryHostPort {
+    friend class EconomyInvariantProbe;
 public:
     explicit NativeSimulationHost(uint64_t previous_country_session_epoch = 1);
     ~NativeSimulationHost();

@@ -6,7 +6,7 @@ bool RuntimeModifierPodAuthority::plan_day(
         std::vector<RuntimeDomainAck> &acks,
         RuntimeModifierPodReport &report,
         std::string &error,
-        const std::vector<std::vector<RuntimeModifierPodCommand>> *atomic_batches,
+        const std::vector<RuntimeModifierPodAtomicBatch> *atomic_batches,
         std::vector<uint8_t> *atomic_batch_ok) {
     clear_error(error);
     _plan_ready = false;
@@ -55,13 +55,24 @@ bool RuntimeModifierPodAuthority::plan_day(
         [](const OrderedCommand &a, const OrderedCommand &b) {
             return RuntimeModifierPodAuthority::command_less(a.command, b.command);
         });
-    if (same_day && (atomic_batches == nullptr || atomic_batches->empty()) &&
+    const auto batch_id = [](const RuntimeModifierPodAtomicBatch &batch) -> State::DeliveryId {
+        return {4, batch.request_id, batch.producer_id, batch.sequence};
+    };
+    if (atomic_batch_ok != nullptr) atomic_batch_ok->clear();
+    if (same_day && (atomic_batches == nullptr ||
+        std::all_of(atomic_batches->begin(), atomic_batches->end(), [&](const auto &batch) {
+            return _current.day_receipts.count(batch_id(batch)) != 0;
+        })) &&
         std::all_of(ordered.begin(), ordered.end(), [&](const OrderedCommand &item) {
             return _current.day_receipts.count(item.id) != 0;
         })) {
         for (const auto &item : ordered)
             if (item.is_intent) acks.push_back(_current.day_receipts.at(item.id));
-        if (atomic_batch_ok != nullptr) atomic_batch_ok->clear();
+        if (atomic_batches != nullptr && atomic_batch_ok != nullptr) {
+            for (const auto &batch : *atomic_batches)
+                atomic_batch_ok->push_back(
+                    _current.day_receipts.at(batch_id(batch)).code == RuntimeDomainAckCode::OK);
+        }
         report.reused_snapshot = true;
         report.completed = 1;
         report.state_hash = _current.state_hash;
@@ -192,14 +203,25 @@ bool RuntimeModifierPodAuthority::plan_day(
     // Atomic producer batches (worker ideology transitions): every command in
     // a batch applies, or the batch is rolled back and reported as rejected.
     // They never produce Effect ACKs and never fail the shared Modifier day.
-    if (atomic_batch_ok != nullptr) atomic_batch_ok->clear();
     if (atomic_batches != nullptr) {
         for (const auto &batch : *atomic_batches) {
-            State backup = _next;
+            const auto id = batch_id(batch);
+            const auto previous = _next.day_receipts.find(id);
+            if (previous != _next.day_receipts.end()) {
+                if (atomic_batch_ok != nullptr)
+                    atomic_batch_ok->push_back(previous->second.code == RuntimeDomainAckCode::OK);
+                continue;
+            }
+            if (batch.request_id == 0) {
+                report.rejected_commands += static_cast<uint32_t>(batch.commands.size());
+                if (atomic_batch_ok != nullptr) atomic_batch_ok->push_back(0);
+                continue;
+            }
+            auto backup = _next.domains;
             uint32_t applied = 0;
             uint32_t changed_units = 0;
             bool batch_ok = true;
-            for (const auto &source : batch) {
+            for (const auto &source : batch.commands) {
                 RuntimeModifierPodCommand command = source;
                 command.input_generation = input_generation;
                 std::string command_error;
@@ -217,12 +239,15 @@ bool RuntimeModifierPodAuthority::plan_day(
                 if (changed) ++changed_units;
             }
             if (!batch_ok) {
-                _next = std::move(backup);
-                report.rejected_commands += static_cast<uint32_t>(batch.size());
+                _next.domains = std::move(backup);
+                report.rejected_commands += static_cast<uint32_t>(batch.commands.size());
             } else {
                 report.applied_commands += applied;
                 report.work_units += changed_units;
             }
+            RuntimeDomainAck receipt;
+            receipt.code = batch_ok ? RuntimeDomainAckCode::OK : RuntimeDomainAckCode::REJECTED;
+            _next.day_receipts.emplace(id, receipt);
             if (atomic_batch_ok != nullptr)
                 atomic_batch_ok->push_back(batch_ok ? 1u : 0u);
         }

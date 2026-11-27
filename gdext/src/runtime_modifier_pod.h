@@ -94,6 +94,15 @@ struct RuntimeModifierPodCommand {
     uint64_t submit_order = 0;
 };
 
+// A producer identifies one indivisible delivery. Reissuing it returns the
+// same outcome for every row, including when the original batch was rejected.
+struct RuntimeModifierPodAtomicBatch {
+    uint64_t request_id = 0;
+    uint32_t producer_id = 0;
+    uint64_t sequence = 0;
+    std::vector<RuntimeModifierPodCommand> commands;
+};
+
 struct RuntimeModifierPodEntry {
     uint16_t domain = 0;
     uint16_t reserved = 0;
@@ -175,7 +184,7 @@ public:
                   std::vector<RuntimeDomainAck> &acks,
                   RuntimeModifierPodReport &report,
                   std::string &error,
-                  const std::vector<std::vector<RuntimeModifierPodCommand>> *atomic_batches = nullptr,
+                  const std::vector<RuntimeModifierPodAtomicBatch> *atomic_batches = nullptr,
                   std::vector<uint8_t> *atomic_batch_ok = nullptr);
     bool commit_day(RuntimeModifierPodSnapshot &planned_snapshot,
                     std::string &error);

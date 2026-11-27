@@ -385,7 +385,8 @@ public:
 
     bool plan_epoch(const RuntimeEconomyEpochInput &input, std::string &error);
     bool advance_stage(std::string &error);
-    bool commit_epoch(std::string &error);
+    enum class CommitBoundary { Standalone, HostDay };
+    bool commit_epoch(std::string &error, CommitBoundary boundary = CommitBoundary::Standalone);
     uint32_t planned_stage_index() const noexcept { return _scratch.stage_index; }
     bool planned_epoch_active() const noexcept { return _scratch.epoch_active; }
     void discard() noexcept;
@@ -445,11 +446,13 @@ public:
     void set_operation_gate_mask(uint32_t mask) noexcept {
         _operation_gate_mask = mask;
     }
+    bool copy_business_summary(RuntimeEconomySnapshotPayload &payload) const noexcept;
     void set_business_summary(int64_t population_error, int64_t money_error,
                               int64_t goods_error, int64_t summary_population,
                               int64_t summary_funds, int32_t summary_markets,
                               int32_t summary_buildings, int32_t summary_cohorts,
                               int32_t summary_families) noexcept {
+        _business_summary_valid = true;
         _committed.population_error = population_error;
         _committed.money_error = money_error;
         _committed.goods_error = goods_error;
@@ -520,6 +523,7 @@ private:
         RuntimeEconomyAuthorityMode::LEGACY_SYNC;
     uint64_t _generation = 0;
     bool _authority_ready = false;
+    bool _business_summary_valid = false;
     int64_t _summary_population = 0;
     int64_t _summary_funds = 0;
     int32_t _summary_markets = 0;

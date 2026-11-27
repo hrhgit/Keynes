@@ -1,3 +1,64 @@
+static bool modifier_atomic_batch_replay_test(
+        const RuntimeModifierPodCatalog &catalog, RuntimeModifierPodCommand row, std::string &error) {
+    RuntimeModifierPodAuthority owner;
+    if (!owner.configure(catalog, error)) return false;
+    auto other_row = row;
+    ++other_row.source_id;
+    RuntimeModifierPodAtomicBatch applied{50, 20, 0, {row, other_row}};
+    auto invalid_row = row;
+    invalid_row.definition_id = -1;
+    RuntimeModifierPodAtomicBatch rejected{51, 20, 0, {row, invalid_row}};
+    RuntimeModifierPodAtomicBatch anonymous{0, 20, 0, {row}};
+    RuntimeModifierPodSnapshot planned;
+    RuntimeModifierPodReport report;
+    std::vector<RuntimeDomainAck> acks;
+    std::vector<uint8_t> outcomes;
+    const auto plan = [&](const std::vector<RuntimeModifierPodAtomicBatch> &batches) {
+        return owner.plan_day(0, 1, {}, {}, planned, acks, report, error, &batches, &outcomes);
+    };
+    if (!plan({applied, rejected})) return false;
+    planned.state_hash ^= 1;
+    if (owner.commit_day(planned, error) || !owner.snapshot().entries.empty()) {
+        error = "modifier_atomic_failed_commit_installed_batch"; return false;
+    }
+    // The failed commit left no receipts. Repeated batches within this plan
+    // must receive their original verdict, including an atomic rejection.
+    if (!plan({applied, rejected, applied, rejected, anonymous}) ||
+        outcomes != std::vector<uint8_t>{1, 0, 1, 0, 0} || !acks.empty() ||
+        report.applied_commands != 2 || report.rejected_commands != 3 || report.work_units != 2 ||
+        !owner.commit_day(planned, error)) {
+        error = "modifier_atomic_mixed_batch_first_delivery_failed"; return false;
+    }
+    const auto initial = owner.snapshot();
+    if (initial.entries.size() != 2 || initial.entries[0].stacks != 1 || initial.entries[1].stacks != 1) {
+        error = "modifier_atomic_rejected_batch_leaked_rows"; return false;
+    }
+
+    // The producer may reorder the reply queue or rebuild the payload. A
+    // corrected payload for a failed transaction needs a fresh identity.
+    std::reverse(applied.commands.begin(), applied.commands.end());
+    rejected.commands.back() = other_row;
+    if (!plan({rejected, applied}) || outcomes != std::vector<uint8_t>{0, 1} ||
+        !report.reused_snapshot || report.work_units || report.applied_commands || report.rejected_commands ||
+        !owner.commit_day(planned, error) || owner.snapshot().state_hash != initial.state_hash) {
+        error = "modifier_atomic_replay_lost_original_result"; return false;
+    }
+    auto late = applied;
+    ++late.sequence;
+    late.commands = {row};
+    auto separate_producer = applied;
+    ++separate_producer.producer_id;
+    separate_producer.commands = {other_row};
+    if (!plan({late, rejected, separate_producer, late, applied}) ||
+        outcomes != std::vector<uint8_t>{1, 0, 1, 1, 1} || report.applied_commands != 2 ||
+        report.rejected_commands || report.work_units != 2 || !owner.commit_day(planned, error) ||
+        owner.snapshot().generation != initial.generation || owner.snapshot().entries.size() != 2 ||
+        owner.snapshot().entries[0].stacks != 2 || owner.snapshot().entries[1].stacks != 2) {
+        error = "modifier_atomic_late_batch_changed_existing_result"; return false;
+    }
+    return true;
+}
+
 bool RuntimeModifierPodAuthority::self_test(std::string &error) {
     clear_error(error);
     const auto fail = [&error](const char *reason) {
@@ -32,6 +93,7 @@ bool RuntimeModifierPodAuthority::self_test(std::string &error) {
     apply.effective_day = 0; apply.opcode = COMMAND_APPLY; apply.domain = 0;
     apply.definition_id = 0; apply.scope = 2; apply.entity_handle = 7;
     apply.duration_days = 2; apply.stacks = 1; apply.magnitude_q16 = Q16_ONE;
+    if (!modifier_atomic_batch_replay_test(catalog, apply, error)) return false;
     RuntimeModifierPodSnapshot planned;
     std::vector<RuntimeDomainAck> acks;
     RuntimeModifierPodReport report;

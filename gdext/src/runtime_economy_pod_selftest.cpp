@@ -86,6 +86,22 @@ bool RuntimeEconomyPodAuthority::self_test(std::string &error) {
         error = "economy_pod_commit_receipt_missing";
         return false;
     }
+    // In an executor-owned epoch only the whole day may publish or drain this queue.
+    RuntimeEconomyPodAuthority hosted;
+    if (!hosted.plan_epoch(input, error)) return false;
+    for (size_t i = 0; i < RUNTIME_ECONOMY_GRAPH_STAGE_COUNT; ++i) {
+        if (!hosted.advance_stage(error)) return false;
+    }
+    if (!hosted.queue_command(command, error) ||
+        !hosted.commit_epoch(error, RuntimeEconomyPodAuthority::CommitBoundary::HostDay)) return false;
+    uint32_t premature;
+    if (hosted.snapshot_ring().try_acquire_latest(0, premature)) {
+        hosted.snapshot_ring().release(premature);
+        error = "economy_hosted_epoch_published_before_day"; return false;
+    }
+    if (hosted.pending_command_count() != 1 || hosted.terminal_receipt(command.request_id)) {
+        error = "economy_hosted_epoch_drained_before_day"; return false;
+    }
     // Duplicate request_id must return the prior terminal.
     if (!authority.queue_command(command, error)) return false;
     RuntimeEconomyPodReceipt duplicate;

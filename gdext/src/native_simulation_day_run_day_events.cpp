@@ -1,9 +1,10 @@
 #include "native_simulation_day_context.h"
 #include "economy_cost_probe.h"
 #include "pk_log.h"
+#include <algorithm>
 
 namespace pk {
-bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) {
+bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day, bool publish_immediately) {
     auto &day_commands = day.day_commands;
     auto &gameplay_event_commands = day.gameplay_event_commands;
 
@@ -18,6 +19,19 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
         const uint32_t requested =
             _requested_authority_mask.load(std::memory_order_acquire) & predecessors;
         if ((day.commit.completed_domain_mask & requested) != requested) return false;
+    }
+    // An uncommitted inline day can receive more raw Events commands as well as
+    // packets appended by GameplayEffect or Economy. Re-plan those in the same
+    // stable order as an uninterrupted day, starting from yesterday's journal.
+    uint64_t latest_submit = 0;
+    if (!publish_immediately) {
+        for (const auto &packet : day_commands) {
+            if (packet.envelope.domain == static_cast<uint16_t>(RuntimeDomainId::EVENTS))
+                latest_submit = std::max(latest_submit, packet.submit_order);
+        }
+        if (day.progress.events_planned && day.progress.events_submit_order == latest_submit &&
+            day.progress.produced_event_packets == gameplay_event_commands.size()) return true;
+        day.progress.events_planned = false;
     }
     thread_local RuntimeEventsSnapshot events_snapshot;
     RuntimeEventsReport events_report;
@@ -48,16 +62,28 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
             event_day, *event_inputs, events_snapshot, event_receipts,
             events_report, events_error);
     }
-    const double events_plan_ms = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - events_plan_started).count();
-    double events_replay_ms = 0.0;
-    if (events_ok) {
-        if (try_fault_injection("events.append.after")) {
-            events_ok = false;
-            events_error = "events_append_fault_injected_after";
-            _events_authority.discard_plan();
-        }
+    _events_pod_plan_ms.store(std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - events_plan_started).count(), std::memory_order_release);
+    if (events_ok && try_fault_injection("events.append.after")) {
+        events_ok = false;
+        events_error = "events_append_fault_injected_after";
     }
+    if (!events_ok) {
+        _events_authority.discard_plan();
+        return publish_day_events(event_day, events_report,
+            events_error.empty() ? "events_plan_failed" : events_error);
+    }
+    if (publish_immediately) return publish_day_events(event_day, events_report, {});
+    day.progress.events_planned = true;
+    day.progress.events_submit_order = latest_submit;
+    day.progress.produced_event_packets = gameplay_event_commands.size();
+    return true;
+}
+
+bool NativeSimulationHost::publish_day_events(int64_t event_day, RuntimeEventsReport events_report,
+                                               std::string events_error) {
+    bool events_ok = events_error.empty();
+    double events_replay_ms = 0.0;
     if (events_ok) {
         if (try_fault_injection("events.commit.before")) {
             events_ok = false;
@@ -65,7 +91,7 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
             _events_authority.discard_plan();
         } else {
             const auto events_replay_started = std::chrono::steady_clock::now();
-            events_ok = _events_authority.commit_day(events_snapshot, events_error);
+            events_ok = _events_authority.commit_prepared_day(events_error);
             events_replay_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - events_replay_started).count();
             if (events_ok && try_fault_injection("events.commit.after")) {
@@ -73,8 +99,6 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
                 events_error = "events_commit_fault_injected_after";
             }
         }
-    } else {
-        _events_authority.discard_plan();
     }
     // plan_day 只为包级拒绝填 fallback_reason；commit/注入失败只有 events_error。
     if (!events_ok && events_report.fallback_reason[0] == '\0') {
@@ -108,7 +132,6 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
     _events_failed_day.store(events_ok || !events_authoritative ? -1 : event_day,
                              std::memory_order_release);
     _events_pod_ready.store(events_ok, std::memory_order_release);
-    _events_pod_plan_ms.store(events_plan_ms, std::memory_order_release);
     _events_pod_replay_ms.store(events_replay_ms, std::memory_order_release);
     _events_pod_state_hash.store(_events_authority.snapshot().state_hash,
                                  std::memory_order_release);
@@ -130,13 +153,22 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
             set_fault(events_report.fallback_reason);
         return false;
     }
-    uint32_t events_slot = 0;
-    if (_events_snapshots.try_begin_write(events_slot)) {
-        _events_snapshots.write_buffer(events_slot) = _events_authority.snapshot();
-        _events_snapshots.publish(events_slot);
+    if (events_authoritative) {
+        forward_committed_events_to_trigger(event_day);
+        if (events_report.appended_events)
+            _active_evidence_mask.fetch_or(runtime_domain_mask(RuntimeDomainId::EVENTS),
+                                          std::memory_order_release);
+    } else publish_events_snapshot();
+    return true;
+}
+
+void NativeSimulationHost::publish_events_snapshot() {
+    uint32_t slot = 0;
+    if (_events_snapshots.try_begin_write(slot)) {
+        _events_snapshots.write_buffer(slot) = _events_authority.snapshot();
+        _events_snapshots.publish(slot);
     } else {
         _events_pod_ready.store(false, std::memory_order_release);
     }
-    return true;
-    }
+}
 } // namespace pk

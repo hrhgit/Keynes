@@ -539,6 +539,8 @@ void NativeSimulationHost::publish_day(
     }
     const auto fiscal = year_length > 0 ? capture_economy_display(day, year_length,
         *_executor_day_tail, previous ? previous->day_tail.get() : nullptr) : nullptr;
+    if (day_commit.completed_domain_mask & runtime_domain_mask(RuntimeDomainId::ECONOMY))
+        publish_economy_day_snapshot(generation, day);
     published->day_tail = std::move(_executor_day_tail);
     _day_progress = {};
     publish_military_day();
