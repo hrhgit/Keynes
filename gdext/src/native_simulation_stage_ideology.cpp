@@ -22,6 +22,7 @@ bool NativeSimulationHost::stage_ideology(DayExecution &day, RuntimeDomainPlan &
             stage.completed = 0;
             return true;
         }
+        if (day.reuse_completed(stage)) return true;
         using Outcome = IdeologyStageOutcome;
         std::string ideology_error;
         const Outcome outcome = execute_ideology_worker_stage(
@@ -58,7 +59,10 @@ bool NativeSimulationHost::stage_ideology(DayExecution &day, RuntimeDomainPlan &
             // Ideology runs before Economy, so no opinion exists until
             // Economy's first commit. Skip the day (counted) rather than hold
             // the other domains' grant; ready stays false with the reason.
-            _ideology_opinion_wait_days.fetch_add(1, std::memory_order_relaxed);
+            if (!day.progress.counted_opinion_wait) {
+                _ideology_opinion_wait_days.fetch_add(1, std::memory_order_relaxed);
+                day.progress.counted_opinion_wait = true;
+            }
             break;
         case Outcome::PARKED:
             note_day_park(runtime_domain_mask(RuntimeDomainId::IDEOLOGY), ideology_reason);
@@ -71,6 +75,7 @@ bool NativeSimulationHost::stage_ideology(DayExecution &day, RuntimeDomainPlan &
             return true;
         }
         stage.completed = 1;
+        if (ideology_ok) day.remember_completed(stage);
         commit.completed_domain_mask |=
             runtime_domain_mask(RuntimeDomainId::IDEOLOGY);
         ++commit.completed_stage_count;

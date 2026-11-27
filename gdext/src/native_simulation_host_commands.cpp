@@ -430,7 +430,8 @@ void NativeSimulationHost::publish_day(
         int64_t from_day, int64_t day,
         const RuntimeDayCommit &day_commit,
         const std::vector<RuntimeCommandReceipt> &day_receipts) {
-    if (try_fault_injection("day.commit.before")) {
+    if (_mode.load(std::memory_order_acquire) == RuntimeSimulationMode::SHADOW &&
+        try_fault_injection("day.commit.before")) {
         return;
     }
     commit_annual_worker_day(day);
@@ -539,6 +540,7 @@ void NativeSimulationHost::publish_day(
     const auto fiscal = year_length > 0 ? capture_economy_display(day, year_length,
         *_executor_day_tail, previous ? previous->day_tail.get() : nullptr) : nullptr;
     published->day_tail = std::move(_executor_day_tail);
+    _day_progress = {};
     publish_military_day();
     if (published->day_tail && published->day_tail->era_reward)
         std::atomic_store(&_published_era_reward, published->day_tail->era_reward);

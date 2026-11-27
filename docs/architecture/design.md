@@ -32,6 +32,8 @@
 
 **已落地**：十二域固定顺序表与 `static_assert`；`RuntimeFrozenInputVersion` 在 Climate、Country、Economy 登记；描述符 reads 推导的顺序检查（只报错，不重排）；四个请求队列共享入队与顺序键；三个 Apply 入口的写集合检查。
 
+整图执行器允许 Country 等待排在后面的 Effect 和 Modifier 回执。同日再次访问时，已完成的经济结算沿用原结果，Modifier 依当日请求身份识别重送。等待中的请求继续处理，整日完成后统一发布。
+
 **目标，尚未实现**：Climate 并入表内 Freeze（今天在表前提交）；通用纯 Plan；全域统一去重；全域原子提交与失败回滚；消除剩余软完成。
 
 ## 模块与接口

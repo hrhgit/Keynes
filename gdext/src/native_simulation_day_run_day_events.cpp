@@ -11,6 +11,14 @@ bool NativeSimulationHost::run_day_events(DayExecution &day, int64_t event_day) 
         _events_last_processed_day >= event_day) {
         return true;
     }
+    if (_mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE) {
+        // Partial authority can still admit commands for a day parked on a
+        // peer. Close its journal only once its earlier stages can finish.
+        constexpr uint32_t predecessors = runtime_domain_mask(RuntimeDomainId::EVENTS) - 1u;
+        const uint32_t requested =
+            _requested_authority_mask.load(std::memory_order_acquire) & predecessors;
+        if ((day.commit.completed_domain_mask & requested) != requested) return false;
+    }
     thread_local RuntimeEventsSnapshot events_snapshot;
     RuntimeEventsReport events_report;
     std::string events_error;

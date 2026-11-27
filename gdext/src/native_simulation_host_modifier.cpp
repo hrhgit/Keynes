@@ -350,6 +350,24 @@ bool NativeSimulationHost::map_effect_intent_to_modifier_command(
     return true;
 }
 
+bool NativeSimulationHost::reserve_modifier_day_publication(int64_t day, uint32_t &slot) {
+    const auto &snapshot = _modifier_pod_authority.snapshot();
+    if (!_modifier_pod_configured || snapshot.committed_day != day ||
+        !_modifier_snapshots.try_begin_write(slot)) return false;
+    _modifier_snapshots.write_buffer(slot) = snapshot;
+    return true;
+}
+
+void NativeSimulationHost::finish_modifier_day_publication(uint32_t slot, bool completed) {
+    if (!completed) {
+        _modifier_snapshots.release(slot);
+        return;
+    }
+    const uint64_t generation = _modifier_snapshots.write_buffer(slot).generation;
+    _modifier_snapshots.publish(slot);
+    _modifier_pod_snapshot_generation.store(generation, std::memory_order_release);
+}
+
 void NativeSimulationHost::refresh_economy_modifier_view(
         const RuntimeModifierPodSnapshot &snapshot) {
     if (_economy_modifier_view == nullptr) return;
@@ -371,8 +389,10 @@ bool NativeSimulationHost::execute_modifier_worker_stage(
     modifier_commands.reserve(day_commands.size());
     for (const RuntimeCommandPacket &packet : day_commands) {
         RuntimeModifierPodCommand command;
-        if (decode_modifier_packet(packet, command))
+        if (decode_modifier_packet(packet, command)) {
+            command.submit_order = packet.submit_order;
             modifier_commands.push_back(command);
+        }
     }
 
     // Effect POD upstream (F7/E8): when Effect stage succeeded with a non-empty
@@ -482,64 +502,58 @@ bool NativeSimulationHost::execute_modifier_worker_stage(
         _modifier_pod_authority.discard_plan();
     }
 
-    bool authority_ok = true;
-    if (modifier_ok) {
-        if (effect_upstream_ok) {
-            if (!modifier_acks.empty() &&
-                !_effect_pod_authority.apply_acks(
-                    modifier_acks, modifier_error)) {
-                modifier_ok = false;
-            } else {
-                _effect_pod_ack_count.store(
-                    static_cast<uint32_t>(modifier_acks.size()),
-                    std::memory_order_release);
-                _effect_pod_state_hash.store(
-                    _effect_pod_authority.snapshot().deterministic_state_hash,
-                    std::memory_order_release);
-            }
-        } else if (authority_plan != nullptr) {
-            modifier_ok = _domain_authority_runner.accept_modifier_acks(
-                *authority_plan, modifier_acks, modifier_error);
-        }
-    }
-
+    // ACTIVE publishes once at the whole-day boundary. SHADOW keeps its
+    // diagnostic publication at the domain stage.
     uint32_t modifier_slot = 0;
     bool modifier_slot_reserved = false;
-    if (modifier_ok) {
-        if (!_modifier_snapshots.try_begin_write(modifier_slot)) {
+    if (modifier_ok && authority_plan != nullptr && !modifier_report.reused_snapshot) {
+        modifier_slot_reserved = _modifier_snapshots.try_begin_write(modifier_slot);
+        if (modifier_slot_reserved)
+            _modifier_snapshots.write_buffer(modifier_slot) = modifier_snapshot;
+        else {
             modifier_ok = false;
             modifier_error = "modifier_snapshot_ring_full";
-        } else {
-            _modifier_snapshots.write_buffer(modifier_slot) = modifier_snapshot;
-            modifier_slot_reserved = true;
         }
+    }
+    // Match the peer receipt against its real transaction before installing
+    // any rows. The immutable plan below is committed on this worker thread.
+    if (modifier_ok && effect_upstream_ok) {
+        if (!modifier_acks.empty())
+            modifier_ok = _effect_pod_authority.apply_acks(modifier_acks, modifier_error);
+        if (modifier_ok) {
+            _effect_pod_ack_count.store(static_cast<uint32_t>(modifier_acks.size()),
+                                        std::memory_order_release);
+            _effect_pod_state_hash.store(_effect_pod_authority.snapshot().deterministic_state_hash,
+                                         std::memory_order_release);
+        }
+    } else if (modifier_ok && authority_plan != nullptr) {
+        modifier_ok = _domain_authority_runner.accept_modifier_acks(
+            *authority_plan, modifier_acks, modifier_error);
     }
 
     const auto replay_started = std::chrono::steady_clock::now();
-    if (modifier_ok) {
-        modifier_ok = _modifier_pod_authority.commit_day(
-            modifier_snapshot, modifier_error);
-        if (modifier_ok && authority_plan != nullptr) {
-            authority_ok = _domain_authority_runner.commit_day(
-                *authority_plan, authority_error);
-        }
-        if (modifier_ok && authority_ok && modifier_slot_reserved) {
-            _modifier_snapshots.publish(modifier_slot);
-            modifier_slot_reserved = false;
-            _modifier_pod_snapshot_generation.store(
-                modifier_snapshot.generation, std::memory_order_release);
-            refresh_economy_modifier_view(_modifier_pod_authority.snapshot());
-        }
-    } else {
-        authority_ok = false;
+    const bool projection_changed = modifier_ok && !modifier_report.reused_snapshot &&
+        (_modifier_pod_authority.snapshot().committed_day != day || modifier_report.work_units != 0);
+    if (modifier_ok)
+        modifier_ok = _modifier_pod_authority.commit_day(modifier_snapshot, modifier_error);
+    if (modifier_ok && projection_changed)
+        refresh_economy_modifier_view(_modifier_pod_authority.snapshot());
+    if (ideology_bridge)
+        settle_ideology_modifier_acks(ideology_batch_ok, modifier_ok);
+
+    bool authority_ok = modifier_ok;
+    if (!modifier_ok) {
         _modifier_pod_authority.discard_plan();
         if (authority_plan != nullptr) {
             _domain_authority_runner.discard_plan();
             if (authority_error.empty()) authority_error = modifier_error;
         }
+    } else if (authority_plan != nullptr) {
+        authority_ok = _domain_authority_runner.commit_day(*authority_plan, authority_error);
     }
-    if ((!modifier_ok || !authority_ok) && modifier_slot_reserved)
-        _modifier_snapshots.release(modifier_slot);
+    if (modifier_slot_reserved)
+        finish_modifier_day_publication(modifier_slot, authority_ok);
+
     const double modifier_replay_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - replay_started).count();
 
@@ -560,8 +574,6 @@ bool NativeSimulationHost::execute_modifier_worker_stage(
         (modifier_error.empty() ? "modifier_pod_plan_failed"
                                 : modifier_error.c_str());
     publish_fallback(reason);
-    if (ideology_bridge)
-        settle_ideology_modifier_acks(ideology_batch_ok, modifier_committed);
     if (!modifier_committed) {
         error = reason;
         return false;

@@ -13,6 +13,7 @@
     bool stage_effect(DayExecution &, RuntimeDomainPlan &);
     bool stage_modifier(DayExecution &, RuntimeDomainPlan &);
     bool stage_gameplay_effect(DayExecution &, RuntimeDomainPlan &);
+    void service_economy_stage_commands(RuntimeDayCommit &, RuntimeDomainPlan &);
     bool stage_economy(DayExecution &, RuntimeDomainPlan &);
     bool stage_events(DayExecution &, RuntimeDomainPlan &);
     bool stage_visual(DayExecution &, RuntimeDomainPlan &);
@@ -120,6 +121,8 @@
             RuntimeDomainAuthorityPlan *authority_plan,
             std::string &authority_error,
             std::string &error);
+    bool reserve_modifier_day_publication(int64_t day, uint32_t &slot);
+    void finish_modifier_day_publication(uint32_t slot, bool completed);
     // Resolve Effect MODIFIER intent → Modifier definition_id via key hash.
     int32_t resolve_modifier_definition_id_for_effect_intent(
             const RuntimeDomainIntent &intent) const;

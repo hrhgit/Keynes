@@ -210,6 +210,7 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         }), pending.end());
     }
     _executor_day_environment.reset();
+    _day_progress = {};
     _inline_day_pending.store(false, std::memory_order_release);
     // The caller's flag is only an eligibility request.  Coverage is proven
     // by the worker after a complete RuntimeDayPlan barrier; accepting an

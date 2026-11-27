@@ -7,7 +7,9 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace pk {
@@ -88,6 +90,8 @@ struct RuntimeModifierPodCommand {
     uint64_t modifier_handle = 0;
     uint32_t target_generation = 0;
     uint64_t input_generation = 0;
+    // Transport identity for a legacy packet with no request or sequence.
+    uint64_t submit_order = 0;
 };
 
 struct RuntimeModifierPodEntry {
@@ -150,6 +154,7 @@ struct RuntimeModifierPodReport {
     uint32_t ack_count = 0;
     uint8_t completed = 0;
     uint8_t preflight_ok = 1;
+    bool reused_snapshot = false;
     char fallback_reason[64]{};
 };
 
@@ -215,6 +220,10 @@ private:
         uint64_t generation = 0;
         uint64_t state_hash = 1469598103934665603ull;
         int64_t committed_day = -1;
+        // Only the currently executing day can be revisited. Saves are taken
+        // at settled boundaries, where this dispatch history is no longer due.
+        using DeliveryId = std::tuple<uint8_t, uint64_t, uint32_t, uint64_t>;
+        std::map<DeliveryId, RuntimeDomainAck> day_receipts;
     };
 
     static uint64_t hash_mix(uint64_t value, uint64_t input) noexcept;
@@ -244,7 +253,6 @@ private:
     State _current;
     State _next;
     RuntimeModifierPodSnapshot _snapshot;
-    RuntimeModifierPodSnapshot _planned_snapshot;
     RuntimeModifierPodReport _report{};
     std::vector<RuntimeModifierPodCommand> _pending_identities;
     bool _configured = false;

@@ -9,42 +9,41 @@ bool RuntimeModifierPodAuthority::plan_day(
         const std::vector<std::vector<RuntimeModifierPodCommand>> *atomic_batches,
         std::vector<uint8_t> *atomic_batch_ok) {
     clear_error(error);
+    _plan_ready = false;
     report = RuntimeModifierPodReport{};
     report.generation = _current.generation;
     if (!_configured) { error = "modifier_pod_not_configured"; set_error(report, error.c_str()); return false; }
     if (day < _current.committed_day) { error = "modifier_pod_day_regression"; set_error(report, error.c_str()); return false; }
-    _next = _current;
     acks.clear();
-    // Expiry is part of the plan lane. It is intentionally applied before
-    // commands, matching the legacy daily boundary semantics.
-    for (DomainState &domain : _next.domains) {
-        for (size_t i = 0; i < domain.entries.size(); ++i) {
-            auto &entry = domain.entries[i];
-            if (entry.modifier_handle != 0 && entry.expires_day >= 0 &&
-                entry.expires_day <= day) {
-                entry.modifier_handle = 0;
-                domain.free_indices.push_back(static_cast<uint32_t>(i));
-                ++domain.version;
-                ++report.expired_entries;
-            }
-        }
-        rebuild_expiry_queue(domain);
-    }
+    const bool same_day = day == _current.committed_day;
     struct OrderedCommand {
         RuntimeModifierPodCommand command;
-        bool is_intent = false;
+        State::DeliveryId id;
+        bool is_intent;
     };
     std::vector<OrderedCommand> ordered;
     ordered.reserve(commands.size() + intents.size());
-    for (const auto &command : commands)
-        if (command.effective_day <= day) ordered.push_back({command, false});
+    for (size_t index = 0; index < commands.size(); ++index) {
+        const auto &command = commands[index];
+        if (command.effective_day > day) continue;
+        State::DeliveryId id{0, command.request_id, command.producer_id, command.sequence};
+        if (command.request_id == 0 && command.sequence == 0) {
+            // A legacy anonymous packet retains its admission order across a
+            // replay. Direct POD callers supply a sealed array instead.
+            id = command.submit_order != 0
+                ? State::DeliveryId{1, command.submit_order, 0, 0}
+                : State::DeliveryId{2, index, 0, 0};
+        }
+        ordered.push_back({command, id, false});
+    }
     for (const auto &intent : intents) {
         RuntimeModifierPodCommand command = intent;
         command.request_id = intent.request_id != 0 ? intent.request_id : intent.source_id;
         command.producer_id = intent.producer_id;
         command.sequence = intent.sequence;
         command.input_generation = input_generation;
-        ordered.push_back({command, true});
+        ordered.push_back({command,
+            {3, command.request_id, command.producer_id, command.sequence}, true});
     }
     if (intents.size() > RUNTIME_DOMAIN_INTENT_CAPACITY) {
         error = "modifier_pod_ack_capacity_exceeded";
@@ -56,8 +55,45 @@ bool RuntimeModifierPodAuthority::plan_day(
         [](const OrderedCommand &a, const OrderedCommand &b) {
             return RuntimeModifierPodAuthority::command_less(a.command, b.command);
         });
-    for (size_t ordered_index = 0; ordered_index < ordered.size(); ++ordered_index) {
-        const auto &command = ordered[ordered_index].command;
+    if (same_day && (atomic_batches == nullptr || atomic_batches->empty()) &&
+        std::all_of(ordered.begin(), ordered.end(), [&](const OrderedCommand &item) {
+            return _current.day_receipts.count(item.id) != 0;
+        })) {
+        for (const auto &item : ordered)
+            if (item.is_intent) acks.push_back(_current.day_receipts.at(item.id));
+        if (atomic_batch_ok != nullptr) atomic_batch_ok->clear();
+        report.reused_snapshot = true;
+        report.completed = 1;
+        report.state_hash = _current.state_hash;
+        report.ack_count = static_cast<uint32_t>(acks.size());
+        planned_snapshot = _snapshot;
+        _report = report;
+        _plan_ready = true;
+        return true;
+    }
+    _next = _current;
+    if (!same_day) {
+        _next.day_receipts.clear();
+        for (DomainState &domain : _next.domains) {
+            for (size_t i = 0; i < domain.entries.size(); ++i) {
+                auto &entry = domain.entries[i];
+                if (entry.modifier_handle != 0 && entry.expires_day >= 0 &&
+                    entry.expires_day <= day) {
+                    entry.modifier_handle = 0;
+                    domain.free_indices.push_back(static_cast<uint32_t>(i));
+                    ++domain.version;
+                    ++report.expired_entries;
+                }
+            }
+        }
+    }
+    for (const auto &item : ordered) {
+        const auto previous = _next.day_receipts.find(item.id);
+        if (previous != _next.day_receipts.end()) {
+            if (item.is_intent) acks.push_back(previous->second);
+            continue;
+        }
+        const auto &command = item.command;
         std::string command_error;
         bool valid = validate_command(command, command_error);
         if (valid && command.input_generation != 0 &&
@@ -132,10 +168,10 @@ bool RuntimeModifierPodAuthority::plan_day(
                 ack.code = command_error == "modifier_pod_stale_generation"
                     ? RuntimeDomainAckCode::STALE_GENERATION : RuntimeDomainAckCode::REJECTED;
         }
-        const bool is_intent = ordered[ordered_index].is_intent;
+        _next.day_receipts.emplace(item.id, ack);
         // Only Effect/cross-domain intents require domain ACKs. Host command
         // receipts remain on the existing RuntimeCommandReceipt path.
-        if (is_intent) {
+        if (item.is_intent) {
             if (acks.size() >= RUNTIME_DOMAIN_INTENT_CAPACITY) {
                 error = "modifier_pod_ack_capacity_exceeded";
                 set_error(report, error.c_str());
@@ -145,7 +181,7 @@ bool RuntimeModifierPodAuthority::plan_day(
             acks.push_back(ack);
         }
         if (changed) ++report.work_units;
-        if (is_intent && !ok) {
+        if (item.is_intent && !ok) {
             error = command_error.empty() ? "modifier_pod_intent_rejected" : command_error;
             set_error(report, error.c_str());
             _plan_ready = false;
@@ -192,7 +228,7 @@ bool RuntimeModifierPodAuthority::plan_day(
         }
     }
     for (DomainState &domain : _next.domains) rebuild_expiry_queue(domain);
-    _next.generation = _current.generation + 1;
+    _next.generation = same_day ? _current.generation : _current.generation + 1;
     _next.committed_day = day;
     _next.state_hash = state_hash(_next);
     build_snapshot(_next, planned_snapshot);
@@ -203,7 +239,6 @@ bool RuntimeModifierPodAuthority::plan_day(
     report.work_units += report.expired_entries;
     report.completed = 1;
     report.preflight_ok = 1;
-    _planned_snapshot = planned_snapshot;
     _report = report;
     _plan_ready = true;
     return true;
@@ -213,22 +248,24 @@ bool RuntimeModifierPodAuthority::commit_day(RuntimeModifierPodSnapshot &planned
                                              std::string &error) {
     clear_error(error);
     if (!_plan_ready) { error = "modifier_pod_plan_missing"; return false; }
+    const State &expected = _report.reused_snapshot ? _current : _next;
     if (planned_snapshot.catalog_hash != _catalog.catalog_hash ||
-        planned_snapshot.generation != _next.generation ||
-        planned_snapshot.state_hash != state_hash(_next)) {
+        planned_snapshot.generation != expected.generation ||
+        planned_snapshot.committed_day != expected.committed_day ||
+        planned_snapshot.state_hash != (_report.reused_snapshot ? expected.state_hash : state_hash(expected))) {
         error = "modifier_pod_snapshot_invalid";
         _plan_ready = false;
         return false;
     }
-    _current = std::move(_next);
-    _snapshot = std::move(planned_snapshot);
-    _planned_snapshot = RuntimeModifierPodSnapshot{};
+    if (!_report.reused_snapshot) {
+        _current = std::move(_next);
+        _snapshot = std::move(planned_snapshot);
+    }
     _plan_ready = false;
     return true;
 }
 
 void RuntimeModifierPodAuthority::discard_plan() {
     _next = _current;
-    _planned_snapshot = RuntimeModifierPodSnapshot{};
     _plan_ready = false;
 }

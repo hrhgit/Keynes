@@ -107,6 +107,9 @@ bool NativeSimulationHost::stage_effect(DayExecution &day, RuntimeDomainPlan &st
                 }
             }
             ack_effect_events_intents_in_worker(_effect_day_intents);
+            if ((_requested_authority_mask.load(std::memory_order_acquire) &
+                 runtime_domain_mask(RuntimeDomainId::TRIGGER_INPUT)) != 0u)
+                ack_trigger_intents_in_worker(plan.context.day);
             const uint32_t promoted = resolve_pending_country_effect_peers();
             if (catchup_fired > 0 && promoted == 0u) {
                 static int s_no_promote_left = 8;

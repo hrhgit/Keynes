@@ -21,7 +21,12 @@ bool NativeSimulationHost::stage_events(DayExecution &day, RuntimeDomainPlan &st
             stage.completed = 0;
             return true;
         }
-        const bool events_ok = run_day_events(day, plan.context.day);
+        if (day.reuse_completed(stage)) return true;
+        if (!run_day_events(day, plan.context.day)) {
+            stage.completed = 0;
+            commit.preflight_ok = 0;
+            return true;
+        }
         if (_events_pod_event_count.load(std::memory_order_relaxed) > 0u) {
             stage.dirty_families = RUNTIME_DIRTY_EVENTS;
             commit.dirty_families |= stage.dirty_families;
@@ -29,11 +34,6 @@ bool NativeSimulationHost::stage_events(DayExecution &day, RuntimeDomainPlan &st
         stage.work_units =
             _events_pod_event_count.load(std::memory_order_relaxed);
         commit.work_units += stage.work_units;
-        if (!events_ok) {
-            stage.completed = 0;
-            commit.preflight_ok = 0;
-            return true;
-        }
         forward_committed_events_to_trigger(plan.context.day);
         stage.completed = 1;
         commit.completed_domain_mask |=
@@ -44,6 +44,7 @@ bool NativeSimulationHost::stage_events(DayExecution &day, RuntimeDomainPlan &st
                 runtime_domain_mask(RuntimeDomainId::EVENTS),
                 std::memory_order_release);
         }
+        day.remember_completed(stage);
         return true;
     }
     return true;

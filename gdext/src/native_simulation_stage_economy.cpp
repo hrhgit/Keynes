@@ -68,6 +68,98 @@ static void append_economy_fact_event_packets(
     }
 }
 
+void NativeSimulationHost::service_economy_stage_commands(RuntimeDayCommit &commit,
+        RuntimeDomainPlan &stage) {
+    std::string economy_error;
+    const auto recapture_failed = [&] {
+        const char *reason = economy_error.empty() ? "economy_pod_command_recapture_failed" : economy_error.c_str();
+        publish_economy_tax_diag(reason, static_cast<uint32_t>(stage.work_units));
+        set_fault(reason);
+        commit.completed_domain_mask &= ~runtime_domain_mask(stage.domain);
+        --commit.completed_stage_count;
+        stage.completed = 0;
+        commit.preflight_ok = 0;
+    };
+    // POD command execute via apply_command, then drain receipts.
+    _economy_pod_authority.sync_identity(
+        1u, _economy_production_runtime->committed_generation());
+    const uint32_t command_mutations =
+        _economy_pod_authority.commit_pending_commands();
+    // Phase-3: verify owned mirror hash/shape before full recapture.
+    if (command_mutations > 0u &&
+        !_economy_production_runtime->epoch_active() &&
+        _economy_production_runtime->formula_owned_bound()) {
+        // N10: bound means POD and NER share the same OwnedState, so a
+        // NER capture would only be compared against itself. Refresh
+        // the Owned committed blocks and republish the snapshot.
+        _economy_production_runtime
+            ->flush_formula_owned_domain_mirrors();
+        if (!_economy_pod_authority.publish_owned_committed_mirror(
+                _economy_production_runtime->committed_generation(),
+                _economy_production_runtime->current_day(),
+                economy_error)) {
+            return recapture_failed();
+        }
+        _economy_pod_command_verify_count.fetch_add(
+            command_mutations, std::memory_order_relaxed);
+        _economy_pod_state_hash.store(
+            _economy_pod_authority.state_hash(),
+            std::memory_order_release);
+    } else if (command_mutations > 0u &&
+               !_economy_production_runtime->epoch_active()) {
+        RuntimeEconomyLedgerState ledger_state;
+        _economy_production_runtime->capture_committed_ledger_state(
+            ledger_state);
+        if (!ledger_state.valid()) {
+            return recapture_failed();
+        }
+        ledger_state.recompute_hash();
+        const uint64_t ner_ledger_hash = ledger_state.computed_hash();
+        RuntimeEconomyLedgerState owned_export;
+        std::string verify_error;
+        const bool export_ok =
+            _economy_pod_authority.export_committed_ledger(
+                owned_export, verify_error);
+        if (export_ok) owned_export.recompute_hash();
+        const bool shape_ok =
+            export_ok &&
+            owned_export.cohort_funds.size() ==
+                ledger_state.cohort_funds.size() &&
+            owned_export.market_stock.size() ==
+                ledger_state.market_stock.size() &&
+            owned_export.cohort_population.size() ==
+                ledger_state.cohort_population.size();
+        if (shape_ok &&
+            owned_export.computed_hash() == ner_ledger_hash) {
+            _economy_pod_command_verify_count.fetch_add(
+                command_mutations, std::memory_order_relaxed);
+        } else {
+            if (!export_ok ||
+                !_economy_pod_authority.import_committed_ledger(
+                    ledger_state, economy_error) ||
+                !_economy_pod_authority.capture_committed_ledger_state(
+                    std::move(ledger_state))) {
+                return recapture_failed();
+            }
+            _economy_pod_command_recapture_count.fetch_add(
+                command_mutations, std::memory_order_relaxed);
+        }
+        _economy_pod_state_hash.store(
+            _economy_pod_authority.state_hash(),
+            std::memory_order_release);
+    }
+    {
+        RuntimeEconomyPodReceipt receipt;
+        uint32_t ack_n = 0;
+        while (ack_n < 64u &&
+               _economy_pod_authority.poll_receipt(receipt)) {
+            ++ack_n;
+        }
+        commit.work_units += ack_n;
+    }
+    _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_COMMANDS);
+}
+
 bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &stage) {
     auto &plan = day.plan;
     auto &environment = day.environment;
@@ -119,6 +211,20 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
         }
         if (_country_pod_authority.committed_day() == plan.context.day)
             prepare_era_advancement_day(plan.context.day);
+        if (day.reuse_completed(stage)) {
+            // Country can finish on this visit and supply new peer terminals.
+            std::string flush_error;
+            if (!flush_country_economy_asset_commits(flush_error)) {
+                set_fault(flush_error.empty() ? "country_economy_asset_flush_failed" : flush_error.c_str());
+                stage.completed = 0;
+                commit.completed_domain_mask &= ~runtime_domain_mask(stage.domain);
+                --commit.completed_stage_count;
+                commit.preflight_ok = 0;
+            } else if (_economy_pod_authority.pending_command_count() > 0) {
+                service_economy_stage_commands(commit, stage);
+            }
+            return true;
+        }
         const EconomyProductionWriter production_writer =
             economy_production_writer_effective();
         open_granted_economy_d7_gates(*this, *_economy_production_runtime);
@@ -635,120 +741,8 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
             }
         }
         _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_SNAPSHOT);
-        // POD command execute via apply_command, then drain receipts.
-        _economy_pod_authority.sync_identity(
-            1u, _economy_production_runtime->committed_generation());
-        const uint32_t command_mutations =
-            _economy_pod_authority.commit_pending_commands();
-        // Phase-3: verify owned mirror hash/shape before full recapture.
-        if (command_mutations > 0u &&
-            !_economy_production_runtime->epoch_active() &&
-            _economy_production_runtime->formula_owned_bound()) {
-            // N10: bound means POD and NER share the same OwnedState, so a
-            // NER capture would only be compared against itself. Refresh
-            // the Owned committed blocks and republish the snapshot.
-            _economy_production_runtime
-                ->flush_formula_owned_domain_mirrors();
-            if (!_economy_pod_authority.publish_owned_committed_mirror(
-                    _economy_production_runtime->committed_generation(),
-                    _economy_production_runtime->current_day(),
-                    economy_error)) {
-                const char *recapture_fault =
-                    economy_error.empty()
-                        ? "economy_pod_command_recapture_failed"
-                        : economy_error.c_str();
-                publish_economy_tax_diag(recapture_fault,
-                    static_cast<uint32_t>(economy_work));
-                set_fault(recapture_fault);
-                commit.completed_domain_mask &=
-                    ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                if (commit.completed_stage_count > 0u)
-                    --commit.completed_stage_count;
-                stage.completed = 0;
-                commit.preflight_ok = 0;
-                return true;
-            }
-            _economy_pod_command_verify_count.fetch_add(
-                command_mutations, std::memory_order_relaxed);
-            _economy_pod_state_hash.store(
-                _economy_pod_authority.state_hash(),
-                std::memory_order_release);
-        } else if (command_mutations > 0u &&
-                   !_economy_production_runtime->epoch_active()) {
-            RuntimeEconomyLedgerState ledger_state;
-            _economy_production_runtime->capture_committed_ledger_state(
-                ledger_state);
-            if (!ledger_state.valid()) {
-                publish_economy_tax_diag(
-                    "economy_pod_command_recapture_failed",
-                    static_cast<uint32_t>(economy_work));
-                set_fault("economy_pod_command_recapture_failed");
-                commit.completed_domain_mask &=
-                    ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                if (commit.completed_stage_count > 0u)
-                    --commit.completed_stage_count;
-                stage.completed = 0;
-                commit.preflight_ok = 0;
-                return true;
-            }
-            ledger_state.recompute_hash();
-            const uint64_t ner_ledger_hash = ledger_state.computed_hash();
-            RuntimeEconomyLedgerState owned_export;
-            std::string verify_error;
-            const bool export_ok =
-                _economy_pod_authority.export_committed_ledger(
-                    owned_export, verify_error);
-            if (export_ok) owned_export.recompute_hash();
-            const bool shape_ok =
-                export_ok &&
-                owned_export.cohort_funds.size() ==
-                    ledger_state.cohort_funds.size() &&
-                owned_export.market_stock.size() ==
-                    ledger_state.market_stock.size() &&
-                owned_export.cohort_population.size() ==
-                    ledger_state.cohort_population.size();
-            if (shape_ok &&
-                owned_export.computed_hash() == ner_ledger_hash) {
-                _economy_pod_command_verify_count.fetch_add(
-                    command_mutations, std::memory_order_relaxed);
-            } else {
-                if (!export_ok ||
-                    !_economy_pod_authority.import_committed_ledger(
-                        ledger_state, economy_error) ||
-                    !_economy_pod_authority.capture_committed_ledger_state(
-                        std::move(ledger_state))) {
-                    const char *recapture_fault =
-                        economy_error.empty()
-                            ? "economy_pod_command_recapture_failed"
-                            : economy_error.c_str();
-                    publish_economy_tax_diag(recapture_fault,
-                        static_cast<uint32_t>(economy_work));
-                    set_fault(recapture_fault);
-                    commit.completed_domain_mask &=
-                        ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                    if (commit.completed_stage_count > 0u)
-                        --commit.completed_stage_count;
-                    stage.completed = 0;
-                    commit.preflight_ok = 0;
-                    return true;
-                }
-                _economy_pod_command_recapture_count.fetch_add(
-                    command_mutations, std::memory_order_relaxed);
-            }
-            _economy_pod_state_hash.store(
-                _economy_pod_authority.state_hash(),
-                std::memory_order_release);
-        }
-        {
-            RuntimeEconomyPodReceipt receipt;
-            uint32_t ack_n = 0;
-            while (ack_n < 64u &&
-                   _economy_pod_authority.poll_receipt(receipt)) {
-                ++ack_n;
-            }
-            commit.work_units += ack_n;
-        }
-        _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_COMMANDS);
+        service_economy_stage_commands(commit, stage);
+        if (!stage.completed) return true;
         // ACTIVE_WITH_PARITY: after a completed epoch, replay StageOps
         // (mutate=false) against frozen stage refs from compact slices.
         // Incomplete pulses skip — refs would be partial.
@@ -769,6 +763,9 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
                     input_generation, parity_error);
             }
         }
+        // A successful partial pulse resumes on the next calendar day. All
+        // waits for input or peer settlement returned incomplete above.
+        day.remember_completed(stage);
         return true;
     }
     return true;

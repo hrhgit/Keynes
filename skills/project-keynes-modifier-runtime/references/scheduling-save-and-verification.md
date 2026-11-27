@@ -2,7 +2,11 @@
 
 ## Schedule
 
-`modifier_daily` priority 90 runs before climate 100, country 255, and economy 260:
+整图会话由原生执行器推进 Modifier。首次进入新的一天时处理到期实例、应用命令并增加代次。
+Country 等科技回执时同一天可进入多次。Modifier 按当日请求身份复用原结果，新请求仍可生效。
+通过 `modifier_same_day_reapply_test.gd` 对照各来源层数、日尾加数和 Economy 冻结税率。
+
+旧调度器中的 `modifier_daily` 优先级为 90，先于气候 100、国家 255 和经济 260。
 
 Keep it `must_run=false`, but set `use_job_deadline_critical=true` and return `should_run(ctx)` from
 `is_deadline_critical()`. Due commands/expiry must not be skipped while same-day consumers advance.

@@ -62,6 +62,15 @@
     std::atomic<uint64_t> _generation{0};
     // Slow readers can keep this commit while the worker publishes a new one.
     std::shared_ptr<const RuntimeCommit> _latest_commit;
+    // One executor owns this until the sealed day publishes. A peer wait can
+    // leave later stages finished while an earlier stage still needs its ACK.
+    struct DayProgress {
+        int64_t day = -1;
+        std::array<RuntimeDomainPlan, RUNTIME_DOMAIN_STAGE_COUNT> finished{};
+        std::vector<RuntimeCommandPacket> event_commands;
+        uint64_t gameplay_submit_order = 0;
+        bool counted_opinion_wait = false;
+    } _day_progress;
     std::shared_ptr<RuntimeDayTail> _executor_day_tail;
     std::shared_ptr<VisionResearchState> _executor_vision;
     const char *stage_vision(DayExecution &day);

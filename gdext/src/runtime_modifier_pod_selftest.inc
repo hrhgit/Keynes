@@ -223,7 +223,47 @@ bool RuntimeModifierPodAuthority::self_test(std::string &error) {
         acks[0].target_generation != intent.target_generation ||
         acks[0].effective_day != intent.effective_day)
         return fail("modifier_pod_ack_identity_self_test_failed");
-    ack_authority.discard_plan();
+    if (!ack_authority.commit_day(planned, error)) return false;
+    const auto first_ack = acks.front();
+    const auto committed = ack_authority.snapshot();
+    // A retry plus an unseen ordinal from this transaction arrive together.
+    // Keep the old receipt even if the resender supplies a different target.
+    auto redelivery = intent;
+    redelivery.entity_handle += 1;
+    auto next_ordinal = intent;
+    ++next_ordinal.sequence;
+    if (!ack_authority.plan_day(0, 1, {}, {redelivery, next_ordinal},
+            planned, acks, report, error) ||
+        report.applied_commands != 1 || report.expired_entries != 0 ||
+        acks.size() != 2 || acks[0].target_handle != first_ack.target_handle ||
+        acks[0].sequence != first_ack.sequence || acks[1].sequence != next_ordinal.sequence ||
+        !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().generation != committed.generation ||
+        ack_authority.snapshot().entries.size() != 1 ||
+        ack_authority.snapshot().entries.front().stacks != 2)
+        return fail("modifier_pod_late_transaction_ordinal_failed");
+    const uint64_t continued_hash = ack_authority.snapshot().state_hash;
+    if (!ack_authority.plan_day(0, 1, {}, {next_ordinal}, planned, acks, report, error) ||
+        !report.reused_snapshot || report.work_units != 0 || acks.size() != 1 ||
+        acks[0].sequence != next_ordinal.sequence || !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().state_hash != continued_hash)
+        return fail("modifier_pod_repeated_ordinal_changed_snapshot");
+    // Separate requests can share a producer sequence (including zero), or
+    // arrive out of order. Only an identical delivery is suppressed.
+    auto first_request = apply, second_request = apply;
+    first_request.sequence = second_request.sequence = 0;
+    second_request.request_id++;
+    if (!ack_authority.plan_day(0, 1, {second_request, first_request, second_request}, {},
+            planned, acks, report, error) || report.applied_commands != 2 ||
+        !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().generation != committed.generation)
+        return fail("modifier_pod_independent_requests_lost");
+    const auto before_bad_day = ack_authority.snapshot();
+    if (!ack_authority.plan_day(1, 1, {}, {}, planned, acks, report, error) ||
+        ack_authority.plan_day(-1, 1, {}, {}, planned, acks, report, expected_error) ||
+        ack_authority.commit_day(planned, expected_error) ||
+        ack_authority.snapshot().state_hash != before_bad_day.state_hash)
+        return fail("modifier_pod_stale_day_left_committable_plan");
 
     const uint64_t restored_hash = restored.snapshot().state_hash;
     bytes.back() ^= 0x80u;
