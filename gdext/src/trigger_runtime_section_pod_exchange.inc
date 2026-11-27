@@ -250,9 +250,7 @@ bool TriggerRuntime::apply_pod_snapshot(const RuntimeTriggerSnapshot &snapshot,
         error = "trigger_snapshot_catalog_mismatch";
         return false;
     }
-    // Generation gate. The ring hands out the newest READY buffer, so a caller
-    // that polls twice in one frame — or after a worker restart replayed an
-    // older generation — must not walk the facade backwards.
+    // Keep the installed generation moving forward across executor restarts.
     if (snapshot.generation <= _pod_snapshot_generation) {
         error = "trigger_snapshot_generation_stale";
         return false;

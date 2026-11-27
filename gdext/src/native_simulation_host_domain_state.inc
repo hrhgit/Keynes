@@ -125,7 +125,6 @@
     void forward_committed_events_to_trigger(int64_t day);
     RuntimeEffectPodAuthority _effect_pod_authority;
     RuntimeEffectPodCatalog _effect_pod_catalog;
-    RuntimeEffectSnapshotRing _effect_snapshots;
     bool _effect_pod_configured = false;
     struct EffectPodMetricQueueItem {
         int64_t instance_id = 0;
@@ -188,9 +187,6 @@
     std::map<int64_t, std::shared_ptr<const RuntimeIdeologyOpinionSnapshot>>
         _ideology_reference_opinions;
     std::shared_ptr<const RuntimeIdeologyPodSnapshot> _ideology_snapshot;
-    // G8 ACTIVE write-back boundary. The shared_ptr above stays for SHADOW
-    // consumers; the ring is the immutable main-thread apply path.
-    RuntimeIdeologySnapshotRing _ideology_snapshots;
     std::deque<RuntimeIdeologyPodCommand> _ideology_commands;
     std::deque<RuntimeDomainIntent> _ideology_intents;
     std::deque<RuntimeDomainAck> _ideology_acks;
@@ -218,7 +214,6 @@
     // _domain_authority_runner (shared with the SHADOW probe); these are the
     // ACTIVE-only boundaries around it.
     mutable std::mutex _trigger_transport_mutex;
-    RuntimeTriggerSnapshotRing _trigger_snapshots;
     std::deque<RuntimeTriggerEffectIntent> _trigger_intents;
     std::deque<RuntimeDomainAck> _trigger_acks;
     int64_t _trigger_published_intent_id = 0;

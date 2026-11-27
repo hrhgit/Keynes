@@ -80,55 +80,6 @@ void NativeSimulationHost::release_modifier_snapshot(uint32_t slot) {
     _modifier_snapshots.release(slot);
 }
 
-bool NativeSimulationHost::try_acquire_effect_snapshot(
-        uint64_t after_generation, uint32_t &slot) {
-    if (!_effect_snapshots.try_acquire_latest(after_generation, slot)) return false;
-    const RuntimeEffectPodSnapshot &snapshot =
-        _effect_snapshots.read_buffer(slot);
-    const bool valid = _effect_pod_configured &&
-        snapshot.abi_version == RUNTIME_EFFECT_POD_ABI_VERSION &&
-        snapshot.catalog_hash == _effect_pod_catalog.catalog_hash;
-    if (!valid) {
-        _effect_snapshots.release(slot);
-        return false;
-    }
-    return true;
-}
-
-const RuntimeEffectPodSnapshot &NativeSimulationHost::effect_snapshot_buffer(
-        uint32_t slot) const {
-    return _effect_snapshots.read_buffer(slot);
-}
-
-void NativeSimulationHost::release_effect_snapshot(uint32_t slot) {
-    _effect_snapshots.release(slot);
-}
-
-bool NativeSimulationHost::try_acquire_ideology_snapshot(
-        uint64_t after_generation, uint32_t &slot) {
-    if (!_ideology_snapshots.try_acquire_latest(after_generation, slot))
-        return false;
-    const RuntimeIdeologyPodSnapshot &snapshot =
-        _ideology_snapshots.read_buffer(slot);
-    const bool valid = _ideology_pod_configured &&
-        snapshot.abi_version == RUNTIME_IDEOLOGY_POD_ABI_VERSION &&
-        snapshot.catalog_hash == _ideology_pod_catalog.catalog_hash;
-    if (!valid) {
-        _ideology_snapshots.release(slot);
-        return false;
-    }
-    return true;
-}
-
-const RuntimeIdeologyPodSnapshot &
-NativeSimulationHost::ideology_snapshot_buffer(uint32_t slot) const {
-    return _ideology_snapshots.read_buffer(slot);
-}
-
-void NativeSimulationHost::release_ideology_snapshot(uint32_t slot) {
-    _ideology_snapshots.release(slot);
-}
-
 bool NativeSimulationHost::modifier_pod_self_test(std::string *out_error) const {
     const auto fail = [out_error](const char *reason) {
         if (out_error != nullptr) *out_error = reason;

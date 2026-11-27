@@ -254,41 +254,6 @@ bool DCWorldExt::trigger_should_run(int64_t day_index) const {
         runtime_from(_trigger_runtime)->should_run(day_index);
 }
 
-Dictionary DCWorldExt::apply_runtime_trigger_snapshot(int64_t after_generation) {
-    Dictionary out;
-    out["ok"] = false;
-    out["applied"] = false;
-    if (_trigger_runtime == nullptr || _runtime_host == nullptr) {
-        out["code"] = "trigger_runtime_unavailable";
-        return out;
-    }
-    if (_runtime_host->effect_adapter_owned() || !trigger_worker_authoritative()) {
-        out["code"] = "trigger_not_worker_authoritative";
-        return out;
-    }
-    const uint64_t cursor = after_generation < 0
-        ? std::numeric_limits<uint64_t>::max()
-        : static_cast<uint64_t>(after_generation);
-    uint32_t slot = 0;
-    if (!_runtime_host->try_acquire_trigger_snapshot(cursor, slot)) {
-        out["ok"] = true;
-        out["code"] = "trigger_snapshot_unavailable";
-        return out;
-    }
-    const RuntimeTriggerSnapshot &snapshot =
-        _runtime_host->trigger_snapshot_buffer(slot);
-    std::string apply_error;
-    const bool applied = runtime_from(_trigger_runtime)
-        ->apply_pod_snapshot(snapshot, apply_error);
-    const int64_t generation = static_cast<int64_t>(snapshot.generation);
-    _runtime_host->release_trigger_snapshot(slot);
-    out["ok"] = applied;
-    out["applied"] = applied;
-    out["generation"] = generation;
-    out["code"] = applied ? "ok" : String(apply_error.c_str());
-    return out;
-}
-
 Dictionary DCWorldExt::poll_trigger_worker_intent() {
     Dictionary out;
     if (_runtime_host == nullptr) {
@@ -411,8 +376,6 @@ Dictionary DCWorldExt::set_trigger_enabled(const Dictionary &batch) {
     const PackedByteArray values = batch.get("enabled", PackedByteArray());
     Dictionary out;
     if (trigger_worker_authoritative()) {
-        // H8 sole writer: the enabled flags live in the worker snapshot and come
-        // back through apply_runtime_trigger_snapshot.
         if (ids.size() != values.size()) {
             out["ok"] = false;
             out["reason"] = "trigger_enabled_columns_invalid";
@@ -529,8 +492,6 @@ Dictionary DCWorldExt::resync_trigger_source(const Dictionary &snapshot) {
     }
     Dictionary out;
     if (trigger_worker_authoritative()) {
-        // H8 sole writer: the worker clears its own resync flag and the cleared
-        // cursor arrives through the snapshot ring.
         out["ok"] = true;
         out["path"] = "TRIGGER_WORKER";
         out["resynced"] = trigger_ids.size();

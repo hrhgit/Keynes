@@ -25,10 +25,6 @@ void DCWorldExt::_bind_ideology_methods() {
                          &DCWorldExt::step_ideology_instance_refresh);
     ClassDB::bind_method(D_METHOD("step_ideology_derived_rebuild", "day_index"),
                          &DCWorldExt::step_ideology_derived_rebuild);
-    ClassDB::bind_method(D_METHOD("apply_runtime_ideology_snapshot",
-                         "after_generation"),
-                         &DCWorldExt::apply_runtime_ideology_snapshot,
-                         DEFVAL(-1));
     ClassDB::bind_method(D_METHOD("get_ideology_snapshot", "country_handle"),
                          &DCWorldExt::get_ideology_snapshot);
     ClassDB::bind_method(D_METHOD("get_ideology_effect_instance_report", "country_handle"),

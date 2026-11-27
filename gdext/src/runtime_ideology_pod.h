@@ -504,36 +504,4 @@ private:
     bool _import_supersedes_calendar = false;
 };
 
-// G8: immutable Ideology POD snapshot ring (mirrors RuntimeEffectSnapshotRing).
-class RuntimeIdeologySnapshotRing {
-public:
-    RuntimeIdeologySnapshotRing();
-    bool try_begin_write(uint32_t &index);
-    RuntimeIdeologyPodSnapshot &write_buffer(uint32_t index) {
-        return _slots[index].snapshot;
-    }
-    const RuntimeIdeologyPodSnapshot &read_buffer(uint32_t index) const {
-        return _slots[index].snapshot;
-    }
-    void publish(uint32_t index);
-    bool try_acquire_latest(uint64_t after_generation, uint32_t &index);
-    void release(uint32_t index);
-    void reset();
-    uint64_t publish_drop_count() const {
-        return _publish_drop_count.load(std::memory_order_relaxed);
-    }
-    static bool self_test();
-
-private:
-    enum : uint8_t { FREE = 0, WRITING = 1, READY = 2, READING = 3 };
-    struct Slot {
-        std::atomic<uint8_t> state{FREE};
-        RuntimeIdeologyPodSnapshot snapshot{};
-    };
-    std::array<Slot, RUNTIME_SNAPSHOT_RING_SIZE> _slots{};
-    std::atomic<uint64_t> _published_generation{0};
-    std::atomic<uint64_t> _publish_drop_count{0};
-
-};
-
 } // namespace pk

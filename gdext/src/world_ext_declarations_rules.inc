@@ -1,7 +1,6 @@
 // Effect, Modifier, Ideology, Trigger, and event bindings.
 
     // ---- bindings: effect ----
-    godot::Dictionary apply_runtime_effect_snapshot(int64_t after_generation);
     // Generic Effect Runtime. It owns immutable effect programs, active
     // instances, plans and cross-domain ACK state; domain runtimes own all
     // authoritative mutations.
@@ -239,7 +238,6 @@
     // Needed because `run_ideology_daily` is suppressed when the worker owns IDEOLOGY.
     // Throttling is the CALLER's job -- see the comment on the definition.
     godot::Dictionary step_ideology_derived_rebuild(int64_t day_index);
-    godot::Dictionary apply_runtime_ideology_snapshot(int64_t after_generation);
     godot::Dictionary get_ideology_snapshot(int64_t country_handle) const;
     // Diagnostic: reconciled Effect instances owned by each held idea, with a
     // `present` flag proving the EffectRuntime still holds them. Read-only.
@@ -299,7 +297,6 @@
     // snapshot back into the facade, plus relays the Trigger->Effect ACK
     // barrier when the in-worker bridge is not used.
     bool trigger_worker_authoritative() const;
-    godot::Dictionary apply_runtime_trigger_snapshot(int64_t after_generation = -1);
     godot::Dictionary poll_trigger_worker_intent();
     godot::Dictionary submit_trigger_worker_ack(const godot::Dictionary &source);
     godot::Dictionary poll_trigger_effects(int64_t after_effect_id,

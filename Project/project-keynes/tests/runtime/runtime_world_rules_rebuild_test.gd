@@ -134,6 +134,8 @@ func _effect_rules(country: Dictionary, inline_mode: bool) -> void:
 		var target := int(ext.get_country_cell_summary(0).get("country_handle", 0))
 		_expect("new world begins without old bonuses", is_equal_approx(ext.evaluate_modifier_stat(1, target, 0, RULE_STAT, 0.0), 0.0))
 		_expect("new world resolves its current Effect program", _instance(ext, rules.program, 100 + variant, target).get("ok", false))
+		var effect_generation := 0
+		var effect_fire := 0
 		if await _advance(ext, inline_mode, 1):
 			var applied: Dictionary = ext.apply_runtime_modifier_snapshot(0)
 			if not applied.get("ok", false): print("[world-rules] snapshot: ", applied)
@@ -141,20 +143,30 @@ func _effect_rules(country: Dictionary, inline_mode: bool) -> void:
 			_expect("Effect applies exactly its new definition", is_equal_approx(ext.evaluate_modifier_stat(1, target, 0, RULE_STAT, 0.0), float(rules.bonus)))
 			var report: Dictionary = ext.get_runtime_thread_report()
 			_expect("Effect and Modifier are both active", report.get("effect_pod_ready", false) and report.get("modifier_pod_ready", false))
-			var effect_applied: Dictionary = ext.apply_runtime_effect_snapshot(0)
-			_expect("new Effect snapshot applies", effect_applied.get("ok", false))
-			var instance: Dictionary = ext.explain_effect(100 + variant)
-			_expect("the current Effect program actually ran", instance.get("ok", false) and instance.get("program_key", "") == rules.program and instance.get("next_due_day", 0) == 2)
-			_expect("old Effect input is absent from the new world", not ext.explain_effect(9000).get("ok", true))
+			effect_generation = int(report.get("effect_pod_snapshot_generation", 0))
+			_expect("new world publishes an Effect result", effect_generation > 0)
+			var intent: Dictionary = ext.poll_effect_worker_intent()
+			effect_fire = int(intent.get("sequence", 0))
+			_expect("the current Effect instance runs on day one", intent.get("available", false)
+				and int(intent.get("source_id", 0)) == 100 + variant and int(intent.get("effective_day", 0)) == 1)
+			_expect("the old Effect input emits nothing in the new world", not ext.poll_effect_worker_intent().get("available", true))
 		await _stop(ext)
 		_expect("same-world rule executor restarts", ext.start_runtime_worker(_configuration(not inline_mode)).get("ok", false))
-		if await _advance(ext, not inline_mode, 2):
-			var resumed_modifier: Dictionary = ext.apply_runtime_modifier_snapshot(0)
-			_expect("same-world Modifier snapshot advances", resumed_modifier.get("ok", false) and resumed_modifier.get("applied", false))
-			_expect("same-world bonus survives executor replacement", is_equal_approx(ext.evaluate_modifier_stat(1, target, 0, RULE_STAT, 0.0), float(rules.bonus)))
-			var resumed_effect: Dictionary = ext.apply_runtime_effect_snapshot(0)
-			_expect("same-world Effect snapshot advances", resumed_effect.get("ok", false) and resumed_effect.get("applied", false))
-			_expect("same-world Effect continues its previous instance", ext.explain_effect(100 + variant).get("next_due_day", 0) == 3)
+		for day in [2, 3]:
+			if await _advance(ext, not inline_mode, day):
+				var resumed_modifier: Dictionary = ext.apply_runtime_modifier_snapshot(0)
+				_expect("same-world Modifier snapshot advances", resumed_modifier.get("ok", false) and resumed_modifier.get("applied", false))
+				_expect("same-world bonus survives executor replacement", is_equal_approx(ext.evaluate_modifier_stat(1, target, 0, RULE_STAT, 0.0), float(rules.bonus)))
+				var report: Dictionary = ext.get_runtime_thread_report()
+				var generation := int(report.get("effect_pod_snapshot_generation", 0))
+				_expect("same-world Effect publication advances", generation > effect_generation)
+				var intent: Dictionary = ext.poll_effect_worker_intent()
+				var fire := int(intent.get("sequence", 0))
+				_expect("same-world Effect fires its previous instance on day %d" % day, intent.get("available", false)
+					and int(intent.get("source_id", 0)) == 100 + variant and int(intent.get("effective_day", 0)) == day
+					and fire > effect_fire)
+				effect_generation = generation
+				effect_fire = fire
 		await _stop(ext)
 
 func _trigger_rules(country: Dictionary, inline_mode: bool) -> void:
@@ -174,12 +186,13 @@ func _trigger_rules(country: Dictionary, inline_mode: bool) -> void:
 			_expect("new Trigger rule emits its result", intent.get("available", false))
 			_expect("new Trigger result has the current authored value", int(intent.get("value", -1)) == int(rules.event_value))
 			_expect("new world has no old Trigger results", not ext.poll_trigger_worker_intent().get("available", true))
-			_expect("Trigger is configured even when an ACK is pending", ext.get_runtime_thread_report().get("trigger_pod_fallback_reason", "") != "trigger_pod_not_configured")
+			var report: Dictionary = ext.get_runtime_thread_report()
+			_expect("Trigger is configured even when an ACK is pending", report.get("trigger_pod_fallback_reason", "") != "trigger_pod_not_configured")
 			_expect("new Trigger result accepts its acknowledgement", ext.submit_trigger_worker_ack(intent).get("ok", false))
 			if await _advance(ext, inline_mode, 2):
-				var applied: Dictionary = ext.apply_runtime_trigger_snapshot(0)
-				if not applied.get("applied", false): print("[world-rules] Trigger snapshot: ", applied)
-				_expect("new Trigger snapshot applies", applied.get("ok", false) and applied.get("applied", false))
+				var published: Dictionary = ext.get_runtime_thread_report()
+				_expect("Trigger publishes a newer result after acknowledgement",
+					int(published.get("trigger_pod_snapshot_generation", 0)) > int(report.get("trigger_pod_snapshot_generation", 0)))
 		await _stop(ext)
 
 func _production_rules(country: Dictionary, inline_mode: bool) -> void:

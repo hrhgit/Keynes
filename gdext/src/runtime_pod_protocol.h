@@ -47,7 +47,6 @@ constexpr uint32_t RUNTIME_MAX_COMMAND_PAYLOAD = 1024u;
 constexpr uint32_t RUNTIME_DAY_STALL_CLIMATE_CAPACITY = 1u << 0;
 constexpr uint32_t RUNTIME_DAY_STALL_COUNTRY_PEER = 1u << 1;
 constexpr uint32_t RUNTIME_DAY_STALL_EFFECT_ACK = 1u << 2;
-constexpr uint32_t RUNTIME_DAY_STALL_IDEOLOGY_ACK = 1u << 3;
 constexpr uint32_t RUNTIME_DAY_STALL_FISCAL_PEER = 1u << 4;
 constexpr uint32_t RUNTIME_DAY_STALL_ECONOMY_INPUT = 1u << 5;
 // Soft-commit-as-deadlock-escape is forbidden; peer stalls past this wall-time

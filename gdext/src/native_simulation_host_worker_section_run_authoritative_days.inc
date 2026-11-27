@@ -458,7 +458,7 @@
                         (!environment || environment->day != day);
                     constexpr uint32_t peer_waits = RUNTIME_DAY_STALL_ECONOMY_INPUT |
                         RUNTIME_DAY_STALL_COUNTRY_PEER | RUNTIME_DAY_STALL_EFFECT_ACK |
-                        RUNTIME_DAY_STALL_IDEOLOGY_ACK | RUNTIME_DAY_STALL_FISCAL_PEER;
+                        RUNTIME_DAY_STALL_FISCAL_PEER;
                     const bool waits_for_main = (day_stall_reason_mask() & peer_waits) != 0u ||
                         (!climate_driven && (missing & runtime_domain_mask(RuntimeDomainId::CLIMATE)) != 0u);
                     _control_cv.wait_for(lock, kDayWaitSlice, [&] {

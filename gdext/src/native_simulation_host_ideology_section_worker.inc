@@ -320,13 +320,6 @@ NativeSimulationHost::execute_ideology_worker_stage(
     std::atomic_store_explicit(&_ideology_snapshot,
         std::shared_ptr<const RuntimeIdeologyPodSnapshot>(std::move(copy)),
         std::memory_order_release);
-    // G8: publish the immutable snapshot for main-thread NativeIdeologyRuntime
-    // write-back. The shared_ptr above stays for SHADOW diagnostics readers.
-    uint32_t ideology_slot = 0;
-    if (_ideology_snapshots.try_begin_write(ideology_slot)) {
-        _ideology_snapshots.write_buffer(ideology_slot) = snapshot;
-        _ideology_snapshots.publish(ideology_slot);
-    }
     _ideology_pod_plan_ms.store(
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - plan_started).count(),

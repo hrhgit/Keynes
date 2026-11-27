@@ -328,9 +328,9 @@ bool NativeSimulationHost::ideology_pod_self_test(std::string *out_error) const 
         if (out_error != nullptr) *out_error = error;
         return false;
     }
-    if (!runtime_published_view_self_test() || !RuntimeIdeologySnapshotRing::self_test()) {
+    if (!runtime_published_view_self_test()) {
         if (out_error != nullptr)
-            *out_error = "ideology_pod_snapshot_ring_self_test_failed";
+            *out_error = "ideology_published_view_self_test_failed";
         return false;
     }
     // Start the worker with a queued dismissal and a stop already requested.

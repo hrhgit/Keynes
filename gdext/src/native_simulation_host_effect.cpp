@@ -754,12 +754,6 @@ bool NativeSimulationHost::execute_effect_worker_stage(
         std::memory_order_release);
     // ACKs are applied at the top of this stage via drain_effect_transport_queues.
     _effect_pod_ack_count.store(0u, std::memory_order_release);
-    // F8: publish immutable snapshot for main-thread EffectRuntime write-back.
-    uint32_t effect_slot = 0;
-    if (_effect_snapshots.try_begin_write(effect_slot)) {
-        _effect_snapshots.write_buffer(effect_slot) = snapshot;
-        _effect_snapshots.publish(effect_slot);
-    }
     _effect_day_stage_ok = true;
     return true;
 }

@@ -429,11 +429,11 @@ static func _day_stall_reason_name(context, mask: int) -> String:
 		return "none"
 	var parts := PackedStringArray()
 	const NAMES := [
-		"climate_capacity", "country_peer", "effect_ack", "ideology_ack",
+		"climate_capacity", "country_peer", "effect_ack", "",
 		"fiscal_peer", "economy_input",
 	]
 	for bit in NAMES.size():
-		if (mask & (1 << bit)) != 0:
+		if (mask & (1 << bit)) != 0 and not NAMES[bit].is_empty():
 			parts.append(String(NAMES[bit]))
 	if parts.is_empty():
 		return "0x%x" % mask

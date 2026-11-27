@@ -4,11 +4,6 @@
                                std::string &error);
     bool queue_trigger_pod_command(const RuntimeTriggerCommand &command,
                                    std::string &error);
-    // H8 ACTIVE write-back boundary. Acquire, apply into the legacy
-    // TriggerRuntime facade, release. Non-blocking.
-    bool try_acquire_trigger_snapshot(uint64_t after_generation, uint32_t &slot);
-    const RuntimeTriggerSnapshot &trigger_snapshot_buffer(uint32_t slot) const;
-    void release_trigger_snapshot(uint32_t slot);
     // H8 real-ACK transport. Trigger effect intents require a peer ACK before
     // the day commits; the worker Effect stage drains them in-worker when EFFECT
     // is granted in the same session, and this pair is the main-thread protocol
@@ -38,12 +33,6 @@
                                         uint32_t &slot);
     const RuntimeModifierPodSnapshot &modifier_snapshot_buffer(uint32_t slot) const;
     void release_modifier_snapshot(uint32_t slot);
-    bool try_acquire_effect_snapshot(uint64_t after_generation, uint32_t &slot);
-    const RuntimeEffectPodSnapshot &effect_snapshot_buffer(uint32_t slot) const;
-    void release_effect_snapshot(uint32_t slot);
-    bool try_acquire_ideology_snapshot(uint64_t after_generation, uint32_t &slot);
-    const RuntimeIdeologyPodSnapshot &ideology_snapshot_buffer(uint32_t slot) const;
-    void release_ideology_snapshot(uint32_t slot);
     bool modifier_pod_self_test(std::string *error = nullptr) const;
     uint64_t modifier_pod_catalog_hash() const {
         return _modifier_pod_configured ? _modifier_pod_catalog.catalog_hash : 0;
