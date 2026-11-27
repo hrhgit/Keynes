@@ -1,5 +1,94 @@
 # 专项现状与验证记录
 
+## 正式会话的推进、镜像与脚本（2026-11-26）
+
+核对起点为 `cfd9fb70`。八项推进者的线程与登记相符。资源恢复公式在经济输入阶段，登记的是日尾交付入口。两个主线程入口登记的是存档同步调用点，正式帧从每日适配器进入。四个镜像绑定中，Modifier 正式调用，Effect、Trigger 只有测试调用，Ideology 无调用方。调用点与六种停等位见[前台尚存的模拟工作](current-state.md#前台尚存的模拟工作)。
+
+经济输入采用源码核对。成功建立初始经济输入后，整图执行器按日复制并采集，同日已开周期直接继续。`godot --version` 输出 `4.6.3.stable.official.7d41c59c4`。本工作树只有扩展描述文件，缺少 `addons/dots_ext/bin`；检查整棵树也没有 macOS 动态库。`git submodule status gdext/godot-cpp` 显示 `-9e0650a0`（未初始化）。无界面运行未实跑，未取得停等次数。
+
+### simulation 目录逐文件核查
+
+从 `project.godot:14`、`scenes/main_menu.tscn:3` 出发，`scripts/ui/main_menu.gd:570` 新建会话，`scripts/game/game_flow_service.gd:7`、`:240` 切入玩家场景，`scenes/player_game.tscn:8` 挂载宿主，`scripts/game/player_game.gd:76` 配置会话。依次核对场景资源、自动加载、全局类名、继承、预加载、注册、按名转发、启动和退出回调。正常领取从 `world_runtime_daily_adapter_part1.gd:143` 进入。默认原生日任务注册成功在 `map_runtime_system_registration.gd:316` 返回，旧气候等任务在其后才注册。整图接管后，`native_daily_manual_tick.gd:33` 在调用旧调度器之前返回。
+
+统计单位为 .gd 文件。按引用来源，74 个脚本中 73 个有产品代码引用，0 个仅由测试或工具引用，1 个无引用。按默认玩家会话的实际入口，47 个可运行（含开局装配、图形显示、按需诊断和卸载），另 26 个只找到兼容配置或工具入口。“条件引用”保留这些文件的产品引用关系。表内“模拟计算”也包含开局计算或调用原生计算，角色及条件按实际方法说明。目录总计 24,843 个物理行。`wc -l` 数到 24,842 个换行符，`sus_tick_context.gd` 的末行没有换行符。以下是静态调用链核查。
+
+| 文件（相对 `scripts/simulation/`） | 默认会话 | 职责 | 运行条件和用途 | 关键引用（相对 `Project/project-keynes/`） |
+|---|---|---|---|---|
+| `biology/transpiration_pass.gd` | 运行 | 模拟计算 | 桌面开局的蒸腾计算，调用原生实现。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:196` |
+| `climate/async_climate_diagnostics.gd` | 条件引用 | 工具 | 仅显式运行异步气候基准时进入。 | `scripts/simulation/climate/wind_heat_transport.gd:721`、`scripts/simulation/climate/async_climate_diagnostics.gd:6` |
+| `climate/climate_async_inputs.gd` | 条件引用 | 调度 | 旧日作业采样，默认开局走标量参数入口。 | `scripts/simulation/climate/climate_daily_runtime.gd:663`、`scripts/simulation/climate/runtime_climate_capture.gd:119` |
+| `climate/climate_daily_runtime.gd` | 条件引用 | 调度 | 旧日作业的气候运行对象。 | `scripts/simulation/systems/climate_daily_system.gd:55`、`scripts/game/map_runtime_system_registration.gd:316` |
+| `climate/climate_math.gd` | 运行 | 模拟计算 | 生成地图时计算纬度温度基线。 | `scripts/geography/map_generation/native_generation_bridge.gd:696` |
+| `climate/climate_runtime_finalization.gd` | 条件引用 | 调度 | 旧日作业的气候收尾。 | `scripts/simulation/climate/climate_daily_runtime.gd:50` |
+| `climate/generation_loading_steps.gd` | 运行 | 调度、模拟计算 | 加载进度、开局季节几何。 | `scripts/geography/map_generation/native_generation_sequence.gd:350`、`scripts/simulation/climate/wind_heat_transport.gd:761` |
+| `climate/mapgen_climate_passes_a.gd` | 运行 | 调度 | 图形桌面开局预热气候、海洋、海冰及蒸腾。Web 和无界面会话跳过这次预热。 | `scripts/game/world_runtime_visual_adapter.gd:86`、`scripts/simulation/climate/mapgen_climate_passes_a.gd:178` |
+| `climate/mapgen_native_daily_runtime.gd` | 运行 | 调度、显示 | 开局配置和发布后的生态贴图更新。 | `scripts/game/map_runtime_system_registration.gd:83`、`scripts/game/world_runtime_adapters.gd:481` |
+| `climate/native_daily_bundle_builder.gd` | 运行 | 调度 | 探测原生日任务并组装初始气候参数。 | `scripts/simulation/climate/native_daily_registration.gd:121`、`scripts/simulation/climate/runtime_climate_capture.gd:52` |
+| `climate/native_daily_front_signatures.gd` | 条件引用 | 显示 | 旧天气发布计算锋面签名。 | `scripts/simulation/climate/native_daily_publish.gd:573`、`scripts/simulation/climate/native_daily_publish.gd:667` |
+| `climate/native_daily_job_steps.gd` | 条件引用 | 调度 | 旧原生日作业的分片调度，整图已接管且没有未结束轮时不运行。 | `scripts/simulation/climate/mapgen_native_daily_runtime.gd:295`、`scripts/simulation/sus/jobs/native_daily_sim_job.gd:63` |
+| `climate/native_daily_manual_tick.gd` | 运行 | 调度 | 开局或切换会话重置调度器。整图路径在手动逐日入口第 33 行返回。 | `scripts/game/world_runtime_generation_adapter.gd:44`、`scripts/simulation/climate/native_daily_manual_tick.gd:155` |
+| `climate/native_daily_pass_inputs.gd` | 运行 | 调度、模拟计算 | 开局整理并计算气候参数。 | `scripts/simulation/climate/native_daily_bundle_builder.gd:23`、`scripts/simulation/climate/runtime_climate_capture.gd:178` |
+| `climate/native_daily_publish.gd` | 条件引用 | 显示、调度 | 旧作业和旧天气的结果发布。 | `scripts/simulation/climate/native_daily_job_steps.gd:20`、`scripts/simulation/climate/pass_b.gd:535` |
+| `climate/native_daily_registration.gd` | 运行 | 调度 | 配置原生世界、检查输入、登记任务。 | `scripts/game/map_runtime_system_registration.gd:83`、`scripts/game/map_runtime_system_registration.gd:306` |
+| `climate/pass_a.gd` | 运行 | 模拟计算 | 桌面开局向原生温湿度计算传入参数并接收结果。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:178` |
+| `climate/pass_b.gd` | 运行 | 模拟计算 | 开启局地耦合时，桌面开局计算局地气候。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:181` |
+| `climate/runtime_climate_capture.gd` | 运行 | 调度、模拟计算 | 开局准备并发送世界环境种子。 | `scripts/game/world_runtime_generation_adapter.gd:313`、`scripts/simulation/climate/runtime_climate_capture.gd:448` |
+| `climate/runtime_climate_reference.gd` | 条件引用 | 工具 | 手动运行时采集对拍参考。 | `scripts/simulation/climate/native_daily_manual_tick.gd:30`、`scripts/simulation/climate/runtime_climate_capture.gd:666` |
+| `climate/sea_ice_stage_machine.gd` | 运行 | 模拟计算 | 开局的海冰步骤使用经过日数和日照函数。 | `scripts/simulation/sea_ice/daily_pass.gd:56`、`scripts/simulation/sea_ice/daily_pass.gd:152`、`scripts/simulation/climate/mapgen_climate_passes_a.gd:309` |
+| `climate/season_native_passes.gd` | 运行 | 模拟计算 | 构造开局植被参数。 | `scripts/simulation/climate/season_refresh_coordinator.gd:560`、`scripts/simulation/climate/season_native_passes.gd:335` |
+| `climate/season_refresh_coordinator.gd` | 运行 | 调度、模拟计算 | 准备初始季节参数。 | `scripts/simulation/climate/runtime_climate_capture.gd:456`、`scripts/simulation/climate/season_refresh_coordinator.gd:540` |
+| `climate/season_round_b_plus.gd` | 条件引用 | 模拟计算 | 旧季节任务的计算。 | `scripts/simulation/systems/season_refresh_system.gd:261`、`scripts/simulation/climate/season_refresh_coordinator.gd:357` |
+| `climate/season_round_publication.gd` | 条件引用 | 显示、调度 | 旧季节轮的发布。 | `scripts/simulation/systems/season_refresh_system.gd:288`、`scripts/simulation/climate/season_refresh_coordinator.gd:602` |
+| `climate/weather_stage_refresh.gd` | 运行 | 调度 | 开局检查天气是否支持原生发布。 | `scripts/simulation/climate/native_daily_registration.gd:105`、`scripts/simulation/climate/weather_stage_refresh.gd:127` |
+| `climate/wind_heat_transport.gd` | 运行 | 模拟计算、调度 | 开局准备风热输运与季节输入。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:188`、`scripts/geography/map_generation/native_generation_sequence.gd:350` |
+| `economy/map_resource_deposits.gd` | 运行 | 模拟计算 | 计算开局矿藏参数。 | `scripts/simulation/economy/map_resource_initializer.gd:151` |
+| `economy/map_resource_initializer.gd` | 运行 | 调度、模拟计算 | 初始化并发布资源分布和储量。 | `scripts/game/map_runtime_system_registration.gd:180`、`scripts/game/map_runtime_system_registration.gd:186` |
+| `generator_context.gd` | 运行 | 调度 | 各开局协作者借此基类访问生成器。 | `scripts/geography/map_generation/native_generation_bridge.gd:1`、`scripts/simulation/climate/pass_a.gd:7` |
+| `ocean/land_pass.gd` | 运行 | 模拟计算 | 桌面开局调用原生陆地热输运。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:186` |
+| `ocean/ocean_currents_worker_visual.gd` | 条件引用 | 显示 | 旧洋流任务处理显示查询，测试也显式调用。 | `scripts/simulation/sus/jobs/ocean_currents_visual_round.gd:221`、`tests/runtime/ocean_currents_visual_query_test.gd:272` |
+| `ocean/water_pass.gd` | 运行 | 模拟计算 | 桌面开局调用原生水域热输运。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:184` |
+| `runtime_climate_hash.gd` | 运行 | 模拟计算 | 计算开局目录和参数的校验值。 | `scripts/simulation/climate/runtime_climate_capture.gd:278`、`scripts/simulation/climate/runtime_climate_capture.gd:484` |
+| `sea_ice/daily_pass.gd` | 运行 | 模拟计算 | 桌面开局计算海冰。 | `scripts/simulation/climate/mapgen_climate_passes_a.gd:192` |
+| `sus/jobs/native_daily_sim_job.gd` | 运行 | 调度 | 装配原生日任务；默认日推进由执行器负责。 | `scripts/simulation/climate/native_daily_registration.gd:150` |
+| `sus/jobs/ocean_currents_diagnostics.gd` | 运行 | 调度 | 开局探测读取洋流状态。 | `scripts/simulation/sus/jobs/ocean_currents_job.gd:368`、`scripts/simulation/climate/native_daily_bundle_builder.gd:334` |
+| `sus/jobs/ocean_currents_job.gd` | 运行 | 调度 | 装配洋流对象；初始输入读取洋流状态。 | `scripts/simulation/systems/ocean_currents_system.gd:53`、`scripts/simulation/climate/native_daily_bundle_builder.gd:143` |
+| `sus/jobs/ocean_currents_physical_round.gd` | 条件引用 | 模拟计算 | 旧洋流任务的物理切片。 | `scripts/simulation/sus/jobs/ocean_currents_job.gd:519` |
+| `sus/jobs/ocean_currents_visual_round.gd` | 条件引用 | 显示 | 旧洋流任务的显示切片。 | `scripts/simulation/sus/jobs/ocean_currents_job.gd:523` |
+| `sus/jobs/weather_front_mirror.gd` | 条件引用 | 显示 | 旧天气任务同步天气锋。 | `scripts/simulation/sus/jobs/weather_refresh_job.gd:431` |
+| `sus/jobs/weather_refresh_job.gd` | 条件引用 | 调度 | 旧天气任务才创建。 | `scripts/simulation/systems/weather_system.gd:61` |
+| `sus/jobs/weather_refresh_slices.gd` | 条件引用 | 调度 | 旧天气任务分片。 | `scripts/simulation/sus/jobs/weather_refresh_job.gd:553` |
+| `sus/sus_job.gd` | 运行 | 调度 | 向已登记任务注入世界。 | `scripts/simulation/sus/sus_scheduler.gd:262`、`scripts/simulation/sus/sus_job.gd:96` |
+| `sus/sus_policy.gd` | 运行 | 调度 | 创建和读取调度策略。 | `scripts/simulation/systems/season_refresh_system.gd:63`、`scripts/simulation/sus/sus_scheduler.gd:171` |
+| `sus/sus_scheduler.gd` | 运行 | 调度 | 接收开局任务登记。 | `scripts/data_core/dc_system_scheduler.gd:332`、`scripts/simulation/sus/sus_scheduler.gd:246` |
+| `sus/sus_scheduler_diagnostics.gd` | 运行 | 显示 | 需要时读取调度诊断。 | `scripts/ui/perf_mini_hud.gd:92`、`scripts/game/world_runtime_host.gd:407`、`scripts/simulation/sus/sus_scheduler.gd:692` |
+| `sus/sus_tick_context.gd` | 运行 | 调度 | 正式开局创建探测用的任务上下文。 | `scripts/simulation/climate/native_daily_registration.gd:118`、`scripts/simulation/sus/sus_tick_context.gd:25` |
+| `systems/bio_occupancy_daily_system.gd` | 运行 | 调度、显示 | 开局登记，提交后安装后台物种分布。旧 tick 不在默认日循环。 | `scripts/game/map_runtime_system_registration.gd:296`、`scripts/game/world_runtime_daily_adapter_part3.gd:110` |
+| `systems/climate_daily_pass_steps.gd` | 条件引用 | 调度 | 旧气候任务分步调度。 | `scripts/simulation/systems/climate_daily_system.gd:699` |
+| `systems/climate_daily_publication.gd` | 条件引用 | 显示 | 旧气候任务的结果发布。 | `scripts/simulation/systems/climate_daily_system.gd:731` |
+| `systems/climate_daily_system.gd` | 条件引用 | 调度 | 原生日任务注册成功在第 316 行返回，该分支才创建旧气候任务。 | `scripts/game/map_runtime_system_registration.gd:331` |
+| `systems/climate_daily_tick.gd` | 条件引用 | 调度 | 旧气候逐日入口。 | `scripts/simulation/systems/climate_daily_system.gd:694` |
+| `systems/country_daily_system.gd` | 运行 | 调度 | 装配国家任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:44` |
+| `systems/dynamic_atlas_native_commit.gd` | 条件引用 | 显示 | 旧贴图切片的原生提交。 | `scripts/simulation/systems/dynamic_visual_atlas_upload_system.gd:618` |
+| `systems/dynamic_atlas_stride.gd` | 运行 | 显示 | 退出或更换世界时清理显示准备，旧逐日分批更新另有调度入口。 | `scripts/game/world_runtime_lifecycle.gd:85`、`scripts/simulation/systems/dynamic_visual_atlas_upload_system.gd:551`、`scripts/simulation/systems/dynamic_atlas_stride.gd:184` |
+| `systems/dynamic_atlas_tick.gd` | 条件引用 | 显示 | 旧贴图任务的 tick。 | `scripts/simulation/systems/dynamic_visual_atlas_upload_system.gd:506` |
+| `systems/dynamic_visual_atlas_upload_helpers.gd` | 条件引用 | 显示 | 旧提交队列的贴图上传。 | `scripts/simulation/systems/dynamic_atlas_native_commit.gd:40` |
+| `systems/dynamic_visual_atlas_upload_system.gd` | 运行 | 显示 | 装配动态贴图任务，整图领取另走帧发布。 | `scripts/simulation/climate/native_daily_registration.gd:240` |
+| `systems/economy_daily_system.gd` | 运行 | 调度 | 装配经济任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:49` |
+| `systems/effect_runtime_system.gd` | 运行 | 调度 | 装配效果任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:151` |
+| `systems/enum_atlas_upload_system.gd` | 运行 | 显示 | 装配分类贴图上传任务。 | `scripts/simulation/climate/native_daily_registration.gd:233` |
+| `systems/gameplay_effect_system.gd` | 运行 | 调度 | 装配玩法效果任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:155` |
+| `systems/ideology_runtime_system.gd` | 运行 | 调度 | 装配理念任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:39` |
+| `systems/military_daily_system.gd` | 运行 | 调度 | 装配军事任务，执行器日尾推进军务。 | `scripts/country/map_country_initializer.gd:477` |
+| `systems/modifier_daily_system.gd` | 运行 | 调度 | 装配修正任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:23` |
+| `systems/native_environment_runtime_system.gd` | 条件引用 | 调度 | 显式开启环境探测时登记。 | `scripts/game/map_runtime_system_registration.gd:402`、`scripts/simulation/climate/native_daily_registration.gd:215` |
+| `systems/natural_resource_daily_system.gd` | 运行 | 调度 | 装配资源任务，默认由原生经济恢复储量。 | `scripts/game/map_runtime_system_registration.gd:293` |
+| `systems/ocean_currents_system.gd` | 运行 | 调度 | 装配洋流任务并交出内部对象。 | `scripts/game/map_runtime_system_registration.gd:269`、`scripts/simulation/systems/ocean_currents_system.gd:53` |
+| `systems/sea_ice_daily_system.gd` | 条件引用 | 调度 | 单独的海冰任务在旧调度路径装配。 | `scripts/game/map_runtime_system_registration.gd:341` |
+| `systems/season_refresh_system.gd` | 运行 | 调度 | 登记季节任务；开局探测读取季节状态。 | `scripts/game/map_runtime_system_registration.gd:239`、`scripts/simulation/climate/native_daily_bundle_builder.gd:152` |
+| `systems/trigger_daily_system.gd` | 运行 | 调度 | 装配触发任务，后台接管逐日结算。 | `scripts/game/map_rules_initializer.gd:34` |
+| `systems/weather_system.gd` | 条件引用 | 调度 | 旧天气调度任务。 | `scripts/game/map_runtime_system_registration.gd:363` |
+| `weather/weather_feedback.gd` | 无引用 | — | 无全局类名，未找到其路径、资源 UID 或脚本入口的调用。正式天气使用 `scripts/weather/feedback.gd`。 | — |
+
 ## 地块展板与图例工具栏互斥动效（2026-11-21）
 
 - 展板入场时两级图例工具栏淡出，鼠标交互即时禁用；展板完全退场后工具栏再淡入。

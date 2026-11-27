@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import re
 from cpp_source import read_cpp_source
 
 ROOT = Path(__file__).resolve().parents[2]
-DOMAINS = ("country", "economy", "effect", "ideology", "modifier", "trigger", "military", "family", "climate")
+DOMAINS = ("country", "economy", "effect", "ideology", "modifier", "trigger", "military", "climate")
+# SHA-256 of the LF-normalized JSON at cfd9fb70, before the 2026-11-26 reclassification.
+FAMILY_BASELINE_SHA256 = 'e9e18118701ee0a42e2857e8f13747ec4d4fe117328fa055c198a76f8292e55c'
 INCLUDE = re.compile(r'^\s*#\s*include\s*["<]([^">]+)[">]', re.M)
 TOKEN = re.compile(r"\b[A-Za-z_]\w*\b")
 NON_CODE = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|R"([^ ()\\\t\r\n]{0,16})\([\s\S]*?\)\1"|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'')
@@ -33,16 +36,23 @@ COUNTRY_WRITE_CALLS = {
 }
 
 
+def family_leaf(path: str) -> bool:
+    return re.search(r"(?:^|_)family(?:_|$)", Path(path).stem) is not None
+
+
 def domain_of(path: str) -> str | None:
     stem = Path(path).stem
-    # Family leaves are currently embedded under the economy prefix. Their
-    # explicit ownership exposes, rather than hides, that coupling.
-    if re.search(r"(?:^|_)family(?:_|$)", stem):
-        return "family"
+    if family_leaf(path):
+        return "economy"
     for domain in DOMAINS:
         if re.match(rf"(?:native_|runtime_)?{domain}(?:_|$)", stem):
             return domain
     return None
+
+
+def uses_reviewed_country_view(path: str, owner: str | None) -> bool:
+    # Family joined the dependency domain, not the older CountryReadView contract.
+    return owner == "economy" and not family_leaf(path)
 
 
 def api_domain(path: str) -> str | None:
@@ -90,10 +100,9 @@ def api_contract_key(key: str, symbols: dict[str, str],
     if api_includes is None:
         return True
     # A same-named nested type of another module (Country's own EffectCommand)
-    # is not credited unless this file actually reaches the API. Family leaves
-    # live under the economy prefix and share Economy's API types.
+    # is not credited unless this file actually reaches the API.
     file_domain = domain_of(path)
-    if api_owner == file_domain or (api_owner == "economy" and file_domain == "family"):
+    if api_owner == file_domain:
         return True
     return api_owner in api_includes.get(path, set())
 
@@ -105,6 +114,8 @@ def code_only(source: str) -> str:
 def type_domain(token: str, declared: dict[str, str]) -> str | None:
     if token in declared:
         return declared[token]
+    if re.match(r"(?:Native|Runtime)?Family(?:[A-Z_]|$)", token):
+        return "economy"
     for domain in DOMAINS:
         # Covers forward references and generated declarations without needing
         # a compilation database. Uppercase boundary avoids Countrywide etc.
@@ -137,6 +148,7 @@ def measure(root: Path, include_contracts: bool = False) -> dict[str, int]:
         if not owner:
             continue
         name = path.relative_to(root).as_posix()
+        country_view_consumer = uses_reviewed_country_view(path.name, owner)
         # The only direct calls left on this connection are writes and the
         # adapter factory. Unknown calls fail closed instead of silently adding
         # another getter outside the reviewed read contract.
@@ -170,7 +182,7 @@ def measure(root: Path, include_contracts: bool = False) -> dict[str, int]:
                             api_includes.setdefault(name, set()).add(
                                 api_domain(nested.group(1)))
             peer = domain_of(target)
-            if not include_contracts and owner == "economy" and target == "country_read_view.h":
+            if not include_contracts and country_view_consumer and target == "country_read_view.h":
                 continue  # Reviewed read contract; no mutable runtime surface.
             if peer and peer != owner:
                 edges[f"{name}|{owner}->{peer}|include:{target}"] += 1
@@ -180,7 +192,7 @@ def measure(root: Path, include_contracts: bool = False) -> dict[str, int]:
             peer = type_domain(token, declared)
             read_type = token == "CountryReadView" or (
                 token == "Snapshot" and re.search(r"CountryReadView\s*::\s*$", tokens[:match.start()]))
-            if owner == "economy" and read_type:
+            if country_view_consumer and read_type:
                 if not include_contracts:
                     continue  # Exact read contract; still included in total metrics.
                 if token == "Snapshot":
@@ -219,13 +231,16 @@ def relocation_source(key: str, origin: str, mode: str = 'reduction') -> str:
     path, pair, symbol = key.split('|')
     source = Path(origin)
     target = Path(path)
+    owner = pair.split('->')[0]
+    # A domain reclassification grants no new relocation between submodules.
+    crosses_family = family_leaf(source.name) != family_leaf(target.name)
     # A header may feed its own implementation or a named implementation leaf.
     header_move = source.suffix == '.h' and (
         target.stem == source.stem or target.stem.startswith(source.stem + '_'))
     economy_move = (source.suffix == '.cpp' and
                     source.name.startswith('economy_runtime') and
                     target.name.startswith('economy_runtime') and
-                    source != target and pair.split('->')[0] == 'economy')
+                    source != target and owner == 'economy' and not family_leaf(source.name))
     internal_header_move = (source.name == 'economy_runtime.h' and
         target.name.startswith('economy_runtime_internal_') and target.suffix == '.h'
         and pair.split('->')[0] == 'economy')
@@ -237,16 +252,12 @@ def relocation_source(key: str, origin: str, mode: str = 'reduction') -> str:
                         source.name.startswith(('ideology_runtime', 'country_runtime', 'effect_runtime')) and
                         domain_of(source.name) == domain_of(target.name) and
                         domain_of(source.name) is not None)
-    # Family leaves use the economy_runtime prefix but have their own measured
-    # owner. Permit a split within that family, retaining the same symbol and
-    # source-reduction evidence checked by updated_baseline below.
+    # Keep the existing .cpp to .inc route within the Family submodule.
     family_move = (source.suffix == '.cpp' and target.suffix in {'.cpp', '.inc'} and
                    source != target and
                    source.name.startswith('economy_runtime_family_') and
                    target.name.startswith('economy_runtime_family_') and
-                   pair.split('->')[0] == 'family' and
-                   domain_of(source.name) == domain_of(target.name) == 'family')
-    owner = pair.split('->')[0]
+                   owner == 'economy')
     responsibility_leaf_move = (
         mode == 'reduction'
         and target.stem.startswith(source.stem + '_')
@@ -257,7 +268,7 @@ def relocation_source(key: str, origin: str, mode: str = 'reduction') -> str:
             or (source.suffix == '.cpp' and target.suffix == '.inc')
         )
     )
-    if (source.parent != target.parent or
+    if (source.parent != target.parent or crosses_family or
             not (internal_header_move or bridge_move or same_domain_move or family_move
                  or responsibility_leaf_move or
                  (target.suffix == '.cpp' and (header_move or economy_move)))):
@@ -326,7 +337,8 @@ def baseline_errors(baseline: dict, symbols: dict[str, str] | None = None) -> li
         path, pair, symbol = key.split('|')
         if count > 0 and api_contract_key(key, symbols):
             continue
-        if (pair != 'economy->country' or domain_of(path) != 'economy' or count <= 0 or
+        if (pair != 'economy->country' or not uses_reviewed_country_view(path, domain_of(path)) or
+                count <= 0 or
                 symbol not in {'include:country_read_view.h', 'type:CountryReadView',
                                'type:CountryReadView::Snapshot'}):
             errors.append(f'unreviewed read contract: {key}')
@@ -368,17 +380,53 @@ def country_write_errors(root: Path, baseline: dict[str, int]) -> list[str]:
     return errors
 
 
+def reclassify_family_baseline(original: str, debt: dict[str, int],
+                               contracts: dict[str, int]) -> dict:
+    """One-time change of ownership for the reviewed cfd9fb70 baseline."""
+    if hashlib.sha256(original.encode()).hexdigest() != FAMILY_BASELINE_SHA256:
+        raise ValueError("Family reclassification requires the original cfd9fb70 baseline")
+    projected = json.loads(original)
+    for table in ('references', 'contract_references', 'relocations'):
+        rows = {}
+        for key, value in projected[table].items():
+            path, pair, symbol = key.split('|')
+            owner, peer = ('economy' if d == 'family' else d for d in pair.split('->'))
+            if owner == peer:
+                continue
+            new_key = f"{path}|{owner}->{peer}|{symbol}"
+            if new_key in rows:
+                raise ValueError(f"Family reclassification key collision: {new_key}")
+            rows[new_key] = value
+        projected[table] = rows
+    if projected['references'] != debt or projected['contract_references'] != contracts:
+        raise ValueError("Family reclassification must preserve every surviving debt and contract key and count")
+    projected['metrics'] = metrics(debt, contracts)
+    return projected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--baseline', type=Path, default=Path(__file__).with_name('cpp_deps_baseline.json'))
     parser.add_argument('--write-baseline', action='store_true', help='tighten an existing baseline after validation')
     parser.add_argument('--moves', type=Path, help='reviewed JSON mapping new keys to their original headers or economy implementation files')
+    parser.add_argument('--reclassify-family', action='store_true',
+                        help='apply only the reviewed Family-to-Economy change to the cfd9fb70 baseline')
     args = parser.parse_args()
+    if args.reclassify_family and (not args.write_baseline or args.moves):
+        parser.error('--reclassify-family requires --write-baseline and cannot be combined with --moves')
     current = measure(args.root)
     all_references = measure(args.root, include_contracts=True)
     contracts = dict(Counter(all_references) - Counter(current))
-    baseline = json.loads(args.baseline.read_text(encoding='utf-8'))
+    original = args.baseline.read_text(encoding='utf-8')
+    if args.reclassify_family:
+        try:
+            baseline = reclassify_family_baseline(original, current, contracts)
+        except ValueError as error:
+            print(error)
+            return 1
+    else:
+        baseline = json.loads(original)
     symbols = api_symbols(args.root)
     errors = baseline_errors(baseline, symbols)
     errors += country_write_errors(args.root, baseline.get("country_writes", {}))

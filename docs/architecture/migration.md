@@ -11,7 +11,7 @@
 | 模块公开接口 | Economy、Country、Modifier、Military 完成（外部包含者均为 0） | 4 个契约、6 个共享头，`check_module_api.py` 机检引号与尖括号包含 | Effect、Trigger、Ideology、Climate 尚无接口头；Country 的 `country_core*`/`country_ai_*` 未锁 |
 | 宿主端口 | Economy、Country 完成 | 所有者文件包含宿主头为 0，宿主一个类实现两个端口 | 其他模块仍直接持有宿主 |
 | 军事解耦 | 完成（不含行为测试） | 核心只依赖 `military_bridge.h`；适配层经接口头访问 | 军事自身请求队列未进共享契约。后续后台推进与主线程交接见 [运行现状](current-state.md#十二域以外的推进) |
-| 依赖棘轮 | 默认检查 | 30 域对、`total=2181`、`header_exposed=519` | 文本检查，不是 C++ 名称解析；25 个域对待逐函数语义核查 |
+| 依赖棘轮 | 默认检查 | 23 个域对、债务 931 处、契约 614 处、`total=1545`、`header_exposed=301` | 文本检查；19 个域对待逐函数语义核查 |
 | 已提交视图 | 9 条 | 副本 + generation/day，绕行反例 | 未迁移读边见 current-state |
 | 请求与提交 | 共享入队与顺序键（4 队列）、3 个 Apply 入口检查 | Country 直接写 0 | 全域统一去重、全调用树写集合、全域事务/回滚未做 |
 | 冻结输入 | Climate、Country、Economy 登记 | `RuntimeFrozenInputVersion` | Climate 仍在 day plan 前提交 |
