@@ -10,6 +10,32 @@
 namespace pk {
 class ModifierRuntime;
 struct RuntimeModifierPodSnapshot;
+class ModifierReadCatalog;
+
+// A retained display frame. The session stamp comes from the producer, and the
+// expected session from the current world. Failed installs leave this value intact.
+class ModifierReadView {
+public:
+    bool install(uint64_t expected_session, uint64_t source_session, int64_t committed_day,
+        uint64_t frame_generation, std::shared_ptr<const RuntimeModifierPodSnapshot> snapshot,
+        std::shared_ptr<const ModifierReadCatalog> catalog,
+        std::shared_ptr<const DerivedCellFront> derived = {});
+    uint64_t session_epoch() const { return _session; }
+    int64_t committed_day() const { return _day; }
+    uint64_t frame_generation() const { return _frame_generation; }
+    uint64_t modifier_generation() const;
+
+    int32_t stat_id_for_key(const std::string &key) const;
+    double effective_value(int32_t domain, int32_t stat_id, uint64_t entity_handle,
+                           uint64_t group_handle, double base_value) const;
+private:
+    uint64_t _session = 0, _frame_generation = 0;
+    int64_t _day = -1;
+    std::shared_ptr<const RuntimeModifierPodSnapshot> _snapshot;
+    std::shared_ptr<const ModifierReadCatalog> _catalog;
+    std::shared_ptr<const DerivedCellFront> _derived;
+};
+
 struct ModifierApi {
     enum Domain : int32_t { CLIMATE = 0, COUNTRY = 1, ECONOMY = 2, GAMEPLAY = 3, DOMAIN_COUNT = 4 };
     enum Scope : int32_t { GLOBAL = 0, GROUP = 1, ENTITY = 2 };

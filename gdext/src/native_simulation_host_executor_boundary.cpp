@@ -41,6 +41,12 @@ bool NativeSimulationHost::economy_worker_owns_execution() const noexcept {
          runtime_domain_mask(RuntimeDomainId::ECONOMY)) != 0u;
 }
 
+bool NativeSimulationHost::publishes_modifier_tax_frames() const noexcept {
+    return _state.load(std::memory_order_acquire) != RuntimeWorkerState::STOPPED &&
+        _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
+        _requested_authority_mask.load(std::memory_order_acquire) == RUNTIME_ALL_DOMAIN_MASK;
+}
+
 bool NativeSimulationHost::player_requests_pending_locked() const noexcept {
     return !_military_commands.empty() || !_economy_boundary_requests.empty() ||
         !_era_reward_requests.empty() || !_annual_presentations.empty() ||

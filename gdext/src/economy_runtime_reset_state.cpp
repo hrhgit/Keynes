@@ -531,6 +531,7 @@ Dictionary NativeEconomyRuntime::reset(const String &reason) {
     _epoch_country_hash = 0;
     _epoch_country_topology_hash = 0;
     _epoch_tax_policy_version = 0;
+    std::atomic_store(&_frozen_tax_view, std::shared_ptr<const EconomyFrozenTaxView>{});
     _epoch_income_tax_rates.clear();
     _epoch_consumption_tax_rates.clear();
     _epoch_business_tax_rates.clear();

@@ -42,7 +42,8 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
                                   int64_t initial_day,
                                   double speed_days_per_second,
                                   bool paused,
-                                  uint32_t requested_authority_mask) {
+                                  uint32_t requested_authority_mask,
+                                  std::shared_ptr<const RuntimeCommit> *opening_display) {
     // Validate before consuming a prepared restore or changing world state.
     if (inline_daily_mode() && mode == RuntimeSimulationMode::SHADOW) return false;
     if (!_worker_returned->load(std::memory_order_acquire)) return false;
@@ -742,7 +743,28 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     for (auto &character : _fault_code) character.store('\0', std::memory_order_relaxed);
     if (!install_era_advancement_setup()) return false;
     player_confirmation_block(start_day);
-    return launch_executor(paused);
+    std::shared_ptr<const RuntimeCommit> opening;
+    if (wanted == RUNTIME_ALL_DOMAIN_MASK && modifier_candidate_ready && country_candidate_ready) {
+        static std::atomic<uint64_t> next_display_session{1};
+        _modifier_display_session = next_display_session.fetch_add(1, std::memory_order_relaxed);
+        auto commit = std::make_shared<RuntimeCommit>(*std::atomic_load(&_latest_commit));
+        auto tail = commit->day_tail ? std::make_shared<RuntimeDayTail>(*commit->day_tail)
+                                     : std::make_shared<RuntimeDayTail>();
+        auto country = std::make_shared<RuntimeCountryPodSnapshot>();
+        if (!_country_pod_authority.snapshot(*country, compatibility_error)) {
+            set_fault(compatibility_error.c_str());
+            return false;
+        }
+        tail->country.snapshot = std::move(country);
+        tail->ideology = latest_ideology_read_view();
+        capture_modifier_display(*tail, nullptr);
+        commit->day_tail = std::move(tail);
+        opening = std::move(commit);
+        std::atomic_store(&_latest_commit, opening);
+    }
+    if (!launch_executor(paused)) return false;
+    if (opening_display) *opening_display = std::move(opening);
+    return true;
 }
 
 } // namespace pk

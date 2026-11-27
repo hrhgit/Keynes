@@ -15,6 +15,10 @@ Use this skill for every Modifier Runtime change. Also load:
   or tax catalog migration.
 - `project-keynes-game-flow-runtime` for PKSV providers and restore order.
 
+## 显示读源
+
+整图显示从最近领取的提交取得 `ModifierReadView`。它保存会话、提交日、帧代次和修正代次，引用不可变目录、普通桶和派生地块层。开局及读档首帧的税率读取同帧国家策略和修正；已有实际结算时读取 Economy 冻结的值。其他公开修正查询仍用主线程镜像。
+
 ## Grounding
 
 Read `docs/architecture/current-state.md` first. Then read only the

@@ -81,6 +81,9 @@
     bool pull_owned_core_columns(const RuntimeEconomyOwnedState &owned,
                                  int32_t opcode, int64_t settled,
                                  std::string &error);
+    std::shared_ptr<const EconomyFrozenTaxView> frozen_tax_view() const {
+        return std::atomic_load(&_frozen_tax_view);
+    }
     void fill_economy_snapshot_summary(RuntimeEconomySnapshotPayload &payload, bool commands_changed) const;
     // Copies only committed ledger columns. This is a cold publish-boundary
     // handoff for POD parity; it is never used while an epoch is mutable.

@@ -210,10 +210,7 @@ void RuntimeModifierPodAuthority::rebuild_buckets(
     out.reserve(map.size());
     for (const auto &pair : map) out.push_back(pair.second);
     std::sort(out.begin(), out.end(), [](const auto &a, const auto &b) {
-        if (a.domain != b.domain) return a.domain < b.domain;
-        if (a.scope != b.scope) return a.scope < b.scope;
-        if (a.stat_id != b.stat_id) return a.stat_id < b.stat_id;
-        return a.scope_id < b.scope_id;
+        return a.key() < b.key();
     });
 }
 

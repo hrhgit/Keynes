@@ -78,7 +78,6 @@ struct RuntimeGdpCell;
 class EffectRuntime;
 class EffectInstanceForwarder;
 
-class NativeCountryRuntime;
 class EconomyHostPort;
 class EconomyCsvRecorder;
 class ModifierRuntime;

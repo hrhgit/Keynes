@@ -226,6 +226,7 @@ public:
     int32_t definition_id_for_key(const std::string &key) const {
         return definition_id(key);
     }
+    std::shared_ptr<const ModifierReadCatalog> make_read_catalog(uint64_t pod_catalog_hash) const;
     bool export_pod_catalog(RuntimeModifierPodCatalog &out,
                             std::string &error) const;
     // Dense (definition_id, FNV key hash) pairs for Effect→Modifier POD handoff.
@@ -434,6 +435,7 @@ private:
     };
     struct BuildingKeyHash { size_t operator()(const BuildingKey &key) const noexcept; };
 
+    static bool read_view_self_test(std::string &error);
     bool compile_catalog(const godot::Dictionary &catalog, std::string &error);
     bool validate_target(const Command &command, std::string &error) const;
     uint64_t apply_command(const Command &command, int64_t day, Result &result);
@@ -494,7 +496,7 @@ private:
     std::vector<StatDefinition> _stats;
     std::vector<Definition> _definitions;
     std::vector<TermDefinition> _terms;
-    std::unordered_map<std::string, int32_t> _stat_ids;
+    std::shared_ptr<const std::unordered_map<std::string, int32_t>> _stat_ids;
     std::unordered_map<std::string, int32_t> _definition_ids;
     std::array<Store, DOMAIN_COUNT> _stores;
     // ADR02: derived cell contributions live HERE, not in `_stores`.

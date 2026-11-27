@@ -7,8 +7,8 @@ static_assert(CountryReadView::TAX_RATE_INHERIT == NativeCountryRuntime::TAX_RAT
 static_assert(CountryReadView::TAX_MODE_INHERIT == NativeCountryRuntime::TAX_MODE_INHERIT);
 CountryReadView NativeCountryRuntime::read_view() const {
     static const CountryReadView::Queries queries{
-        [](const void *owner, CountryReadView::Snapshot &out) {
-            return static_cast<const NativeCountryRuntime *>(owner)->copy_economy_snapshot(out);
+        [](const void *owner, CountryReadView::Snapshot &out, bool retain_tax_policy) {
+            return static_cast<const NativeCountryRuntime *>(owner)->copy_economy_snapshot(out, retain_tax_policy);
         },
         [](const void *owner) {
             return static_cast<const NativeCountryRuntime *>(owner)->total_cash();

@@ -52,6 +52,7 @@ public:
     virtual bool domain_is_worker_authoritative(
             RuntimeDomainId domain) const = 0;
     virtual bool economy_worker_owns_execution() const noexcept = 0;
+    virtual bool publishes_modifier_tax_frames() const noexcept = 0;
     virtual bool on_worker_thread() const noexcept = 0;
     virtual bool country_authority_owner_is_worker() const = 0;
     virtual EconomyProductionWriter economy_production_writer_effective()

@@ -14,6 +14,12 @@ class TaxHost extends WorldRuntimeHost:
 	var income_stat_ids := PackedInt32Array()
 
 	func _start_runtime_executor() -> void:
+		if definition_id < 0:
+			_configure_tax_catalog()
+		super._start_runtime_executor()
+
+	func _configure_tax_catalog() -> void:
+		income_stat_ids.clear()
 		var catalog: Dictionary = _generator.get_modifier_facade().compiled_catalog().duplicate(true)
 		definition_id = catalog.definition_keys.size()
 		catalog.definition_keys.append(TAX_MODIFIER)
@@ -33,7 +39,6 @@ class TaxHost extends WorldRuntimeHost:
 		var configured: Dictionary = ext.configure_modifiers(catalog, get_current_map().cell_count())
 		if not configured.get("ok", false):
 			definition_id = -1
-		super._start_runtime_executor()
 
 
 func _create_host() -> WorldRuntimeHost:

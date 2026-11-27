@@ -311,6 +311,7 @@
     std::vector<int32_t> _city_good_consumption_stat_ids;
     std::vector<int32_t> _city_good_output_stat_ids;
     std::vector<int32_t> _city_building_output_stat_ids;
+    std::shared_ptr<const EconomyFrozenTaxView> _frozen_tax_view;
     std::vector<int32_t> _epoch_income_tax_rates;
     std::vector<int32_t> _epoch_consumption_tax_rates;
     std::vector<int32_t> _epoch_business_tax_rates;

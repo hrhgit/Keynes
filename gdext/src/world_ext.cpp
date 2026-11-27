@@ -116,6 +116,10 @@ Dictionary DCWorldExt::configure_country(const Dictionary &catalog,
             static_cast<NativeIdeologyRuntime *>(_ideology_runtime)->clear_state();
         _ideology_opinion_published_revision = 0;
         _runtime_host = std::move(next);
+        _modifier_display_session = 0;
+        _modifier_read_view.reset();
+        _modifier_read_country.reset();
+        _frozen_tax_view.reset();
         clear_runtime_map_lut_frame();
         if (_effect_forwarder)
             _effect_forwarder->attach(static_cast<EffectRuntime *>(_effect_runtime), _runtime_host.get());
@@ -129,6 +133,8 @@ Dictionary DCWorldExt::configure_country(const Dictionary &catalog,
     delete static_cast<NativeCountryRuntime *>(_country_query_runtime);
     _country_query_runtime = nullptr;
     _country_query_snapshot.reset();
+    _tax_query_snapshot.reset();
+    _tax_query_runtime.reset();
     if (_country_runtime == nullptr) _country_runtime = candidate.release();
     else {
         // Retain the object's monotonic session epoch: old peer replies must

@@ -112,6 +112,13 @@
     godot::Dictionary apply_runtime_climate_writeback(int64_t after_generation);
     void finish_runtime_display_frame();
     RuntimeCommit _runtime_display_commit;
+    bool uses_published_modifier_tax() const;
+    bool install_modifier_display(const RuntimeCommit &commit, uint64_t expected_session);
+    std::shared_ptr<const ModifierReadCatalog> _modifier_read_catalog;
+    std::shared_ptr<const ModifierReadView> _modifier_read_view;
+    std::shared_ptr<const RuntimeCountryPodSnapshot> _modifier_read_country;
+    std::shared_ptr<const EconomyFrozenTaxView> _frozen_tax_view;
+    uint64_t _modifier_display_session = 0;
     std::shared_ptr<const RuntimeResourceDisplayPatch> _runtime_display_resources;
     std::shared_ptr<const RuntimeCommit> _runtime_map_display_commit;
     // B8 P3: block until the worker has evaluated environment generation

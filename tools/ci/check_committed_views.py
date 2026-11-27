@@ -61,6 +61,50 @@ def lineage_opinion_violations(code):
         errors.append("Family opinion missing generation/day assertion")
     return errors
 
+def tax_display_violations(bindings, packing):
+    errors = []
+    live = r"\b(?:_modifier_runtime|_economy_modifier_view|country_asset_snapshot|get_runtime_modifier_snapshot)\b"
+    for binding, query, argument in [
+            ("get_country_tax_policy_snapshot", "tax_policy_snapshot", "handle"),
+            ("get_country_cell_tax_policy_snapshot", "cell_tax_policy_snapshot", "cell_idx")]:
+        route = consumer_body(bindings, "DCWorldExt::" + binding)
+        owned = consumer_body(route, "uses_published_modifier_tax")
+        if (re.search(live + r"|\bcountry_query_runtime(?:_for_tax)?\s*\(", route.partition("uses_published_modifier_tax")[0])
+                or not re.search(r"if\s*\(\s*uses_published_modifier_tax\s*\(\s*\)\s*\)", route)
+                or not re.search(r"published_tax_country\s*\(", owned)
+                or not re.search(r"published_tax_values\s*\(\s*\*\s*_modifier_read_view\s*,\s*_frozen_tax_view", owned)
+                or not re.search(rf"return\s+\w+\s*->\s*{query}\s*\(\s*{argument}\s*,\s*&\s*\w+\s*\)", owned)
+                or re.search(live + r"|\bcountry_query_runtime(?:_for_tax)?\s*\(", owned)):
+            errors.append(binding + " bypasses the received tax frame")
+        rows = consumer_body(packing, "NativeCountryRuntime::" + query)
+        if re.search(live, rows) or not re.search(r"effective_tax_for_display\s*\(\s*read\s*,", rows):
+            errors.append(query + " bypasses the selected tax source")
+
+    panel = consumer_body(bindings, "DCWorldExt::get_country_ui_snapshot")
+    if re.search(live + r"|\btax_policy_snapshot\b", panel) or not re.search(r"\bget_country_tax_policy_snapshot\s*\(", panel):
+        errors.append("country panel bypasses the national tax query")
+    frame_source = re.search(r"(\w+)\s*=\s*published_fiscal\s*\?\s*published_tax_country\s*\(\s*\)", panel)
+    if (not frame_source or not re.search(
+            rf"\bsummary\s*=\s*{frame_source[1]}\s*->\s*country_summary\s*\(", panel)
+            or not re.search(r"published_fiscal\s*=\s*fiscal\s*&&\s*uses_published_modifier_tax\s*\(", panel)):
+        errors.append("country panel checks the fiscal identity outside the received frame")
+    country = consumer_body(bindings, "DCWorldExt::published_tax_country")
+    if re.search(live, country) or "_modifier_read_country" not in country or "_frozen_tax_view" not in country:
+        errors.append("tax policy must use the received Country snapshot")
+    sources = consumer_body(bindings, "published_tax_values")
+    if re.search(live, sources) or "frozen->lookup" not in sources or "modifier.effective_value" not in sources:
+        errors.append("tax values must use the fiscal freeze or opening Modifier view")
+    values = consumer_body(packing, "NativeCountryRuntime::effective_tax_for_display")
+    frozen = re.search(r"if\s*\(\s*read\s*&&\s*read->frozen_rate\s*\)\s*return\s+read->frozen_rate\s*\(", values)
+    opening = re.search(r"if\s*\(\s*read\s*\)\s*\{([^{}]*)\}", values)
+    if (not frozen or re.search(live, values[:frozen.start()]) or not opening
+            or re.search(live, opening[1]) or "read->modifier_value" not in opening[1]):
+        errors.append("published tax rows must finish without consulting the local Modifier")
+    unowned = consumer_body(bindings, "DCWorldExt::country_query_runtime_for_tax")
+    if not re.search(r"RuntimeSimulationMode::OFF\s*\)\s*return\s+country_runtime_from\s*\(\s*_country_runtime\s*\)", unowned):
+        errors.append("explicit synchronous tax queries must read the local Country owner")
+    return errors
+
 def violations(root):
     path = root / "gdext/src/native_simulation_stage_economy.cpp"
     code = code_only(read_cpp_source(path))
@@ -104,8 +148,12 @@ def main():
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args()
     errors = violations(args.root)
+    src = args.root / "gdext/src"
+    errors += tax_display_violations(
+        code_only(read_cpp_source(src / "world_ext_country.cpp")),
+        code_only(read_cpp_source(src / "country_runtime_queries_tax.cpp")))
     for error in errors: print(error)
-    print(f"committed views: 9 guarded edges, {len(errors)} violations")
+    print(f"committed views: 10 guarded edges, {len(errors)} violations")
     return bool(errors)
 if __name__ == "__main__":
     raise SystemExit(main())

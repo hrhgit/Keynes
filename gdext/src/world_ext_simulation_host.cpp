@@ -1,4 +1,5 @@
 #include "world_ext.h"
+#include "runtime_ideology_read_view.h"
 #include "runtime_economy_display.h"
 #include "native_simulation_host.h"
 #include "native_parallel_executor.h"
@@ -315,6 +316,25 @@ Dictionary DCWorldExt::poll_runtime_receipts(int max_items) {
     return out;
 }
 
+bool DCWorldExt::uses_published_modifier_tax() const {
+    return _runtime_host && _runtime_host->publishes_modifier_tax_frames();
+}
+
+bool DCWorldExt::install_modifier_display(const RuntimeCommit &commit, uint64_t expected_session) {
+    const auto &tail = commit.day_tail;
+    if (!tail || !tail->country.snapshot) return false;
+    auto view = _modifier_read_view ? std::make_shared<ModifierReadView>(*_modifier_read_view)
+                                    : std::make_shared<ModifierReadView>();
+    if (!view->install(expected_session, tail->modifier_session, commit.header.committed_day,
+                       commit.header.generation, tail->modifier, _modifier_read_catalog,
+                       tail->ideology ? tail->ideology->derived : nullptr)) return false;
+    _modifier_display_session = expected_session;
+    _modifier_read_view = std::move(view);
+    _modifier_read_country = tail->country.snapshot;
+    _frozen_tax_view = tail->frozen_tax;
+    return true;
+}
+
 Dictionary DCWorldExt::poll_runtime_commit(int64_t after_generation, bool take_days) {
     Dictionary out;
     if (!_runtime_host) {
@@ -326,6 +346,11 @@ Dictionary DCWorldExt::poll_runtime_commit(int64_t after_generation, bool take_d
     const uint64_t after = static_cast<uint64_t>(std::max<int64_t>(0, after_generation));
     const auto publication = take_days ? _runtime_host->take_day_publications(after) : nullptr;
     if (publication) {
+        if (uses_published_modifier_tax() && !install_modifier_display(*publication->commit, _modifier_display_session)) {
+            out["ok"] = false;
+            out["code"] = "modifier_display_frame_invalid";
+            return out;
+        }
         _runtime_display_commit.header = publication->commit->header;
         _runtime_display_commit.day_tail = publication->commit->day_tail;
         // Keep one immutable publication for the map. An executor restart

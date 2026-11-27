@@ -147,7 +147,7 @@ bool NativeEconomyRuntime::start_epoch(int64_t day_index, std::string &error) {
     // (`economy_runtime.cpp:15277-15290`): `false` + an error string the caller
     // recognises as "park, do not fail".
     bool city_factors_pending = false;
-    if (!capture_country_epoch(error, &city_factors_pending)) return false;
+    if (!capture_country_epoch(error, &city_factors_pending, day_index)) return false;
     if (city_factors_pending) {
         error = "city_factor_shard_pending";
         return false;

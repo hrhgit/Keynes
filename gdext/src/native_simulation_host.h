@@ -105,7 +105,8 @@ public:
     // which is the pre-per-domain behaviour.
     bool start(RuntimeSimulationMode mode, bool graph_coverage_complete,
                int64_t initial_day, double speed_days_per_second, bool paused,
-               uint32_t requested_authority_mask = RUNTIME_ALL_DOMAIN_MASK);
+               uint32_t requested_authority_mask = RUNTIME_ALL_DOMAIN_MASK,
+               std::shared_ptr<const RuntimeCommit> *opening_display = nullptr);
     // Compatibility overload for existing callers. A boolean coverage hint
     // is always an ACTIVE request; it never proves authority by itself.
     bool start(bool graph_coverage_complete, int64_t initial_day,

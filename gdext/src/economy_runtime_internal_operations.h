@@ -121,7 +121,8 @@
     // yielded and needs another call. It is NOT an error: `start_epoch` must
     // park and resume rather than fail, because failing would abort the day.
     bool capture_country_epoch(std::string &error,
-                               bool *out_pending_city_factors = nullptr);
+                               bool *out_pending_city_factors = nullptr, int64_t freeze_day = -1);
+    void publish_frozen_tax_view(int64_t sample_day, std::shared_ptr<const EconomyFrozenTaxView::PolicySnapshot> country);
     // Catalog inputs are immutable between configure/reset calls. Compare the
     // actual frozen columns exactly; broad Country generations include cash.
     void refresh_country_availability_cache();

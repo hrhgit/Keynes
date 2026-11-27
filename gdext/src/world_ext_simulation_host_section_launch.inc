@@ -409,12 +409,18 @@ Dictionary DCWorldExt::start_runtime_worker(const Dictionary &config) {
         owns_rule_adapters ? static_cast<NativeCountryRuntime *>(_country_runtime) : nullptr,
         owns_rule_adapters ? static_cast<TriggerRuntime *>(_trigger_runtime) : nullptr,
         owns_rule_adapters ? static_cast<NativeIdeologyRuntime *>(_ideology_runtime) : nullptr);
+    std::shared_ptr<const RuntimeCommit> opening_display;
     if (!_runtime_host->start(mode, complete, day, speed, paused,
-                              requested_authority_mask)) {
+                              requested_authority_mask, &opening_display)) {
         out["ok"] = false;
         out["pending"] = false;
         out["code"] = "runtime_worker_start_failed";
         out["thread_report"] = runtime_report_to_dictionary(_runtime_host->report(), _runtime_host.get());
+        return out;
+    }
+    if (opening_display && !install_modifier_display(*opening_display, opening_display->day_tail->modifier_session)) {
+        out["ok"] = false;
+        out["code"] = "modifier_opening_frame_invalid";
         return out;
     }
     // A DCWorldExt instance may be reused for a second world after the prior
