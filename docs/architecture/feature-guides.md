@@ -515,8 +515,8 @@ Replay 使用、不跨调用存活，诊断计数在 Plan 后一次汇入报告�
 - 军事兵种份额：玩家局部修改经 `MilitaryFacade.submit` 将稳定 id 解析为完整 `int_pairs` 后提交；原生 `config.set` 是整表替换。改动此链路时运行 `tests/ui/military_config_command_test.gd`，避免空命令或清除其他兵种配比。
 - 军事部队编成：地块军事页从格快照中的本国驻军 lots 形成 `army.create` 请求；PlayerController 复核本国领土与占领状态，GDScript 不直接改写驻军或部队。入口与请求契约见 `docs/ui/military-cell-tab.md`。
 
-- 军事部队视野：玩家部队的位置从已提交的 `get_military_render_snapshot()` 读取，作为低预算移动源交给 `VisionSolver`；城市/领土源仍拥有更高预算。军事 `render_revision` 变化时由 Host 合并触发一次视野刷新，不在 Military 内写 `MapData.visible_arr`，也不新增存档段。验证用 `tests/ui/vision_solver_test.gd` 的部队源覆盖，并在真实运行时检查部队移动后的 `vision_revision`。
-- 玩家自动探路：任务、观察点、返程和战斗暂停归 `MilitaryCore`（`military_core_explore.cpp`，PKMI v4 section 23）；`army.explore` 只接受 Host 安装的玩家 observer。探路 passability 独立于普通 `find_path()`，战争状态也不进入他国控制格；每国每日 8 个规划槽、16 次 A*，并保留至少 16 次共享路径预算给区域控制。`run_movement()` 逐实际进入格产生 trail，Host 在 `_prepare_military_exploration_day()` 只合并 `MapData.explored_arr`，visible/fog 仍由既有 `_refresh_vision()` 生成；保存前必须 flush trail，失败拒绝保存。验证入口：`tests/military/military_auto_exploration_test.gd`、`tests/military/military_dossier_test.gd`、`tests/runtime/military_index_continuation_test.gd`、`tests/qa/military_dossier_screenshot_qa.gd`。
+- 军事部队视野：每日军事结算后，执行器的 `stage_vision` 读取本国部队位置、国家领土和远程视野科技。输入变化时重新计算视野，探索状态按实际行军轨迹更新。主线程领取已发布的可见格、探索格和迷雾，刷新地图。视野计算入口在 `world_ext_vision.cpp:556`，地图领取在 `world_runtime_visual_adapter.gd:509`。
+- 玩家自动探路：任务、观察点、返程和战斗暂停归 `MilitaryCore`（`military_core_explore.cpp`，PKMI section 23）。`army.explore` 只接受 Host 安装的玩家 observer。探路通行条件独立于普通 `find_path()`，战争状态也不进入他国控制格。每国每日 8 个规划槽、16 次 A*，并保留至少 16 次共享路径预算给区域控制。`run_movement()` 逐格产生轨迹，执行器在同日视野阶段合并已探索格，产生下一份可见格和迷雾。验证入口：`tests/military/military_auto_exploration_test.gd`、`tests/military/military_dossier_test.gd`、`tests/runtime/military_index_continuation_test.gd`、`tests/qa/military_dossier_screenshot_qa.gd`。
 
 ## GM 屏蔽与叙事弹窗
 
@@ -789,7 +789,7 @@ Trigger 收尾都完成后，主线程先用原请求日期重试已排队的 Id
   裁剪绘制范围，保留原材质、贴图坐标和绘制顺序。图层自身的可见状态、细节档和
   实例数据由原图层继续维护。定向测试见 `tests/rendering/detail_fog_culling_test.gd`。
 
-- 资源恢复先按输入顺序加入有经济活动的格子，再按当天荒地批次的步长递增访问。已处理日和本日步数仍由每格的日历游标决定，只有资源发布成功才记日。
+- 资源恢复先按输入顺序加入有经济活动的格子，再按当天荒地批次的步长递增访问。已处理日和本日步数仍由每格的日历游标决定，经济完成恢复计算后更新每格的已处理日，日尾收集本次要交给地图显示的变格。
 - 宿主完整验证日输入，再把数组移入只读队列。逐日计划核对这份输入的日期和版本，读档重启用同样验证过的帧重建队列。校验仍拒绝非有限值、非法邻接及水路环。水路的每条下游路径只需证明一次。`runtime_climate_input_hash.cpp` 按 64 位字归并现有参与校验的数组，含数组长度和末尾字节。后台和独立重算走同一摘要定义，CLM2 的状态校验由 ClimateStore 负责。
 - 同一轮中相同纬度复用日照和昼长计算。天气邻接几何按坐标、邻接和环绕宽度的精确值复用。空气输送、天气场与大尺度天气推进只分配互不重叠的格子，等一轮结果齐全才开始下一步。
 - 后台天气求解使用冻结的温度、位置与边界计算热赤道。启用物理环流时优先使用后台当日的场，其他情况下保留原脚本采样的温度来源与计算精度。物理场以只读数据随日提交发布，风轨迹只在日期和输入版本相符时复用。CLM2 继续保存完整物理状态。
@@ -879,7 +879,7 @@ Effect 每次等待结束都检查本次请求是否取消。取消时返回 `nu
 - Country 普通操作仍排到最早尚未封好的日期；明确预约的批次设置 `preserve_effective_days`，
   不能提前。入队在同一锁内回传实际日期，GM 回执使用该日期；已封好的日期只能向后调整。
 - Country worker 的领土变更仅在正式提交后进入读视图，发布游标必须连续递增。
-  领土补丁失配时补齐完整归属，再由 `country_committed` 刷新视野和国界。
+  领土补丁失配时补齐完整归属。`country_committed` 通知地图更新国界，视野从执行器同次提交的视野帧领取。
   详见[视野迷雾与国界线](../cpp-dots-runtime/vision-fog-and-borders.md)。
 - 开局两种国家创建路径均把开局国家放在第一个稳定槽位，吞并也不重排槽位。
   PKCN16 已保存这个顺序；冷启动恢复和只读副本安装须从它重建 `starting_country_slot`，
@@ -893,15 +893,15 @@ Effect 每次等待结束都检查本次请求是否取消。取消时返回 `nu
 
 ## 季节输入日期与经济恢复周期
 
-玩家场景在显示开局加载画面时冻结日历，正式开局从第 0 天开始。后台计算第 D 天的天气时，气温和海冰的经过天数、天气季节和慢层刷新统一使用该份输入的日历日期。普通时钟、重试、提前准备和年报补发都要先取得 D−1 日已经写回地图的气候状态。新世界按实际地图种子生成年度气候变化，读档从保存的随机状态继续。
+玩家场景在显示开局加载画面时冻结日历，正式开局从第 0 天开始。后台计算第 D 天的天气时，气温和海冰的经过天数、天气季节和慢层刷新统一使用该份输入的日历日期。正式会话由执行器从已提交气候准备下一日输入，同日续算复用冻结的输入。新世界按实际地图种子生成年度气候变化，读档从保存的随机状态继续。
 
 后台负责整日结算时，音乐和剧情在当天提交后读取事件。每个订阅者都能读取同一份已完成的事件记录，按各自读到的编号确认进度。读取期间其他日期可以继续发布，已借出的记录须保留到最后一个读者用完。
 
-自动时钟按帧继续当天未算完的物种更新。手动按日推进时，同一次调用须用原日期和输入完成全部地块，再允许提交下一天，确保地图物种分布和国家获得科研线索的日期一致。
+完整授权下，执行器在资源交付后、军事推进前算完当天所有地块的物种变化，按同一日期提交新观察。自动时钟和原生单步共用这段日尾计算。主线程把已发布的物种分布装进地图。
 
 无画面会话在 100 倍及以上快进时缩短主线程休眠间隔，以便及时处理每日结果。暂停、降速和结束会话时释放这项设置。测速按实际提交的连续游戏日计时，逐日校验另跑，避免把校验本身的开销算入快进速度。
 
-待发送的输入保留原日期。帧处理先接收已提交结果，再重试该输入。原生宿主用等待方的锁发布输入队列和日期，避免后台错过唤醒。`worker_time_input_wait_us` 保留原来的合计，环境输入为空、输入已到后的日尾等待、日内输入重试分别记在 `worker_time_environment_wait_us`、`worker_time_main_tail_wait_us` 和 `worker_time_input_retry_wait_us`。输入和日尾同时未准备好时，先记作环境输入等待。
+原生宿主在等待方的锁内发布输入队列和日期。`worker_time_environment_wait_us` 记录需要外部环境帧时的等待，`worker_time_input_retry_wait_us` 记录日内续算等待，`worker_time_input_wait_us` 合计一般输入等待、环境等待和日内重试等待。整图执行器完成日尾后直接发布；显示方领取已提交结果。
 
 后台气候的海域编号和海岸缓存按邻接及海陆分类判断是否有效。同类地形互换仍用实际地形运行气候计算；读档与依赖变化时可重建。经济储量的已提交副本按发布游标检查发生写入的数据页，独立维护其他读取游标，仍按原字节顺序生成存档和校验值。
 

@@ -54,7 +54,7 @@ Economy 新增稀疏的 per-(地块 × 职业) 组织度表（`StratumMobilizati
 
 Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日计划，取消手机默认
 同步执行整日的特殊分支；时钟仍由会话持有的 `RuntimeClockBinding` 在执行器启动后
-同步并持续通知。主线程的输入采集、显示回灌及下表列出的日尾工作仍在原处。诊断时
+同步并持续通知。主线程领取已提交的地图和显示数据，军事、资源恢复与视野随原生日计划推进。诊断时
 `PK_MOBILE_NATIVE_WORKER=0` 或 `PK_NATIVE_DAILY_INLINE=1` 可选已有 inline 路径。
 执行器及数据所有者没有新增，公式、日计划和保存格式不变；验证范围见 feature-status。
 
@@ -105,24 +105,62 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 
 ## 十二域以外的推进
 
-登记在 `tools/ci/runtime_advancers.json`（生成 `runtime_external_advancers.h`），登记不拥有调度权。
+默认整图授权下，六项由执行器推进，两项由主线程领取。后台和原生单步共用日计划；单步时，同样的计算在调用线程执行。
+`tools/ci/runtime_advancers.json` 是入口登记。后台入口在 `native_simulation_host_worker_section_run_authoritative_days.inc:121`，原生单步入口在 `native_simulation_host_commands_inline.cpp:198`。日尾顺序在 `gdext/src/native_simulation_host.cpp:382`，日计划通过检查后依次交付资源、更新物种、推进军事、更新视野，再经过其余日尾阶段发布。
 
-| 推进者 | 线程 | 读写与交接 |
-| --- | --- | --- |
-| military | 主线程 | 每帧追赶已提交日期，`facade.run_daily` 同步运行；读 Country/Economy 已提交数据，写军事实体，后续意图走 D+1。后台 worker 在主线程报告第 D 天日尾完成（`mark_runtime_day_tail_done`）后才开始 D+1，Climate 授权前不等 |
-| natural_resource_recovery | 主线程 | 追赶已提交日期，写资源 slot 与 MapData；与经济自身消耗资源是两个入口；与 military 同受日尾闸门约束 |
-| family / person | 执行线程 | 在经济 FAMILY_COMMIT / PERSON_COMMIT 内运行，没有独立日域 |
-| vision | 主线程 | 读地形/领地/研究信号与已提交的玩家部队位置，写可见性，并提交 Country 观察意图；部队使用低于城市的移动视野预算 |
-| visual_delivery | 主线程 | 消费已发布的脏类别补丁，写显示与 MapData |
-| climate_writeback | 主线程 | 只消费已提交的 Climate 快照写回 slot/MapData |
+| 推进者 | 执行位置与触发条件 | 读写与交接 |
+|---|---|---|
+| family | 执行器，经济 `FAMILY_COMMIT`（`economy_graph_stage_dispatch.cpp:270`） | 读经济中的家族、人口、市场及国家、修正输入，更新家族、分支、影响力和供行为取样的索引。 |
+| person | 执行器，经济 `PERSON_COMMIT`（同文件第 292 行） | 读人物、家族和经济岗位，处理退场、任职、权益及晋升，更新人物和索引。 |
+| natural_resource_recovery | 执行器，当日经济生产前恢复储量，日尾交付变格 | `economy_runtime_environment_capture.cpp:101` → `economy_runtime_building_commit.cpp:260` 根据储量、恢复参数、活动格和日期更新资源。登记入口 `native_simulation_host_day_tail.cpp:14` 收取经济增量与待显示格，随提交发布。 |
+| bio_occupancy | 执行器，资源交付后，十二域全部完成且已装配物种（`world_ext_bio.cpp:319`） | 读当日气候、冻结地理、资源储量、经济引入的物种及原分布，逐格完成当天更新，每八日扩散一次。写入物种分布，把符合科研条件的新观察排到次日。 |
+| military | 执行器，物种之后，已装配军事且整图已请求并完成（`native_simulation_host_military.cpp:139`） | 读国家、经济、修正、地形和此前已探索格；到期运行军务，更新军队，向经济交付驻军与配给，发出次日命令并转交军事事件（`world_ext_military_digest.cpp:403`、`:503`、`:511`）。 |
+| vision | 执行器，军事之后，十二域完成且已装配视野（`world_ext_vision.cpp:556`） | 读领土、科技、部队位置与轨迹、物种分布。首次绑定玩家、领土、远程视野科技或部队源变化，或轨迹新增探索格时重算。写入可见格、探索格和迷雾，观察提交至 D+1。 |
+| visual_delivery | 主线程，处理帧领取新提交（`world_runtime_daily_adapter_part1.gd:143`、`world_runtime_daily_adapter_part3.gd:36`） | 安装已发布的资源、物种和视野，交付逐日记录，按变格合并地图与贴图更新。 |
+| climate_writeback | 主线程，领取新的已授权气候日（`world_runtime_daily_adapter_part3.gd:64`、`:161`） | 按日期与代数安装已提交气候快照，写回 DataCore 槽和 MapData，读档可从 CLM2 重建首次显示。 |
 
-等上一日结果的输入重试会在同一帧先消费提交，再判断能否发送。天气输入的热赤道采样由后台对冻结的温度和位置计算。日提交直接发布物理场和可复用的风轨迹，主线程把它们写回地图。读档时可用 CLM2 中的物理数据重建首次回写。
+两个主线程项登记的 `world_runtime_host.gd:8` 和 `:9` 是存档前同步时的调用点；正常帧经 `world_runtime_adapters.gd` 转入上表的每日适配器。后台按当日冻结的温度和位置计算天气所需的热赤道，随日提交发布物理场和风轨迹。年度气候沿用环境输入日期，第 364 份输入采样第 365 日。地图专题图的共享纹理由显示会话核对有效性和格子顺序。地图天气和生态贴图可以跨帧合并，在天气插值读取前上传。海拔和风向专题图按各自的已安装数据刷新。
 
-年度气候沿用环境输入的采样日期，第 364 份输入采样第 365 日。场景恢复可从 CLM2
-重建第一份用于显示的物理场。地图纹理可以跨帧合并，并在本次天气插值读取前提交。
-海拔和风向专题图在刷新到期时检查各自的已安装数据。共享纹理的有效性和格子顺序由显示会话核对。
+## 前台尚存的模拟工作
 
-军事、资源恢复、事件交付和命令封口仍在每日边界完成。地图天气和生态像素准备排在日尾放行之后。纹理上传在同一渲染帧内合并，并在天气插值读取之前提交。
+### 主线程镜像
+
+PlayerGame 领取新的整图提交后，依次更新国家读视图与 Modifier 镜像。四个脚本绑定的调用方如下。
+原生路径均从 `gdext/src/` 起算，脚本和测试从 `Project/project-keynes/` 起算。
+
+| DCWorldExt 入口 | 调用范围 | 调用点 |
+|---|---|---|
+| `apply_runtime_modifier_snapshot` | 正式路径调用 | `scripts/game/world_runtime_daily_adapter_part3.gd:118` → `world_runtime_daily_adapter_part2.gd:80` → `world_runtime_modifier_writeback.gd:15`。该适配器先检查 Modifier 授权位 `0x040`。`scripts/geography/map_generator.gd:79` 转到 `scripts/game/map_rules_initializer.gd:99`，第 105 行按名调用扩展。原生实现在 `world_ext_modifier_section_derived_values.inc:600`；收到新代数后，第 662 行安装镜像。 |
+| `apply_runtime_effect_snapshot` | 只被测试调用 | `tests/runtime/runtime_world_rules_rebuild_test.gd:144`、`:155`。绑定在 `world_ext_bind_effect.cpp:11`。 |
+| `apply_runtime_ideology_snapshot` | 无调用方 | 只有声明、实现（`world_ext_ideology.cpp:595`）、绑定（`world_ext_bind_ideology.cpp:28`）及绑定清单。 |
+| `apply_runtime_trigger_snapshot` | 只被测试调用 | `tests/runtime/runtime_world_rules_rebuild_test.gd:180`。绑定在 `world_ext_bind_trigger.cpp:23`。 |
+
+核对范围包括游戏场景、脚本的直接调用、`call`、`callv`、`has_method` 及其传入的方法名，以及 C++ 的函数调用和成员指针。四个名字在 C++ 的成员指针用途都限于绑定。测试也调用 Modifier（如 `tests/runtime/runtime_world_rules_rebuild_test.gd:138`、`:152` 和 `tests/ideology/ideology_cell_layer_m0_prototype_test.gd:117`）。
+
+### 日中途停等
+
+正式 PlayerGame 已配置 Economy、执行器按默认整图授权启动时，经济阶段不会因缺少同日环境或建筑输入而向主线程请求采集。这个结论来自以下条件。
+
+1. `world_runtime_generation_adapter.gd:289` 请求 ACTIVE、全部十二域和 ACTIVE_ONLY。第 313 行先安装开局环境，失败就返回。已配置的经济随开局环境获得经济输入（`world_ext_simulation_host_save.cpp:510`、`world_ext_simulation_host_save_section_economy_capture.inc:82`）。
+2. 执行器从同日已提交输入或世界环境取得当日包（`native_simulation_host_environment.cpp:83`）。准备新一天时复制经济输入并改成当天日期（`runtime_world_environment.cpp:344`）。经济准备开新周期时先取已提交气候和执行器视野，按需采集环境和建筑输入，写入当日标记。错日或采集失败直接报告故障（`native_simulation_stage_economy.cpp:131`、`:186`，`economy_runtime_environment_capture.cpp:80`、`:95`）。
+3. 已开的当日周期继续执行（`economy_runtime_epoch_prelude.cpp:60`），新周期检查上述日期（`economy_runtime_epoch.cpp:20`、`:76`）。兼容路径若缺同日输入才会写请求日。主线程经 `world_ext_runtime_graph_section_runtime_pulse.inc:173` → `world_ext_economy.cpp:442` 回应，由 `native_simulation_host_owner_ports.inc:78` 清除请求并唤醒执行器。
+
+停等位定义在 `runtime_pod_protocol.h:47`。一个等待可设置多个位。日循环会把多类原因都记到计时项 `OTHER`（`native_simulation_host_worker_section_run_authoritative_days.inc:459`、`:492`），这项计时不能单独判断在等哪条线程。
+
+| `RUNTIME_DAY_STALL_` 后缀 | 置位点或报告条件 | 谁在等 |
+|---|---|---|
+| `CLIMATE_CAPACITY` 0x01 | `native_simulation_host_worker.cpp:181` 读取报告时发现环境队列已满。 | 兼容投递方等执行器腾出空间。正式世界由执行器准备逐日环境。 |
+| `COUNTRY_PEER` 0x02 | `native_simulation_host_country_stage.cpp:514` 等到期资产的最终结果，`:584` 等国家意图回执；`native_simulation_host_worker.cpp:187` 也会按待决意图数报告该位。 | 整图内 Country 等 Economy 或 Effect。部分授权可由前台适配器交付结果。 |
+| `EFFECT_ACK` 0x04 | `native_simulation_host_country_stage.cpp:584` 与 COUNTRY_PEER 一起设置。路径分流在同文件第 206、276 行。 | 全授权时 Country 等执行器内的效果回执，旧适配路径可等前台交付。 |
+| `IDEOLOGY_ACK` 0x08 | 有常量、清除和等待掩码引用，全源码无置位点（如 `native_simulation_host_country_stage.cpp:684`）。 | 当前无等待。 |
+| `FISCAL_PEER` 0x10 | `native_simulation_host_country_stage.cpp:514`；`native_simulation_stage_economy.cpp:99`、`:116`、`:347`、`:380` 分别对应气候未完成、缺经济对象、已知资产或科研等请求、其他输入待决；整日循环在经济未完成且缺少具体原因时也置位（`native_simulation_host_worker_section_run_authoritative_days.inc:350`）。 | 正式财政路径在后台协调 Country 与 Economy，另有未就绪和未分类原因。单看此位无法判断是否在等前台。 |
+| `ECONOMY_INPUT` 0x20 | `native_simulation_stage_economy.cpp:333` 识别两种缺同日输入的原因，写请求日并置位；`native_simulation_host_worker.cpp:184` 按请求日也会报告。 | 兼容路径由后台等主线程采集。正常开局、整图授权、经济已由后台接管时，上述采集先于开周期检查。 |
+
+### simulation 脚本
+
+主菜单进入 PlayerGame 后，开局生成器配置脚本任务并检查原生计算（`main_menu.gd:570`、`player_game.gd:76`、`map_runtime_system_registration.gd:306`）。图形桌面开局仍用脚本调原生气候、海冰和蒸腾计算，也准备季节参数和资源初值。游戏中前台领取并安装已发布的地图数据。整图授权后，旧脚本调度器的每日计算入口提前返回（`native_daily_manual_tick.gd:33`）。
+
+`scripts/simulation/` 有 74 个脚本、24,843 个物理行。47 个有正式调用路径，包括装配、显示与开局计算；26 个有产品代码引用，只经兼容配置或显式工具运行；0 个仅由测试或工具引用；`weather/weather_feedback.gd` 无引用。每个文件的用途与关键调用点见[逐文件核查](feature-status.md#simulation-目录逐文件核查)。经济停等的本机运行条件见[专项核查](feature-status.md#正式会话的推进镜像与脚本2026-11-26)。
 
 ## 跨模块交接
 
@@ -132,7 +170,7 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 - **写入请求**：Economy→Country 的写全部走所有者端口（财政返还/预留/征收、采购、现金与物资转移、科研、国库支出）；`country_writes` 预算为 0，直接调用、别名、成员指针都不能重新引入。
 - **请求队列**：Host 通用命令、Country 命令、Economy 命令（含军事 24/30–34）、Trigger 命令共享 `runtime_resolve_contract.h` 的入队与顺序键；Effect→Modifier/Events、Ideology→Modifier 和同步 Effect 批次仍用各自既有协议。请求与保存位置的对照见 [module-boundaries.md](module-boundaries.md#请求与提交)。
 - **冻结输入**：`runtime_freeze_contract.h` 的 `RuntimeFrozenInputVersion` 登记 session、day、generation、命令水位和 committed/in-flight；Climate、Country、Economy 已登记。Climate 仍在 day plan 之前完成输入捕获和提交。
-- **未迁移的读边**：Ideology←Country（同一指针可发布 plan 预览）、Country←Effect 身份/完成查询（含已接受未安装的 upsert）、Economy/Family←Effect/Modifier、Military←Country/Economy（主线程 digest 与即时财政 helper 并存）、Climate←Modifier/Economy。30 个域对的逐项处置在 `tools/ci/cross_domain_inventory.json`。
+- **未迁移的读边**：Ideology←Country（同一指针可发布 plan 预览）、Country←Effect 身份/完成查询（含已接受未安装的 upsert）、Economy（含 Family）←Effect/Modifier、Military←Country/Economy（执行器在军事阶段准备输入，军事适配层仍有即时财政调用）、Climate←Modifier/Economy。23 个域对的逐项处置在 `tools/ci/cross_domain_inventory.json`。
 
 ## 软完成（仍保留的兼容债）
 
@@ -202,13 +240,11 @@ provider 的 manifest 版本、段内字节版本、内容身份是三层不同�
 - 保存续跑（`check_committed_replay.py --checkpoint --trace`、`check_replay_matrix.py`）：不中断、重放、保存不中断、另进程读档四条轨迹逐日比较，读档后至少八日。默认矩阵 4 个场景：save1、calendar5、multicountry5、military20；`--military-annual` 单跑 military365（真实年度自动存档，受时序影响不稳定，见 migration 已知问题）；`--full` 另加 save2/5/9 与 mixed5；`--annual` 保存第 365 日；`--annual-neighbors` 保存 364/366（手动档）。
 - 未覆盖：其他种子与平台、实际占领与战斗（测试地图路径不可达，只有合成占领自测）、任意 worker 日内命令位置、真实浏览器 Web 导出、图形长跑。
 
-## 规模（2026-11-11）
+## 规模
 
-- 长度检查扫描 1018 个源码文件，0 违规；C++ 依赖 522 引用键（399 债务键），`header_exposed=519`、`total=2181`；域对 30。
-- `DCWorldExt` 的 646 个脚本方法分在 15 个模块绑定文件，`world_ext_bind_methods.cpp` 只顺序调用各模块；`world_ext.h` 的绑定声明按同样顺序分段，头文件 4050 行。数据归属和实现不变，入口与模块文件由 `tools/ci/world_ext_binding_modules.json` 登记，`check_world_ext_bindings.py` 核对归属；阶段 1 的验证见 [feature-status.md](feature-status.md)。
-- 阶段 2 第 1–2 步已登记 15 模块的脚本访问目录，`check_script_native_access.py` 冻结现有越界并接入本地/PR 护栏；没有迁移调用或替换接口探测。匹配规则见 [feature-guides.md](feature-guides.md)，本轮数量和验证见 [feature-status.md](feature-status.md)。
-- `world_runtime_host.gd` 2943 行；`map_generator.gd` 22563 行（超限债务，未拆）。
-- `economy_runtime.cpp` 2000 行、`economy_runtime.h` 2408 行（内部头另 5 个，均 ≤2000）；`native_simulation_host.h` 2147 行、`.cpp` 481 行；`country_runtime.cpp` 11463 行（超限债务，未拆）。
+- 依赖护栏扫描八个业务域，得到 23 个域对、504 个引用键。其中 294 个债务键合计 931 处，210 个契约键合计 614 处。头文件中的引用为 301 处，两表合计 1545 处。直接写国家预算为 0。
+- 长度护栏扫描 2171 个文件，当前无违规。`world_runtime_host.gd` 545 行，`map_generator.gd` 784 行；`economy_runtime.cpp` 649 行、对应头文件 619 行；`native_simulation_host.cpp` 503 行、对应头文件 234 行；`country_runtime.cpp` 655 行。
+- `DCWorldExt` 的脚本绑定按 15 个模块登记，入口为 `world_ext_bind_methods.cpp`。模块所有者见 `tools/ci/world_ext_binding_modules.json`；脚本直接访问原生接口的边界由 `check_script_native_access.py` 核对。
 
 ## 加载期目录编译入口
 

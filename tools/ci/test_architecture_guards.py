@@ -636,7 +636,7 @@ class GuardsTest(unittest.TestCase):
 
     def test_internal_header_move_is_not_copy_or_new_dependency(self):
         origin = "gdext/src/economy_runtime.h"
-        source = origin + "|economy->family|type:FamilyStore"
+        source = origin + "|economy->country|type:CountryState"
         target = source.replace("economy_runtime.h", "economy_runtime_internal_state.h")
         base = {"version": 1, "references": {source: 2}}
         result = deps.updated_baseline({target: 2}, base, {target: origin})
@@ -651,7 +651,7 @@ class GuardsTest(unittest.TestCase):
 
     def test_family_cpp_relocation_preserves_owner_and_reduction(self):
         origin = "gdext/src/economy_runtime_family_buff.cpp"
-        source = origin + "|family->effect|type:EffectInputConsumers"
+        source = origin + "|economy->effect|type:EffectInputConsumers"
         target = source.replace("family_buff.cpp", "family_effect_inputs.cpp")
         second = target.replace("family_effect_inputs.cpp", "family_metrics.cpp")
         baseline = {"version": 1, "references": {source: 2}}
@@ -683,6 +683,59 @@ class GuardsTest(unittest.TestCase):
         moved["references"][source] = 2
         moved["metrics"] = deps.metrics(moved["references"])
         self.assertTrue(deps.baseline_errors(moved))
+
+    def test_family_types_and_files_belong_to_economy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "gdext/src"
+            src.mkdir(parents=True)
+            (src / "economy_runtime_family_data.h").write_text("struct HouseholdRow {};")
+            (src / "economy_runtime.cpp").write_text(
+                '#include "economy_runtime_family_data.h"\nFamilyStore a; RuntimeFamilyStore b;')
+            (src / "effect_runtime.cpp").write_text(
+                '#include "economy_runtime_family_data.h"\nHouseholdRow a; NativeFamilyStore b; Familywide c;')
+            prefix = "gdext/src/effect_runtime.cpp|effect->economy|"
+            self.assertEqual(deps.measure(root), {prefix + edge: 1 for edge in (
+                "include:economy_runtime_family_data.h", "type:HouseholdRow", "type:NativeFamilyStore")})
+            self.assertTrue(deps.violations(deps.measure(root), {}))
+
+    def test_family_country_view_still_requires_file_specific_debt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            src = root / "gdext/src"
+            src.mkdir(parents=True)
+            family = src / "economy_runtime_family_buff.cpp"
+            family.write_text('#include "country_read_view.h"\nCountryReadView view;')
+            prefix = "gdext/src/economy_runtime_family_buff.cpp|economy->country|"
+            debt = {prefix + "include:country_read_view.h": 1, prefix + "type:CountryReadView": 1}
+            self.assertEqual(deps.measure(root), debt)
+            self.assertTrue(deps.violations(debt, {}))
+            self.assertTrue(deps.baseline_errors({"references": {}, "contract_references": debt}))
+
+    def test_family_reclassification_refuses_changed_source_or_counts(self):
+        # The shipped migration accepts one exact old file. Pin a small fixture
+        # in its place to exercise the per-key checks independently of git history.
+        import hashlib
+        from unittest.mock import patch
+        family = "gdext/src/effect_runtime.cpp|effect->family|type:FamilyStore"
+        economy = family.replace("->family", "->economy")
+        api = "gdext/src/economy_runtime_family_data.cpp|family->country|include:country_api.h"
+        mapped_api = api.replace("|family->", "|economy->")
+        old = json.dumps({"references": {family: 2}, "contract_references": {api: 1},
+                          "relocations": {}})
+        with self.assertRaisesRegex(ValueError, "original cfd9fb70"):
+            deps.reclassify_family_baseline(old, {economy: 2}, {mapped_api: 1})
+        with patch.object(deps, "FAMILY_BASELINE_SHA256", hashlib.sha256(old.encode()).hexdigest()):
+            new = deps.reclassify_family_baseline(old, {economy: 2}, {mapped_api: 1})
+            self.assertEqual(new["metrics"]["total"], 3)
+            for debt, contracts in (
+                    ({economy: 3}, {mapped_api: 1}),  # Unrelated growth
+                    ({economy.replace("effect_runtime", "effect_other"): 2}, {mapped_api: 1}),
+                    ({economy: 1}, {mapped_api: 2}),  # Same total, different classification
+                    ({economy: 2}, {})):
+                with self.subTest(debt=debt, contracts=contracts), self.assertRaisesRegex(
+                        ValueError, "every surviving"):
+                    deps.reclassify_family_baseline(old, debt, contracts)
 
     def test_economy_leaf_reads_and_public_header_regressions(self):
         with tempfile.TemporaryDirectory() as directory:

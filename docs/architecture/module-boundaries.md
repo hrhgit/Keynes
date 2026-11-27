@@ -5,7 +5,7 @@
 ## 数据归属
 
 - 国家、气候、触发、理念、效果、修正、事件各由自己的 POD authority 推进。
-- 经济计算仍是 `NativeEconomyRuntime`，POD_ACTIVE 时数据绑定 OwnedState。家庭、人物、建筑属于经济状态。
+- 经济计算仍是 `NativeEconomyRuntime`，POD_ACTIVE 时数据绑定 OwnedState。Family（家族）是 Economy 的子模块，在经济的 `FAMILY_COMMIT` 阶段结算；家族、人物和建筑均使用经济状态。家族数据随经济存档。
 - 军务由 `MilitaryCore` 计算。军务、自然资源恢复、物种、季节慢层和视野的现有交接见 [运行现状](current-state.md#十二域以外的推进)。
 - 每日表是 Host 的装配层。`DayExecution` 只借用本次调用的计划、输入和输出，不跨日保存引用。
 
@@ -42,12 +42,12 @@ Country 的 `country_core*.h`、`country_ai_*.h` 尚未锁进契约（只锁 `co
 
 ## 依赖棘轮
 
-`check_cpp_deps.py` 对 country、economy、effect、ideology、modifier、trigger、military、family、climate 的命名文件统计 include 和外域类型词。它是文本检查：忽略注释与字符串，检查条件编译的所有分支；宏生成、类型别名、间接 include 和运行时指针权限不在检测范围。
+`check_cpp_deps.py` 对 country、economy、effect、ideology、modifier、trigger、military、climate 的命名文件统计 include 和外域类型词。它是文本检查：忽略注释与字符串，检查条件编译的所有分支；宏生成、类型别名、间接 include 和运行时指针权限不在检测范围。
 
-- 文件名决定域：`runtime_` / `native_` 前缀也识别；文件名里含 `_family_` 的归 family 域。Economy 侧的家族实现因此用 `lineage_` 命名，否则依赖会被重新归类。Host、`world_ext`、共用协议与装配适配器暂不归业务域。
-- 基线 [`cpp_deps_baseline.json`](../../tools/ci/cpp_deps_baseline.json)：`references` 是受限债务，`contract_references` 是经接口头的已审契约引用。`header_exposed`（只数 `.h`）和 `total` 两个总量都包括两张表。域对集合不能扩展，普通引用不能因别处删除而增加。
-- 位移例外记在 `relocations`：头→同目录同名/下划线后缀实现、同目录 `economy_runtime*.cpp` 之间、原 `economy_runtime.h` → `economy_runtime_internal_*.h`。必须同域对、同符号，来源同步减少，同一减少量不能重复使用。
-- `tools/ci/cross_domain_inventory.json` 把基线里的 30 个域对逐项标为已迁移（3）、明确不迁移（2）或待逐函数核查（25），`check_cross_domain_inventory.py` 拒绝表外域对。“待核查”指间接调用的语义还没逐函数审过，与 include 是否已走接口头是两回事。
+- 文件名决定域，识别 `runtime_`、`native_` 前缀。原生文件名中由下划线或首尾界定的 `family`、家族文件中定义的可唯一归属类型，以及符合词首规则的 `Family…`、`RuntimeFamily…`、`NativeFamily…` 计入 Economy。宿主、绑定和通用协议文件多数不归业务域。
+- [依赖基线](../../tools/ci/cpp_deps_baseline.json) 分开保存普通引用和经审核的契约引用。普通引用按源文件、域对、符号限制出现次数。头文件引用总数和全部引用总数均含两张表；域对集合只能收缩。
+- 文件搬移由 `relocations` 登记。沿用已核准的同目录、同域对、同符号及来源减少规则。Family 仍保留其原有的文件搬移边界；其文件新增对 CountryReadView 的引用仍按普通债务检查。
+- 23 个域对共 931 处普通引用、614 处契约引用。4 个域对已迁移，19 个待逐函数核查。清单在 `tools/ci/cross_domain_inventory.json`，检查器双向核对清单与基线。Family 归入 Economy 的一次性换算、旧基线身份和完整对照见[解耦计划](../plans/architecture-decoupling-plan.md#p3-family-的归属)。
 
 ## 已提交视图
 
