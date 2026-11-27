@@ -247,7 +247,7 @@ uint8_t RuntimeIdeologyPodAuthority::next_free_slot(
 }
 
 void RuntimeIdeologyPodAuthority::settle_synergies(
-        RuntimeIdeologyPodCountryState &country, uint32_t country_slot,
+        RuntimeIdeologyPodCountryState &country, uint64_t transition_id,
         int32_t ideology_id, int64_t day, RuntimeIdeologyPodPlan &plan) const {
     // Recompute only the reverse-CSR candidates against the settled state, so
     // two same-day transitions of one school still reach a shared resonance.
@@ -266,7 +266,7 @@ void RuntimeIdeologyPodAuthority::settle_synergies(
         for (uint32_t row_index = 0; row_index < synergy.modifier_count; ++row_index) {
             const auto &templ = _catalog.synergy_modifiers[synergy.modifier_begin + row_index];
             RuntimeIdeologyPodModifierRow row;
-            row.transition_id = 0;
+            row.synergy_transition_id = transition_id;
             row.country_handle = country.handle;
             row.country_generation = country.generation;
             row.opcode = now ? 1u : 2u;
@@ -280,7 +280,6 @@ void RuntimeIdeologyPodAuthority::settle_synergies(
         }
         bit_set(country.synergy_bits, synergy_id, now);
     }
-    (void)country_slot;
 }
 
 bool RuntimeIdeologyPodAuthority::apply_ack(
@@ -336,7 +335,7 @@ bool RuntimeIdeologyPodAuthority::apply_ack(
             if (idea.location == RuntimeIdeologyPodLocation::NATIONAL_SPIRIT) country.spirit_slots_used += definition.spirit_cost;
             if (country.synergy_bits.size() != (_catalog.synergies.size() + 63u) / 64u)
                 country.synergy_bits.assign((_catalog.synergies.size() + 63u) / 64u, 0);
-            settle_synergies(country, transition.country_slot, transition.ideology_id, day, plan);
+            settle_synergies(country, transition.intent_id, transition.ideology_id, day, plan);
             rebuild_active_idea_ids(country);
             status = RuntimeIdeologyPodReceiptStatus::SETTLED;
         }

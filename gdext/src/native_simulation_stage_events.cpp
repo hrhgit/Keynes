@@ -21,29 +21,21 @@ bool NativeSimulationHost::stage_events(DayExecution &day, RuntimeDomainPlan &st
             stage.completed = 0;
             return true;
         }
-        const bool events_ok = run_day_events(day, plan.context.day);
-        if (_events_pod_event_count.load(std::memory_order_relaxed) > 0u) {
-            stage.dirty_families = RUNTIME_DIRTY_EVENTS;
-            commit.dirty_families |= stage.dirty_families;
-        }
-        stage.work_units =
-            _events_pod_event_count.load(std::memory_order_relaxed);
-        commit.work_units += stage.work_units;
-        if (!events_ok) {
+        if (!run_day_events(day, plan.context.day, false)) {
             stage.completed = 0;
             commit.preflight_ok = 0;
             return true;
         }
-        forward_committed_events_to_trigger(plan.context.day);
+        stage.work_units = day.progress.events_planned ? _events_authority.report().appended_events : 0;
+        if (stage.work_units > 0u) {
+            stage.dirty_families = RUNTIME_DIRTY_EVENTS;
+            commit.dirty_families |= stage.dirty_families;
+        }
+        commit.work_units += stage.work_units;
         stage.completed = 1;
         commit.completed_domain_mask |=
             runtime_domain_mask(RuntimeDomainId::EVENTS);
         ++commit.completed_stage_count;
-        if (stage.work_units > 0u) {
-            _active_evidence_mask.fetch_or(
-                runtime_domain_mask(RuntimeDomainId::EVENTS),
-                std::memory_order_release);
-        }
         return true;
     }
     return true;

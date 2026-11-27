@@ -202,7 +202,12 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
         std::vector<RuntimeCommandReceipt> &day_receipts,
         uint64_t admitted_submit_order) {
     RuntimeDayCommit commit;
-    _executor_day_tail.reset();
+    if (_day_progress.day != plan.context.day ||
+        _mode.load(std::memory_order_acquire) != RuntimeSimulationMode::ACTIVE) {
+        _day_progress = {};
+        _day_progress.day = plan.context.day;
+        _executor_day_tail.reset();
+    }
     // native_daily_inline 分域计时开关。worker 日恒为 false，所以这条 worker 路径
     // 不为任何探针付账（只有每 stage 一次原子读）。内联日一切都在调用线程上，
     // 累加器不需要原子。
@@ -226,7 +231,7 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
     // 仅复用本次调用中、同一不可变对象已经由 Climate kernel 计算的完整哈希。
     // 不按 day/generation 猜测跨调用内容；重试或未跑 Climate 时仍完整计算。
     DayExecution day{plan, environment, day_commands, day_receipts,
-                     admitted_submit_order, commit};
+                     admitted_submit_order, commit, _day_progress, _day_progress.event_commands};
     auto &climate_authority_requested = day.climate_authority_requested;
     auto &active_climate_ok = day.active_climate_ok;
     // SHADOW retains its diagnostic pipeline; ACTIVE uses the module table.
@@ -365,7 +370,8 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
         commit.preflight_ok = 0;
         commit.continuation_pending = 1;
     }
-    run_day_events(day, plan.context.day);
+    if (!(active_requested & runtime_domain_mask(RuntimeDomainId::EVENTS)))
+        run_day_events(day, plan.context.day);
     // A failed authoritative Climate day must not advance the clock. The main
     // thread is suppressed, so advancing anyway would silently drop that day:
     // nobody computed it and nothing would ever go back for it. Zero here parks
@@ -391,6 +397,33 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
         &NativeSimulationHost::stage_prepare_environment,
         &NativeSimulationHost::stage_narrative,
     };
+    if (commit.preflight_ok && try_fault_injection("day.commit.before")) {
+        commit.preflight_ok = 0;
+        return commit;
+    }
+    uint32_t modifier_slot = 0;
+    const bool publish_modifier = commit.preflight_ok &&
+        (active_requested & runtime_domain_mask(RuntimeDomainId::MODIFIER));
+    if (publish_modifier && !reserve_modifier_day_publication(plan.context.day, modifier_slot)) {
+        commit.completed_domain_mask &= ~runtime_domain_mask(RuntimeDomainId::MODIFIER);
+        --commit.completed_stage_count;
+        plan.stages[static_cast<size_t>(RuntimeDomainId::MODIFIER) - 1].completed = 0;
+        commit.preflight_ok = 0;
+        commit.continuation_pending = 1;
+        return commit;
+    }
+    // Narrative reads today's journal. Finish it only after recoverable day
+    // barriers; expose its reader slot once the remaining day tail succeeds.
+    const bool publish_events = commit.preflight_ok &&
+        (active_requested & runtime_domain_mask(RuntimeDomainId::EVENTS)) && day.progress.events_planned;
+    if (publish_events && !publish_day_events(plan.context.day, _events_authority.report(), {})) {
+        auto &failed = plan.stages[static_cast<size_t>(RuntimeDomainId::EVENTS) - 1];
+        failed.completed = 0;
+        commit.completed_domain_mask &= ~runtime_domain_mask(RuntimeDomainId::EVENTS);
+        --commit.completed_stage_count;
+        commit.work_units -= failed.work_units;
+        commit.preflight_ok = 0;
+    }
     if (commit.preflight_ok != 0) {
         for (const auto stage : day_tail_stages) {
             if (const char *error = (this->*stage)(day)) {
@@ -400,6 +433,9 @@ RuntimeDayCommit NativeSimulationHost::execute_day_plan(
             }
         }
     }
+    if (publish_modifier)
+        finish_modifier_day_publication(modifier_slot, commit.preflight_ok != 0);
+    if (publish_events && commit.preflight_ok) publish_events_snapshot();
     return commit;
 }
 

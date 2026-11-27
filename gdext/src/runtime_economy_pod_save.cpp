@@ -583,6 +583,7 @@ bool RuntimeEconomyPodAuthority::restore_ecp1(const uint8_t *data, size_t size,
     _input.catalog_hash = catalog;
     _input.session_epoch = session;
     _scratch = RuntimeEconomyWorkerScratch{};
+    _business_summary_valid = abi >= 2u;  // These versions carried the settled summary.
     _summary_population = summary_population;
     _summary_funds = summary_funds;
     _summary_markets = summary_markets;

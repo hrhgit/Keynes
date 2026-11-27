@@ -22,6 +22,7 @@ bool NativeSimulationHost::stage_trigger_input(DayExecution &day, RuntimeDomainP
             stage.completed = 0;
             return true;
         }
+        if (day.reuse_completed(stage)) return true;
         const uint32_t dirty_before = commit.dirty_families;
         const uint64_t work_before = commit.work_units;
         std::string trigger_error;
@@ -72,6 +73,9 @@ bool NativeSimulationHost::stage_trigger_input(DayExecution &day, RuntimeDomainP
             commit.completed_domain_mask |=
                 runtime_domain_mask(RuntimeDomainId::TRIGGER_INPUT);
             ++commit.completed_stage_count;
+            // A soft completion has no committed snapshot. Revisit it when
+            // an ACK arrives during another stage of this day.
+            if (trigger_ok) day.remember_completed(stage);
         } else {
             stage.completed = 0;
         }

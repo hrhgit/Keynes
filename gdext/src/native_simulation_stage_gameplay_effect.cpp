@@ -20,12 +20,23 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
             stage.completed = 0;
             return true;
         }
+        const bool previously_completed =
+            day.progress.finished[static_cast<size_t>(stage.domain) - 1].completed != 0;
+        uint64_t latest_order = day.progress.gameplay_submit_order;
+        for (const auto &packet : day_commands) {
+            if (packet.envelope.domain == static_cast<uint16_t>(stage.domain) &&
+                packet.envelope.effective_day <= plan.context.day)
+                latest_order = std::max(latest_order, packet.submit_order);
+        }
+        if (previously_completed && latest_order == day.progress.gameplay_submit_order)
+            return day.reuse_completed(stage);
         // Gameplay commands arrive as typed RuntimeCommandPacket rows.
         // The worker owns admission, deterministic ordering and terminal
         // accounting here; publication of the resulting event is handled
         // by the subsequent EVENTS stage. No Godot value is touched.
         uint32_t terminal = 0;
         uint32_t events_terminal = 0;
+        const size_t previous_event_count = gameplay_event_commands.size();
         uint64_t effect_hash = 1469598103934665603ull;
         bool gameplay_effect_ok = true;
         std::vector<RuntimeIdeologyPodCommand> ideology_commands;
@@ -100,7 +111,8 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
                     RuntimeIdeologyPodOpcode::GRANT_FREE_DRAW;
                 ideology_command.country_handle = target_handle;
                 ideology_command.value_q16 = value_i64;
-                ideology_commands.push_back(ideology_command);
+                if (!previously_completed || packet.submit_order > day.progress.gameplay_submit_order)
+                    ideology_commands.push_back(ideology_command);
                 ++terminal;
                 effect_hash = mix_hash(effect_hash,
                                        packet.envelope.request_id);
@@ -169,7 +181,8 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
             }
             std::memcpy(event_packet.payload.data(), event_payload.data(),
                         event_payload.size());
-            gameplay_event_commands.push_back(event_packet);
+            if (!previously_completed || packet.submit_order > day.progress.gameplay_submit_order)
+                gameplay_event_commands.push_back(event_packet);
             ++terminal;
             ++events_terminal;
             effect_hash = mix_hash(effect_hash, packet.envelope.request_id);
@@ -184,7 +197,7 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
                 effect_hash = mix_hash(effect_hash, packet.payload[i]);
         }
         if (!gameplay_effect_ok) {
-            gameplay_event_commands.clear();
+            gameplay_event_commands.resize(previous_event_count);
             _gameplay_effect_pending.store(terminal + 1u,
                                            std::memory_order_release);
             _gameplay_effect_terminal.store(0, std::memory_order_release);
@@ -196,7 +209,7 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
             std::string ideology_queue_error;
             if (!queue_ideology_pod_commands(
                     ideology_commands, ideology_queue_error)) {
-                gameplay_event_commands.clear();
+                gameplay_event_commands.resize(previous_event_count);
                 _gameplay_effect_pending.store(terminal + 1u,
                                                std::memory_order_release);
                 _gameplay_effect_terminal.store(0,
@@ -206,7 +219,9 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
                 return true;
             }
         }
-        _gameplay_effect_generation.fetch_add(1, std::memory_order_release);
+        if (!previously_completed)
+            _gameplay_effect_generation.fetch_add(1, std::memory_order_release);
+        day.progress.gameplay_submit_order = latest_order;
         _gameplay_effect_pending.store(0, std::memory_order_release);
         _gameplay_effect_terminal.store(terminal, std::memory_order_release);
         _gameplay_effect_state_hash.store(effect_hash,
@@ -225,6 +240,7 @@ bool NativeSimulationHost::stage_gameplay_effect(DayExecution &day, RuntimeDomai
                 runtime_domain_mask(RuntimeDomainId::GAMEPLAY_EFFECT),
                 std::memory_order_release);
         }
+        day.remember_completed(stage);
         return true;
     }
     return true;

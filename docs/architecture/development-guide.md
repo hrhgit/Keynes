@@ -61,6 +61,8 @@ POD 与 checkpoint。政治目录内容身份必须与保存内容匹配；旧�
 5. 新独立日域会改 ABI（`RuntimeDomainId`），不能当普通表项加。
 6. 改 reads/writes 后同步模块描述符（`runtime_module_contracts.json`），跑 `check_module_contracts.py`；描述符是只读契约，不改调度顺序。新业务域要在 Freeze 入口登记 `RuntimeFrozenInputVersion`。
 
+Country 等科技回执时，执行器继续访问能产生回执的模块。再次进入同一天，Trigger、Ideology、GameplayEffect、Economy 和 Events 沿用已完成阶段的结果。Economy 仍处理新到的跨域结算请求。Modifier 记录当天已处理的请求，重送沿用原结果，当日新请求照常处理。验证这一边界用 `modifier_same_day_reapply_test.gd`，分别核对 Economy 冻结的税率、日尾修正层数和代次。
+
 ## 每日结算与每帧显示
 
 宿主在处理帧领取后台已发布的结果。默认每帧检查一次，也可给本局的

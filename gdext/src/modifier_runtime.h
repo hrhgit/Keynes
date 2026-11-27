@@ -237,7 +237,8 @@ public:
     // the submitted state. Generation must be monotonic; failures leave
     // the previous stores untouched.
     bool apply_pod_snapshot(const RuntimeModifierPodSnapshot &snapshot,
-                            std::string &error);
+                            std::string &error, bool worker_continuation = false);
+    static bool pod_projection_self_test(std::string &error);
     uint64_t pod_snapshot_generation() const {
         return _pod_snapshot_generation;
     }

@@ -100,7 +100,6 @@ void RuntimeModifierPodAuthority::reset(size_t entry_capacity) {
         domain.expiry_queue.reserve(entry_capacity);
     }
     _snapshot = RuntimeModifierPodSnapshot{};
-    _planned_snapshot = RuntimeModifierPodSnapshot{};
     _report = RuntimeModifierPodReport{};
     _configured = false;
     _plan_ready = false; _view_cursor = {};

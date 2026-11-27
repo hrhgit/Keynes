@@ -75,7 +75,7 @@ For "value does not recover after removal":
 1. Confirm the remove command result and handle generation.
 2. Inspect journal for remove/reject/expire/cleanup.
 3. Use `explain_stat` to separate base, add, factor, clamp, and remaining instances.
-4. Verify `modifier_daily` ran at the same-day deadline boundary; inspect budget skip reports.
+4. 整图会话先核对 Modifier 提交日、快照代次和该请求的层数。同日等回执后继续计算，原请求只生效一次。在使用旧调度器的配置下，再查 `modifier_daily` 的截止日及跳过计数。
 5. Verify the consumer reads the current frozen snapshot and does not cache effective as base.
 6. Verify scope ID and parent group generation did not change.
 7. For economy, check cached BuildingGroup factor refresh at epoch/restore/topology change.

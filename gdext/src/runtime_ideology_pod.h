@@ -306,6 +306,8 @@ uint64_t ideology_business_hash(const RuntimeIdeologyPodSnapshot &state);
 // is ACKed by the Modifier POD.
 struct RuntimeIdeologyPodModifierRow {
     uint64_t transition_id = 0;
+    // Loose synergy rows are delivered after this transition has settled.
+    uint64_t synergy_transition_id = 0;
     uint64_t country_handle = 0;
     uint32_t country_generation = 0;
     uint16_t opcode = 1; // Modifier APPLY=1, REMOVE=2
@@ -470,7 +472,7 @@ private:
                    RuntimeIdeologyPodPlan &plan,
                    std::string &error) const;
     void settle_synergies(RuntimeIdeologyPodCountryState &country,
-                          uint32_t country_slot, int32_t ideology_id,
+                          uint64_t transition_id, int32_t ideology_id,
                           int64_t day, RuntimeIdeologyPodPlan &plan) const;
     bool support_allows(const RuntimeIdeologyPodSnapshot &state,
                         const RuntimeIdeologyOpinionSnapshot &opinion,

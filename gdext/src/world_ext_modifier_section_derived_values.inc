@@ -675,7 +675,7 @@ Dictionary DCWorldExt::runtime_modifier_pod_self_test() const {
     const bool authority_ok = RuntimeModifierPodAuthority::self_test(error);
     NativeSimulationHost protocol_host;
     const bool protocol_ok = authority_ok && protocol_host.modifier_pod_self_test(&error);
-    const bool ok = authority_ok && protocol_ok;
+    const bool ok = protocol_ok && ModifierRuntime::pod_projection_self_test(error);
     Dictionary out;
     out["ok"] = ok;
     out["reason"] = ok ? "" : String(error.c_str());

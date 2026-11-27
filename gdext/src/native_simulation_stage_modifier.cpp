@@ -74,7 +74,11 @@ bool NativeSimulationHost::stage_modifier(DayExecution &day, RuntimeDomainPlan &
             stage.dirty_families = RUNTIME_DIRTY_COUNTRY_STATE;
             stage.work_units = _modifier_pod_work_units.load(
                 std::memory_order_relaxed);
+            // Keep the day's total when a later visit delivers only a peer ACK.
+            const auto &previous = day.progress.finished[static_cast<size_t>(stage.domain) - 1];
+            if (previous.completed) stage.work_units += previous.work_units;
             stage.completed = 1;
+            day.remember_completed(stage);
             commit.dirty_families |= stage.dirty_families;
             commit.work_units += stage.work_units;
             commit.completed_domain_mask |=

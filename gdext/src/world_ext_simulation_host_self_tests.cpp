@@ -128,7 +128,8 @@ bool DCWorldExt::runtime_ideology_pod_self_test() const {
 bool DCWorldExt::runtime_events_authority_self_test() const {
     std::string error;
     const bool ok = RuntimeEventsAuthority::self_test(error) &&
-        RuntimeEventsSnapshotRing::self_test();
+        RuntimeEventsSnapshotRing::self_test() &&
+        std::make_unique<NativeSimulationHost>()->events_day_publication_self_test(error);
     if (!ok) {
         godot::UtilityFunctions::printerr(
             godot::String("runtime_events_authority_self_test: ") +

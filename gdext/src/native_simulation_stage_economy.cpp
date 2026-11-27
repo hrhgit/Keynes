@@ -68,6 +68,132 @@ static void append_economy_fact_event_packets(
     }
 }
 
+// The day can visit Economy several times. Publish only after all peer stages finish.
+void NativeSimulationHost::publish_economy_day_snapshot(uint64_t generation, int64_t day) {
+    if (_mode.load(std::memory_order_acquire) != RuntimeSimulationMode::ACTIVE ||
+        _economy_production_runtime == nullptr ||
+        !(_requested_authority_mask.load(std::memory_order_acquire) & runtime_domain_mask(RuntimeDomainId::ECONOMY)))
+        return;
+    RuntimeEconomySnapshotPayload payload{};
+    payload.header.session_epoch = 1;
+    payload.header.generation = generation;
+    payload.header.committed_day = _economy_pod_committed_day.load(std::memory_order_relaxed);
+    payload.header.epoch_sample_day = day;
+    payload.header.state_hash = _economy_pod_state_hash.load(std::memory_order_relaxed);
+    payload.header.operation_gate_mask = _economy_pod_operation_gate_mask.load(std::memory_order_relaxed);
+    payload.header.committed = _economy_pod_committed.load(std::memory_order_relaxed);
+    payload.header.authority_ready = true;
+    payload.operation_gate_mask = payload.header.operation_gate_mask;
+    payload.authority_mode = static_cast<uint32_t>(_economy_pod_authority.authority_mode());
+    _economy_production_runtime->fill_economy_snapshot_summary(payload, _day_progress.economy_commands_changed);
+    // Reuse only a validated summary of the same installed ledger. Loading an
+    // ECP2 owner or publishing a new epoch invalidates it, even on an older sample day.
+    if (_day_progress.economy_commands_changed || !_economy_pod_authority.copy_business_summary(payload)) {
+        _economy_pod_authority.set_business_summary(payload.population_error, payload.money_error,
+            payload.goods_error, payload.summary_population, payload.summary_funds, payload.summary_markets,
+            payload.summary_buildings, payload.summary_cohorts, payload.summary_families);
+    }
+    auto &ring = _economy_pod_authority.snapshot_ring();
+    uint32_t index;
+    if (ring.try_begin_write(index)) {
+        ring.write_buffer(index) = payload;
+        ring.publish(index);
+    }
+    _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_SNAPSHOT);
+}
+
+void NativeSimulationHost::service_economy_stage_commands(RuntimeDayCommit &commit,
+        RuntimeDomainPlan &stage) {
+    if (_economy_production_runtime->epoch_active()) return;
+    std::string economy_error;
+    const auto recapture_failed = [&] {
+        const char *reason = economy_error.empty() ? "economy_pod_command_recapture_failed" : economy_error.c_str();
+        publish_economy_tax_diag(reason, static_cast<uint32_t>(stage.work_units));
+        set_fault(reason);
+        commit.completed_domain_mask &= ~runtime_domain_mask(stage.domain);
+        --commit.completed_stage_count;
+        stage.completed = 0;
+        commit.preflight_ok = 0;
+    };
+    // POD command execute via apply_command, then drain receipts.
+    _economy_pod_authority.sync_identity(
+        1u, _economy_production_runtime->committed_generation());
+    const uint32_t command_mutations =
+        _economy_pod_authority.commit_pending_commands();
+    // Phase-3: verify owned mirror hash/shape before full recapture.
+    if (command_mutations > 0u) _day_progress.economy_commands_changed = true;
+    if (command_mutations > 0u &&
+        _economy_production_runtime->formula_owned_bound()) {
+        // N10: bound means POD and NER share the same OwnedState, so a
+        // NER capture would only be compared against itself. Refresh
+        // the Owned committed blocks and republish the snapshot.
+        _economy_production_runtime
+            ->flush_formula_owned_domain_mirrors();
+        if (!_economy_pod_authority.publish_owned_committed_mirror(
+                _economy_production_runtime->committed_generation(),
+                _economy_production_runtime->current_day(),
+                economy_error)) {
+            return recapture_failed();
+        }
+        _economy_pod_command_verify_count.fetch_add(
+            command_mutations, std::memory_order_relaxed);
+        _economy_pod_state_hash.store(
+            _economy_pod_authority.state_hash(),
+            std::memory_order_release);
+    } else if (command_mutations > 0u) {
+        RuntimeEconomyLedgerState ledger_state;
+        _economy_production_runtime->capture_committed_ledger_state(
+            ledger_state);
+        if (!ledger_state.valid()) {
+            return recapture_failed();
+        }
+        ledger_state.recompute_hash();
+        const uint64_t ner_ledger_hash = ledger_state.computed_hash();
+        RuntimeEconomyLedgerState owned_export;
+        std::string verify_error;
+        const bool export_ok =
+            _economy_pod_authority.export_committed_ledger(
+                owned_export, verify_error);
+        if (export_ok) owned_export.recompute_hash();
+        const bool shape_ok =
+            export_ok &&
+            owned_export.cohort_funds.size() ==
+                ledger_state.cohort_funds.size() &&
+            owned_export.market_stock.size() ==
+                ledger_state.market_stock.size() &&
+            owned_export.cohort_population.size() ==
+                ledger_state.cohort_population.size();
+        if (shape_ok &&
+            owned_export.computed_hash() == ner_ledger_hash) {
+            _economy_pod_command_verify_count.fetch_add(
+                command_mutations, std::memory_order_relaxed);
+        } else {
+            if (!export_ok ||
+                !_economy_pod_authority.import_committed_ledger(
+                    ledger_state, economy_error) ||
+                !_economy_pod_authority.capture_committed_ledger_state(
+                    std::move(ledger_state))) {
+                return recapture_failed();
+            }
+            _economy_pod_command_recapture_count.fetch_add(
+                command_mutations, std::memory_order_relaxed);
+        }
+        _economy_pod_state_hash.store(
+            _economy_pod_authority.state_hash(),
+            std::memory_order_release);
+    }
+    {
+        RuntimeEconomyPodReceipt receipt;
+        uint32_t ack_n = 0;
+        while (ack_n < 64u &&
+               _economy_pod_authority.poll_receipt(receipt)) {
+            ++ack_n;
+        }
+        commit.work_units += ack_n;
+    }
+    _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_COMMANDS);
+}
+
 bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &stage) {
     auto &plan = day.plan;
     auto &environment = day.environment;
@@ -119,6 +245,20 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
         }
         if (_country_pod_authority.committed_day() == plan.context.day)
             prepare_era_advancement_day(plan.context.day);
+        if (day.reuse_completed(stage)) {
+            // Country can finish on this visit and supply new peer terminals.
+            std::string flush_error;
+            if (!flush_country_economy_asset_commits(flush_error)) {
+                set_fault(flush_error.empty() ? "country_economy_asset_flush_failed" : flush_error.c_str());
+                stage.completed = 0;
+                commit.completed_domain_mask &= ~runtime_domain_mask(stage.domain);
+                --commit.completed_stage_count;
+                commit.preflight_ok = 0;
+            } else if (_economy_pod_authority.pending_command_count() > 0) {
+                service_economy_stage_commands(commit, stage);
+            }
+            return true;
+        }
         const EconomyProductionWriter production_writer =
             economy_production_writer_effective();
         open_granted_economy_d7_gates(*this, *_economy_production_runtime);
@@ -561,6 +701,8 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
         }
         _day_waterfall.mark(RuntimeDayWaterfall::DOMAIN_ECONOMY);
         if (economy_day_done) {
+            _economy_pod_generation.store(_economy_production_runtime->committed_generation(),
+                                          std::memory_order_release);
             _economy_pod_state_hash.store(_economy_pod_authority.state_hash(), std::memory_order_release);
         }
         _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_POD_HASH);
@@ -577,178 +719,8 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
         _economy_production_runtime->note_boundary_phase_ms(2,
             std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - economy_formulas_finished).count());
-        // Phase 5: publish production snapshot into the Economy POD ring.
-        {
-            uint32_t ring_index = 0;
-            if (_economy_pod_authority.snapshot_ring().try_begin_write(
-                    ring_index)) {
-                RuntimeEconomySnapshotPayload &payload =
-                    _economy_pod_authority.snapshot_ring().write_buffer(
-                        ring_index);
-                payload = RuntimeEconomySnapshotPayload{};
-                payload.header.session_epoch = 1;
-                payload.header.generation =
-                    _economy_pod_generation.load(std::memory_order_relaxed);
-                payload.header.committed_day =
-                    economy_day_done ? _economy_production_runtime->last_committed_day()
-                                     : _economy_pod_committed_day.load(
-                                           std::memory_order_relaxed);
-                payload.header.epoch_sample_day = plan.context.day;
-                payload.header.state_hash =
-                    _economy_pod_state_hash.load(std::memory_order_relaxed);
-                payload.header.operation_gate_mask =
-                    _economy_pod_operation_gate_mask.load(
-                        std::memory_order_relaxed);
-                payload.header.committed = economy_day_done;
-                payload.header.authority_ready = true;
-                payload.operation_gate_mask =
-                    payload.header.operation_gate_mask;
-                payload.authority_mode = static_cast<uint32_t>(
-                    _economy_pod_authority.authority_mode());
-                int64_t pop_err = 0, money_err = 0, goods_err = 0;
-                int64_t changed_cells = 0, changed_cohorts = 0;
-                uint32_t dirty_family_mask = 0;
-                _economy_production_runtime->fill_economy_audit_snapshot(
-                    pop_err, money_err, goods_err, dirty_family_mask,
-                    changed_cells, changed_cohorts);
-                payload.population_error = pop_err;
-                payload.money_error = money_err;
-                payload.goods_error = goods_err;
-                payload.header.population_error = pop_err;
-                payload.header.money_error = money_err;
-                payload.header.goods_error = goods_err;
-                payload.header.changed_cells =
-                    static_cast<uint32_t>(std::max<int64_t>(0, changed_cells));
-                payload.header.changed_cohorts =
-                    static_cast<uint32_t>(std::max<int64_t>(0, changed_cohorts));
-                payload.dirty_family_mask = dirty_family_mask;
-                _economy_production_runtime->fill_economy_business_summary(
-                    payload.summary_population, payload.summary_funds,
-                    payload.summary_markets, payload.summary_buildings,
-                    payload.summary_cohorts, payload.summary_families);
-                _economy_pod_authority.set_business_summary(
-                    pop_err, money_err, goods_err,
-                    payload.summary_population, payload.summary_funds,
-                    payload.summary_markets, payload.summary_buildings,
-                    payload.summary_cohorts, payload.summary_families);
-                _economy_pod_authority.snapshot_ring().publish(ring_index);
-            }
-        }
-        _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_SNAPSHOT);
-        // POD command execute via apply_command, then drain receipts.
-        _economy_pod_authority.sync_identity(
-            1u, _economy_production_runtime->committed_generation());
-        const uint32_t command_mutations =
-            _economy_pod_authority.commit_pending_commands();
-        // Phase-3: verify owned mirror hash/shape before full recapture.
-        if (command_mutations > 0u &&
-            !_economy_production_runtime->epoch_active() &&
-            _economy_production_runtime->formula_owned_bound()) {
-            // N10: bound means POD and NER share the same OwnedState, so a
-            // NER capture would only be compared against itself. Refresh
-            // the Owned committed blocks and republish the snapshot.
-            _economy_production_runtime
-                ->flush_formula_owned_domain_mirrors();
-            if (!_economy_pod_authority.publish_owned_committed_mirror(
-                    _economy_production_runtime->committed_generation(),
-                    _economy_production_runtime->current_day(),
-                    economy_error)) {
-                const char *recapture_fault =
-                    economy_error.empty()
-                        ? "economy_pod_command_recapture_failed"
-                        : economy_error.c_str();
-                publish_economy_tax_diag(recapture_fault,
-                    static_cast<uint32_t>(economy_work));
-                set_fault(recapture_fault);
-                commit.completed_domain_mask &=
-                    ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                if (commit.completed_stage_count > 0u)
-                    --commit.completed_stage_count;
-                stage.completed = 0;
-                commit.preflight_ok = 0;
-                return true;
-            }
-            _economy_pod_command_verify_count.fetch_add(
-                command_mutations, std::memory_order_relaxed);
-            _economy_pod_state_hash.store(
-                _economy_pod_authority.state_hash(),
-                std::memory_order_release);
-        } else if (command_mutations > 0u &&
-                   !_economy_production_runtime->epoch_active()) {
-            RuntimeEconomyLedgerState ledger_state;
-            _economy_production_runtime->capture_committed_ledger_state(
-                ledger_state);
-            if (!ledger_state.valid()) {
-                publish_economy_tax_diag(
-                    "economy_pod_command_recapture_failed",
-                    static_cast<uint32_t>(economy_work));
-                set_fault("economy_pod_command_recapture_failed");
-                commit.completed_domain_mask &=
-                    ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                if (commit.completed_stage_count > 0u)
-                    --commit.completed_stage_count;
-                stage.completed = 0;
-                commit.preflight_ok = 0;
-                return true;
-            }
-            ledger_state.recompute_hash();
-            const uint64_t ner_ledger_hash = ledger_state.computed_hash();
-            RuntimeEconomyLedgerState owned_export;
-            std::string verify_error;
-            const bool export_ok =
-                _economy_pod_authority.export_committed_ledger(
-                    owned_export, verify_error);
-            if (export_ok) owned_export.recompute_hash();
-            const bool shape_ok =
-                export_ok &&
-                owned_export.cohort_funds.size() ==
-                    ledger_state.cohort_funds.size() &&
-                owned_export.market_stock.size() ==
-                    ledger_state.market_stock.size() &&
-                owned_export.cohort_population.size() ==
-                    ledger_state.cohort_population.size();
-            if (shape_ok &&
-                owned_export.computed_hash() == ner_ledger_hash) {
-                _economy_pod_command_verify_count.fetch_add(
-                    command_mutations, std::memory_order_relaxed);
-            } else {
-                if (!export_ok ||
-                    !_economy_pod_authority.import_committed_ledger(
-                        ledger_state, economy_error) ||
-                    !_economy_pod_authority.capture_committed_ledger_state(
-                        std::move(ledger_state))) {
-                    const char *recapture_fault =
-                        economy_error.empty()
-                            ? "economy_pod_command_recapture_failed"
-                            : economy_error.c_str();
-                    publish_economy_tax_diag(recapture_fault,
-                        static_cast<uint32_t>(economy_work));
-                    set_fault(recapture_fault);
-                    commit.completed_domain_mask &=
-                        ~runtime_domain_mask(RuntimeDomainId::ECONOMY);
-                    if (commit.completed_stage_count > 0u)
-                        --commit.completed_stage_count;
-                    stage.completed = 0;
-                    commit.preflight_ok = 0;
-                    return true;
-                }
-                _economy_pod_command_recapture_count.fetch_add(
-                    command_mutations, std::memory_order_relaxed);
-            }
-            _economy_pod_state_hash.store(
-                _economy_pod_authority.state_hash(),
-                std::memory_order_release);
-        }
-        {
-            RuntimeEconomyPodReceipt receipt;
-            uint32_t ack_n = 0;
-            while (ack_n < 64u &&
-                   _economy_pod_authority.poll_receipt(receipt)) {
-                ++ack_n;
-            }
-            commit.work_units += ack_n;
-        }
-        _day_waterfall.mark(RuntimeDayWaterfall::ECONOMY_COMMANDS);
+        service_economy_stage_commands(commit, stage);
+        if (!stage.completed) return true;
         // ACTIVE_WITH_PARITY: after a completed epoch, replay StageOps
         // (mutate=false) against frozen stage refs from compact slices.
         // Incomplete pulses skip — refs would be partial.
@@ -769,6 +741,9 @@ bool NativeSimulationHost::stage_economy(DayExecution &day, RuntimeDomainPlan &s
                     input_generation, parity_error);
             }
         }
+        // A successful partial pulse resumes on the next calendar day. All
+        // waits for input or peer settlement returned incomplete above.
+        day.remember_completed(stage);
         return true;
     }
     return true;

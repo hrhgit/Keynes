@@ -43,6 +43,7 @@
     bool events_probe_enabled() const {
         return _events_probe_enabled.load(std::memory_order_acquire);
     }
+    bool events_day_publication_self_test(std::string &error);
     bool try_acquire_events_snapshot(uint64_t after_generation, uint32_t &slot) {
         return _events_snapshots.try_acquire_latest(after_generation, slot);
     }

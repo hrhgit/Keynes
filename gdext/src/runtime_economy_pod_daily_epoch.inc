@@ -170,7 +170,7 @@ bool RuntimeEconomyPodAuthority::advance_stage(std::string &error) {
     return true;
 }
 
-bool RuntimeEconomyPodAuthority::commit_epoch(std::string &error) {
+bool RuntimeEconomyPodAuthority::commit_epoch(std::string &error, CommitBoundary boundary) {
     error.clear();
     if (!_scratch.epoch_active || !_scratch.plan_ready) {
         error = "economy_pod_epoch_not_planned";
@@ -214,28 +214,32 @@ bool RuntimeEconomyPodAuthority::commit_epoch(std::string &error) {
     _committed.money_error = 0;
     _committed.goods_error = 0;
 
-    uint32_t ring_index = 0;
-    if (_snapshot_ring.try_begin_write(ring_index)) {
-        RuntimeEconomySnapshotPayload &payload =
-            _snapshot_ring.write_buffer(ring_index);
-        payload = RuntimeEconomySnapshotPayload{};
-        payload.header = _committed;
-        payload.catalog_hash = _input.catalog_hash;
-        payload.operation_gate_mask = _operation_gate_mask;
-        payload.pending_receipts = static_cast<uint32_t>(_receipts.size());
-        _snapshot_ring.publish(ring_index);
-    }
+    // In production the Host drains commands at the closed ledger and publishes
+    // the final summary once at the whole-day boundary.
+    if (boundary == CommitBoundary::Standalone) {
+        uint32_t ring_index = 0;
+        if (_snapshot_ring.try_begin_write(ring_index)) {
+            RuntimeEconomySnapshotPayload &payload =
+                _snapshot_ring.write_buffer(ring_index);
+            payload = RuntimeEconomySnapshotPayload{};
+            payload.header = _committed;
+            payload.catalog_hash = _input.catalog_hash;
+            payload.operation_gate_mask = _operation_gate_mask;
+            payload.pending_receipts = static_cast<uint32_t>(_receipts.size());
+            _snapshot_ring.publish(ring_index);
+        }
 
-    // ACTIVE 无命令时不构造即将被 Host 再次刷新的投影；有命令仍保留
-    // 执行前投影及执行后最终导出，不能让命令读到上一代 domain 数据。
-    if (!_commands.empty() && !_input.stage_hashes_enabled &&
-        _stage_ops != nullptr && _view.runtime_hook != nullptr) {
-        auto *runtime = static_cast<NativeEconomyRuntime *>(_view.runtime_hook);
-        if (runtime->formula_owned_bound())
-            runtime->flush_formula_owned_domain_mirrors();
+        // ACTIVE 无命令时不构造即将被 Host 再次刷新的投影；有命令仍保留
+        // 执行前投影及执行后最终导出，不能让命令读到上一代 domain 数据。
+        if (!_commands.empty() && !_input.stage_hashes_enabled &&
+            _stage_ops != nullptr && _view.runtime_hook != nullptr) {
+            auto *runtime = static_cast<NativeEconomyRuntime *>(_view.runtime_hook);
+            if (runtime->formula_owned_bound())
+                runtime->flush_formula_owned_domain_mirrors();
+        }
+        // Promote pending receipts that reached the committed boundary.
+        commit_pending_commands();
     }
-    // Promote pending receipts that reached the committed boundary.
-    commit_pending_commands();
 
     _replay.committed = 1;
     _replay.next_hash = _committed.state_hash;

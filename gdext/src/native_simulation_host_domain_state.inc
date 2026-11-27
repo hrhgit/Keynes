@@ -199,8 +199,7 @@
     };
     std::vector<IdeologyModifierInflight> _ideology_modifier_inflight;
     std::vector<RuntimeIdeologyPodModifierRow> _ideology_loose_modifier_rows;
-    std::vector<std::vector<RuntimeModifierPodCommand>> _ideology_day_modifier_batches;
-    uint64_t _ideology_modifier_sequence = 1;
+    std::vector<RuntimeModifierPodAtomicBatch> _ideology_day_modifier_batches;
     std::atomic<bool> _ideology_pod_ready{false};
     std::atomic<double> _ideology_pod_plan_ms{0.0};
     std::atomic<double> _ideology_pod_replay_ms{0.0};

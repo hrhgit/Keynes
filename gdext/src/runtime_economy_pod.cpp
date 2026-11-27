@@ -397,6 +397,7 @@ void RuntimeEconomyPodAuthority::reset() noexcept {
     _authority_mode = RuntimeEconomyAuthorityMode::LEGACY_SYNC;
     _generation = 0;
     _authority_ready = false;
+    _business_summary_valid = false;
     _summary_population = 0;
     _summary_funds = 0;
     _summary_markets = 0;
@@ -421,6 +422,8 @@ bool RuntimeEconomyPodAuthority::capture_committed_ledger_state(
 }
 
 void RuntimeEconomyPodAuthority::publish_mirror_features() noexcept {
+    // Every successful replacement of the committed ledger invalidates its summary.
+    _business_summary_valid = false;
     // 调用方已完整验证；此处只发布形状标签，不重复扫描账本。
     uint32_t mask =
         ECONOMY_POD_MIRROR_COHORT_CORE | ECONOMY_POD_MIRROR_MARKET_CORE;
@@ -454,6 +457,20 @@ void RuntimeEconomyPodAuthority::sync_identity(uint64_t session_epoch,
 
 #include "runtime_economy_pod_owned_commands.inc"
 #include "runtime_economy_pod_daily_epoch.inc"
+bool RuntimeEconomyPodAuthority::copy_business_summary(RuntimeEconomySnapshotPayload &payload) const noexcept {
+    if (!_business_summary_valid) return false;
+    payload.header.population_error = payload.population_error = _committed.population_error;
+    payload.header.money_error = payload.money_error = _committed.money_error;
+    payload.header.goods_error = payload.goods_error = _committed.goods_error;
+    payload.summary_population = _summary_population;
+    payload.summary_funds = _summary_funds;
+    payload.summary_markets = _summary_markets;
+    payload.summary_buildings = _summary_buildings;
+    payload.summary_cohorts = _summary_cohorts;
+    payload.summary_families = _summary_families;
+    return true;
+}
+
 bool RuntimeEconomyPodAuthority::snapshot(RuntimeEconomyCommittedSnapshot &out,
                                           std::string &error) const {
     error.clear();

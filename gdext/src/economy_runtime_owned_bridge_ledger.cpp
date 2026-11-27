@@ -50,20 +50,26 @@ double elapsed_ms(const Clock::time_point &start) {
 }
 } // namespace
 
-void NativeEconomyRuntime::fill_economy_audit_snapshot(
-        int64_t &pop_err, int64_t &money_err, int64_t &goods_err,
-        uint32_t &dirty_family_mask, int64_t &changed_cells,
-        int64_t &changed_cohorts) const {
-    pop_err = 0;
-    money_err = 0;
-    goods_err = 0;
-    dirty_family_mask = 0;
-    changed_cells = static_cast<int64_t>(_population_changed_cells.size());
-    changed_cohorts = 0;
+void NativeEconomyRuntime::fill_economy_snapshot_summary(
+        RuntimeEconomySnapshotPayload &payload, bool commands_changed) const {
+    // The epoch audit predates commands settled on a later visit to this day.
+    const AuditTotals closing = commands_changed ? audit_totals() : _closing_totals;
+    payload.summary_population = commands_changed || closing.population != 0
+        ? closing.population : _opening_totals.population;
+    const auto &funds = commands_changed || closing.cohort_funds != 0 || closing.country_cash != 0
+        ? closing : _opening_totals;
+    payload.summary_funds = funds.cohort_funds + funds.country_cash + funds.escrow_cash;
+    payload.summary_markets = market_store().market_count.get();
+    payload.summary_buildings = static_cast<int32_t>(building_count());
+    payload.summary_cohorts = static_cast<int32_t>(std::clamp<int64_t>(
+        population_store().active_count, 0, std::numeric_limits<int32_t>::max()));
+    payload.summary_families = static_cast<int32_t>(std::clamp<int64_t>(
+        families_store().active_count, 0, std::numeric_limits<int32_t>::max()));
+    payload.header.changed_cells = static_cast<uint32_t>(_population_changed_cells.size());
     if (_fatal) {
-        pop_err = 1;
-        money_err = 1;
-        goods_err = 1;
+        payload.header.population_error = payload.population_error = 1;
+        payload.header.money_error = payload.money_error = 1;
+        payload.header.goods_error = payload.goods_error = 1;
         return;
     }
     if (_epoch_active) return;
@@ -72,8 +78,8 @@ void NativeEconomyRuntime::fill_economy_audit_snapshot(
         _external_population_delta;
     const int64_t money_open = _opening_totals.cohort_funds +
         _opening_totals.country_cash + _opening_totals.escrow_cash;
-    const int64_t money_close = _closing_totals.cohort_funds +
-        _closing_totals.country_cash + _closing_totals.escrow_cash;
+    const int64_t money_close = closing.cohort_funds +
+        closing.country_cash + closing.escrow_cash;
     const int64_t goods_expected = _opening_totals.goods_stock +
         _explicit_stock_delta + _production_output_stock +
         _production_output_discarded + _production_output_retained -
@@ -82,12 +88,12 @@ void NativeEconomyRuntime::fill_economy_audit_snapshot(
         _maintenance_goods_consumed -
         _production_output_discarded - _cycle_flow_discarded -
         _bullion_stock_consumed - _country_research_goods_consumed;
-    pop_err = _closing_totals.population - population_expected;
-    money_err = money_close -
+    payload.header.population_error = payload.population_error = closing.population - population_expected;
+    payload.header.money_error = payload.money_error = money_close -
         (money_open + _explicit_money_mint - _explicit_money_burn);
-    goods_err = _closing_totals.goods_stock - goods_expected;
-    dirty_family_mask = families_store().active_count > 0 ? 1u : 0u;
-    changed_cohorts = population_store().active_count;
+    payload.header.goods_error = payload.goods_error = closing.goods_stock - goods_expected;
+    payload.dirty_family_mask = families_store().active_count > 0 ? 1u : 0u;
+    payload.header.changed_cohorts = payload.summary_cohorts;
 }
 
 void NativeEconomyRuntime::fill_ledger_building_from_store(

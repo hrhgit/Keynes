@@ -3,7 +3,9 @@
     RuntimeDayCommit execute_shadow_day(DayExecution &);
     void prepare_climate_day(DayExecution &);
     bool capture_day_input(DayExecution &, const RuntimeEnvironmentSnapshot &);
-    bool run_day_events(DayExecution &, int64_t);
+    bool run_day_events(DayExecution &, int64_t, bool publish_immediately = true);
+    bool publish_day_events(int64_t, RuntimeEventsReport, std::string);
+    void publish_events_snapshot();
     bool stage_input_capture(DayExecution &, RuntimeDomainPlan &);
     bool stage_climate(DayExecution &, RuntimeDomainPlan &);
     bool stage_country(DayExecution &, RuntimeDomainPlan &);
@@ -13,6 +15,8 @@
     bool stage_effect(DayExecution &, RuntimeDomainPlan &);
     bool stage_modifier(DayExecution &, RuntimeDomainPlan &);
     bool stage_gameplay_effect(DayExecution &, RuntimeDomainPlan &);
+    void publish_economy_day_snapshot(uint64_t generation, int64_t day);
+    void service_economy_stage_commands(RuntimeDayCommit &, RuntimeDomainPlan &);
     bool stage_economy(DayExecution &, RuntimeDomainPlan &);
     bool stage_events(DayExecution &, RuntimeDomainPlan &);
     bool stage_visual(DayExecution &, RuntimeDomainPlan &);
@@ -120,6 +124,8 @@
             RuntimeDomainAuthorityPlan *authority_plan,
             std::string &authority_error,
             std::string &error);
+    bool reserve_modifier_day_publication(int64_t day, uint32_t &slot);
+    void finish_modifier_day_publication(uint32_t slot, bool completed);
     // Resolve Effect MODIFIER intent → Modifier definition_id via key hash.
     int32_t resolve_modifier_definition_id_for_effect_intent(
             const RuntimeDomainIntent &intent) const;

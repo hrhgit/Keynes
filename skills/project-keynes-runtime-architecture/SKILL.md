@@ -53,6 +53,8 @@ Read [current state](../../../docs/architecture/current-state.md) for the produc
 the handoffs that still require foreground work. The full-day background path runs through
 `NativeSimulationHost`. The scheduler and pass graph below describe the retained SUS path.
 
+整图会话中，Country 等待排在后面的阶段返回科技回执。执行器保留当日完成进度，续算时沿用已完成的经济结算并继续处理真实回执。检查重复叠层或事件时，用 `modifier_same_day_reapply_test.gd` 同时核对冻结税率、日尾修正和事件发布。
+
 Layer responsibilities:
 
 - `MapGenerator`: host facade, world/map ownership, generate/load lifecycle, public runtime APIs, bridge delegation, weather/native daily/ocean helper facade, and a few local runtime helper functions for scheduler registration/native daily availability/disabled visual reports.

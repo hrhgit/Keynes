@@ -543,29 +543,6 @@ bool NativeEconomyRuntime::enqueue_or_apply_pod_command(
 }
 
 
-void NativeEconomyRuntime::fill_economy_business_summary(
-        int64_t &summary_population, int64_t &summary_funds,
-        int32_t &summary_markets, int32_t &summary_buildings,
-        int32_t &summary_cohorts, int32_t &summary_families) const {
-    summary_population = _closing_totals.population != 0
-        ? _closing_totals.population
-        : _opening_totals.population;
-    summary_funds = (_closing_totals.cohort_funds != 0 ||
-                     _closing_totals.country_cash != 0)
-        ? (_closing_totals.cohort_funds + _closing_totals.country_cash +
-           _closing_totals.escrow_cash)
-        : (_opening_totals.cohort_funds + _opening_totals.country_cash +
-           _opening_totals.escrow_cash);
-    summary_markets = market_store().market_count.get();
-    summary_buildings = static_cast<int32_t>(building_count());
-    summary_cohorts = static_cast<int32_t>(std::min<int64_t>(
-        std::max<int64_t>(0, population_store().active_count),
-        static_cast<int64_t>(std::numeric_limits<int32_t>::max())));
-    summary_families = static_cast<int32_t>(std::min<int64_t>(
-        std::max<int64_t>(0, families_store().active_count),
-        static_cast<int64_t>(std::numeric_limits<int32_t>::max())));
-}
-
 void NativeEconomyRuntime::sync_owned_building_store(
         RuntimeEconomyBuildingStore &out) const {
     // A+Y N2/N8: group and pending columns are already the sole live storage.

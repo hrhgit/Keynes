@@ -266,8 +266,38 @@ void ModifierRuntime::export_definition_key_hashes(
     }
 }
 
+bool ModifierRuntime::pod_projection_self_test(std::string &error) {
+    ModifierRuntime projection;
+    projection._configured = true;
+    RuntimeModifierPodSnapshot snapshot;
+    snapshot.committed_day = 10;
+    snapshot.generation = 4;
+    snapshot.domain_versions = {5, 2, 0, 0};
+    if (!projection.apply_pod_snapshot(snapshot, error)) return false;
+    const auto installed = snapshot.domain_versions;
+    auto refused = [&](bool continuation) {
+        std::string reason;
+        return !projection.apply_pod_snapshot(snapshot, reason, continuation) &&
+            reason == "modifier_pod_snapshot_generation_regression" &&
+            projection._pod_domain_versions == installed && projection._pod_snapshot_generation == 4;
+    };
+    snapshot.domain_versions = {4, 3, 0, 0};
+    if (!refused(true)) { error = "modifier_projection_accepted_bucket_regression"; return false; }
+    snapshot.domain_versions = {5, 3, 0, 0};
+    if (!refused(false)) { error = "modifier_projection_ordinary_replaced_same_generation"; return false; }
+    --snapshot.committed_day;
+    if (!refused(true)) { error = "modifier_projection_accepted_other_day"; return false; }
+    ++snapshot.committed_day;
+    if (!projection.apply_pod_snapshot(snapshot, error, true)) return false;
+    if (projection._pod_domain_versions != snapshot.domain_versions) {
+        error = "modifier_projection_continuation_not_installed";
+        return false;
+    }
+    return true;
+}
+
 bool ModifierRuntime::apply_pod_snapshot(const RuntimeModifierPodSnapshot &snapshot,
-                                         std::string &error) {
+                                         std::string &error, bool worker_continuation) {
     error.clear();
     if (!_configured) {
         error = "modifier_runtime_not_configured";
@@ -277,8 +307,13 @@ bool ModifierRuntime::apply_pod_snapshot(const RuntimeModifierPodSnapshot &snaps
         error = "modifier_pod_snapshot_abi_mismatch";
         return false;
     }
+    const bool same_day_update = worker_continuation &&
+        snapshot.committed_day == _current_day && snapshot.generation == _pod_snapshot_generation &&
+        snapshot.domain_versions != _pod_domain_versions &&
+        std::equal(_pod_domain_versions.begin(), _pod_domain_versions.end(),
+            snapshot.domain_versions.begin(), [](uint64_t installed, uint64_t next) { return installed <= next; });
     if (snapshot.generation != 0 &&
-        snapshot.generation <= _pod_snapshot_generation) {
+        snapshot.generation <= _pod_snapshot_generation && !same_day_update) {
         error = "modifier_pod_snapshot_generation_regression";
         return false;
     }

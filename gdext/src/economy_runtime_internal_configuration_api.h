@@ -81,17 +81,7 @@
     bool pull_owned_core_columns(const RuntimeEconomyOwnedState &owned,
                                  int32_t opcode, int64_t settled,
                                  std::string &error);
-    void fill_economy_audit_snapshot(int64_t &pop_err, int64_t &money_err,
-                                     int64_t &goods_err,
-                                     uint32_t &dirty_family_mask,
-                                     int64_t &changed_cells,
-                                     int64_t &changed_cohorts) const;
-    void fill_economy_business_summary(int64_t &summary_population,
-                                       int64_t &summary_funds,
-                                       int32_t &summary_markets,
-                                       int32_t &summary_buildings,
-                                       int32_t &summary_cohorts,
-                                       int32_t &summary_families) const;
+    void fill_economy_snapshot_summary(RuntimeEconomySnapshotPayload &payload, bool commands_changed) const;
     // Copies only committed ledger columns. This is a cold publish-boundary
     // handoff for POD parity; it is never used while an epoch is mutable.
     // `compute_ledger_hash=false` leaves ledger_hash 0; every reader of such a

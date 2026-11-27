@@ -135,6 +135,7 @@ struct TagSnapshot {
     uint64_t generation = 0;
 };
 
+struct RuntimeEconomySnapshotPayload;
 class NativeEconomyRuntime : public EconomyApi {
 public:
     // A+Y N3/N4: live tables now live in runtime_economy_live_tables.h so

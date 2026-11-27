@@ -1,3 +1,64 @@
+static bool modifier_atomic_batch_replay_test(
+        const RuntimeModifierPodCatalog &catalog, RuntimeModifierPodCommand row, std::string &error) {
+    RuntimeModifierPodAuthority owner;
+    if (!owner.configure(catalog, error)) return false;
+    auto other_row = row;
+    ++other_row.source_id;
+    RuntimeModifierPodAtomicBatch applied{50, 20, 0, {row, other_row}};
+    auto invalid_row = row;
+    invalid_row.definition_id = -1;
+    RuntimeModifierPodAtomicBatch rejected{51, 20, 0, {row, invalid_row}};
+    RuntimeModifierPodAtomicBatch anonymous{0, 20, 0, {row}};
+    RuntimeModifierPodSnapshot planned;
+    RuntimeModifierPodReport report;
+    std::vector<RuntimeDomainAck> acks;
+    std::vector<uint8_t> outcomes;
+    const auto plan = [&](const std::vector<RuntimeModifierPodAtomicBatch> &batches) {
+        return owner.plan_day(0, 1, {}, {}, planned, acks, report, error, &batches, &outcomes);
+    };
+    if (!plan({applied, rejected})) return false;
+    planned.state_hash ^= 1;
+    if (owner.commit_day(planned, error) || !owner.snapshot().entries.empty()) {
+        error = "modifier_atomic_failed_commit_installed_batch"; return false;
+    }
+    // The failed commit left no receipts. Repeated batches within this plan
+    // must receive their original verdict, including an atomic rejection.
+    if (!plan({applied, rejected, applied, rejected, anonymous}) ||
+        outcomes != std::vector<uint8_t>{1, 0, 1, 0, 0} || !acks.empty() ||
+        report.applied_commands != 2 || report.rejected_commands != 3 || report.work_units != 2 ||
+        !owner.commit_day(planned, error)) {
+        error = "modifier_atomic_mixed_batch_first_delivery_failed"; return false;
+    }
+    const auto initial = owner.snapshot();
+    if (initial.entries.size() != 2 || initial.entries[0].stacks != 1 || initial.entries[1].stacks != 1) {
+        error = "modifier_atomic_rejected_batch_leaked_rows"; return false;
+    }
+
+    // The producer may reorder the reply queue or rebuild the payload. A
+    // corrected payload for a failed transaction needs a fresh identity.
+    std::reverse(applied.commands.begin(), applied.commands.end());
+    rejected.commands.back() = other_row;
+    if (!plan({rejected, applied}) || outcomes != std::vector<uint8_t>{0, 1} ||
+        !report.reused_snapshot || report.work_units || report.applied_commands || report.rejected_commands ||
+        !owner.commit_day(planned, error) || owner.snapshot().state_hash != initial.state_hash) {
+        error = "modifier_atomic_replay_lost_original_result"; return false;
+    }
+    auto late = applied;
+    ++late.sequence;
+    late.commands = {row};
+    auto separate_producer = applied;
+    ++separate_producer.producer_id;
+    separate_producer.commands = {other_row};
+    if (!plan({late, rejected, separate_producer, late, applied}) ||
+        outcomes != std::vector<uint8_t>{1, 0, 1, 1, 1} || report.applied_commands != 2 ||
+        report.rejected_commands || report.work_units != 2 || !owner.commit_day(planned, error) ||
+        owner.snapshot().generation != initial.generation || owner.snapshot().entries.size() != 2 ||
+        owner.snapshot().entries[0].stacks != 2 || owner.snapshot().entries[1].stacks != 2) {
+        error = "modifier_atomic_late_batch_changed_existing_result"; return false;
+    }
+    return true;
+}
+
 bool RuntimeModifierPodAuthority::self_test(std::string &error) {
     clear_error(error);
     const auto fail = [&error](const char *reason) {
@@ -32,6 +93,7 @@ bool RuntimeModifierPodAuthority::self_test(std::string &error) {
     apply.effective_day = 0; apply.opcode = COMMAND_APPLY; apply.domain = 0;
     apply.definition_id = 0; apply.scope = 2; apply.entity_handle = 7;
     apply.duration_days = 2; apply.stacks = 1; apply.magnitude_q16 = Q16_ONE;
+    if (!modifier_atomic_batch_replay_test(catalog, apply, error)) return false;
     RuntimeModifierPodSnapshot planned;
     std::vector<RuntimeDomainAck> acks;
     RuntimeModifierPodReport report;
@@ -223,7 +285,47 @@ bool RuntimeModifierPodAuthority::self_test(std::string &error) {
         acks[0].target_generation != intent.target_generation ||
         acks[0].effective_day != intent.effective_day)
         return fail("modifier_pod_ack_identity_self_test_failed");
-    ack_authority.discard_plan();
+    if (!ack_authority.commit_day(planned, error)) return false;
+    const auto first_ack = acks.front();
+    const auto committed = ack_authority.snapshot();
+    // A retry plus an unseen ordinal from this transaction arrive together.
+    // Keep the old receipt even if the resender supplies a different target.
+    auto redelivery = intent;
+    redelivery.entity_handle += 1;
+    auto next_ordinal = intent;
+    ++next_ordinal.sequence;
+    if (!ack_authority.plan_day(0, 1, {}, {redelivery, next_ordinal},
+            planned, acks, report, error) ||
+        report.applied_commands != 1 || report.expired_entries != 0 ||
+        acks.size() != 2 || acks[0].target_handle != first_ack.target_handle ||
+        acks[0].sequence != first_ack.sequence || acks[1].sequence != next_ordinal.sequence ||
+        !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().generation != committed.generation ||
+        ack_authority.snapshot().entries.size() != 1 ||
+        ack_authority.snapshot().entries.front().stacks != 2)
+        return fail("modifier_pod_late_transaction_ordinal_failed");
+    const uint64_t continued_hash = ack_authority.snapshot().state_hash;
+    if (!ack_authority.plan_day(0, 1, {}, {next_ordinal}, planned, acks, report, error) ||
+        !report.reused_snapshot || report.work_units != 0 || acks.size() != 1 ||
+        acks[0].sequence != next_ordinal.sequence || !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().state_hash != continued_hash)
+        return fail("modifier_pod_repeated_ordinal_changed_snapshot");
+    // Separate requests can share a producer sequence (including zero), or
+    // arrive out of order. Only an identical delivery is suppressed.
+    auto first_request = apply, second_request = apply;
+    first_request.sequence = second_request.sequence = 0;
+    second_request.request_id++;
+    if (!ack_authority.plan_day(0, 1, {second_request, first_request, second_request}, {},
+            planned, acks, report, error) || report.applied_commands != 2 ||
+        !ack_authority.commit_day(planned, error) ||
+        ack_authority.snapshot().generation != committed.generation)
+        return fail("modifier_pod_independent_requests_lost");
+    const auto before_bad_day = ack_authority.snapshot();
+    if (!ack_authority.plan_day(1, 1, {}, {}, planned, acks, report, error) ||
+        ack_authority.plan_day(-1, 1, {}, {}, planned, acks, report, expected_error) ||
+        ack_authority.commit_day(planned, expected_error) ||
+        ack_authority.snapshot().state_hash != before_bad_day.state_hash)
+        return fail("modifier_pod_stale_day_left_committable_plan");
 
     const uint64_t restored_hash = restored.snapshot().state_hash;
     bytes.back() ^= 0x80u;

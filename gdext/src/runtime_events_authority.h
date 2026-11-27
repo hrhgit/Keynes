@@ -103,6 +103,7 @@ public:
                   RuntimeEventsReport &report, std::string &error);
     bool commit_day(const RuntimeEventsSnapshot &planned_snapshot,
                     std::string &error);
+    bool commit_prepared_day(std::string &error) { return commit_day(_planned, error); }
     void discard_plan();
 
     const RuntimeEventsSnapshot &snapshot() const { return _current; }
