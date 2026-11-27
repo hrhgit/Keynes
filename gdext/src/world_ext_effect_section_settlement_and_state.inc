@@ -149,67 +149,6 @@ Dictionary DCWorldExt::settle_split_authority_effects(int64_t day_index) {
     return out;
 }
 
-Dictionary DCWorldExt::apply_runtime_effect_snapshot(int64_t after_generation) {
-    Dictionary out;
-    out["ok"] = false;
-    out["applied"] = false;
-    if (_effect_runtime == nullptr || _runtime_host == nullptr) {
-        out["code"] = "effect_runtime_unavailable";
-        return out;
-    }
-    if (_runtime_host->effect_adapter_owned()) {
-        out["ok"] = true;
-        out["code"] = "effect_adapter_executor_owned";
-        return out;
-    }
-    if (!_runtime_host->domain_is_worker_authoritative(RuntimeDomainId::EFFECT)) {
-        out["code"] = "effect_not_worker_authoritative";
-        return out;
-    }
-    // Production hook #1 for the split settle: this is the one main-thread call
-    // that runs every frame under 0xFEF (the worker owns EFFECT, so the ideology
-    // equip's batch is planned here and has no other settler). It runs BEFORE the
-    // write-back, which is safe because `apply_pod_snapshot` preserves both the
-    // ideology batches and the rows this settles.
-    out["split_settle"] = settle_split_authority_effects(
-        _effect_runtime != nullptr
-            ? runtime_from(_effect_runtime)->committed_day()
-            : int64_t{0});
-    // Worker Economy holds this boundary for the whole day and may enqueue
-    // colonization/canal builtins into the shared EffectRuntime. Skip apply
-    // while the day is inflight; the host keeps the same after_generation and
-    // retries on the next main-thread tick.
-    auto boundary_lock = _runtime_host->try_lock_economy_input_capture();
-    if (!boundary_lock.owns_lock()) {
-        out["ok"] = true;
-        out["code"] = "economy_day_inflight";
-        return out;
-    }
-    const uint64_t cursor = after_generation < 0
-        ? std::numeric_limits<uint64_t>::max()
-        : static_cast<uint64_t>(after_generation);
-    uint32_t slot = 0;
-    if (!_runtime_host->try_acquire_effect_snapshot(cursor, slot)) {
-        out["ok"] = true;
-        out["code"] = "effect_snapshot_unavailable";
-        return out;
-    }
-    // Copy out of the ring before apply so a concurrent worker publish that
-    // steals a READY slot cannot mutate vectors under the legacy rebuild.
-    const RuntimeEffectPodSnapshot snapshot =
-        _runtime_host->effect_snapshot_buffer(slot);
-    const int64_t generation = static_cast<int64_t>(snapshot.generation);
-    _runtime_host->release_effect_snapshot(slot);
-    std::string apply_error;
-    const bool applied = runtime_from(_effect_runtime)->apply_pod_snapshot(
-        snapshot, apply_error);
-    out["ok"] = applied;
-    out["applied"] = applied;
-    out["generation"] = generation;
-    out["code"] = applied ? "ok" : String(apply_error.c_str());
-    return out;
-}
-
 Dictionary DCWorldExt::dispatch_effect_native_modifier() {
     if (_runtime_host != nullptr &&
         _runtime_host->domain_is_worker_authoritative(RuntimeDomainId::EFFECT)) {

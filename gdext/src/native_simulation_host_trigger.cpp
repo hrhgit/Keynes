@@ -103,20 +103,6 @@ void NativeSimulationHost::forward_committed_events_to_trigger(int64_t day) {
     }
 }
 
-bool NativeSimulationHost::try_acquire_trigger_snapshot(uint64_t after_generation,
-                                                        uint32_t &slot) {
-    return _trigger_snapshots.try_acquire_latest(after_generation, slot);
-}
-
-const RuntimeTriggerSnapshot &NativeSimulationHost::trigger_snapshot_buffer(
-        uint32_t slot) const {
-    return _trigger_snapshots.read_buffer(slot);
-}
-
-void NativeSimulationHost::release_trigger_snapshot(uint32_t slot) {
-    _trigger_snapshots.release(slot);
-}
-
 bool NativeSimulationHost::poll_trigger_pod_intent(RuntimeDomainIntent &intent) {
     std::lock_guard<std::mutex> lock(_trigger_transport_mutex);
     if (_trigger_intents.empty()) return false;
@@ -305,11 +291,6 @@ bool NativeSimulationHost::execute_trigger_worker_stage(
     _trigger_pod_state_hash.store(state_hash, std::memory_order_release);
     _trigger_pod_snapshot_generation.store(snapshot.generation,
                                            std::memory_order_release);
-    uint32_t trigger_slot = 0;
-    if (_trigger_snapshots.try_begin_write(trigger_slot)) {
-        _trigger_snapshots.write_buffer(trigger_slot) = snapshot;
-        _trigger_snapshots.publish(trigger_slot);
-    }
     commit.dirty_families |= RUNTIME_DIRTY_EVENTS;
     commit.work_units += intents.size() + snapshot.states.size();
     return true;

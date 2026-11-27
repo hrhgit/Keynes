@@ -8,9 +8,6 @@ namespace pk {
 using namespace godot;
 
 void DCWorldExt::_bind_effect_methods() {
-    ClassDB::bind_method(D_METHOD("apply_runtime_effect_snapshot", "after_generation"),
-                         &DCWorldExt::apply_runtime_effect_snapshot,
-                         DEFVAL(-1));
     ClassDB::bind_method(D_METHOD("configure_effects", "catalog"),
                          &DCWorldExt::configure_effects);
     ClassDB::bind_method(D_METHOD("submit_effect_instances", "batch"),

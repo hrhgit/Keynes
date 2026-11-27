@@ -196,7 +196,6 @@ void NativeSimulationHost::note_day_stall(uint32_t bits, int64_t day) {
     _day_stall_day.store(day, std::memory_order_release);
     const bool peer_bits =
         (bits & (RUNTIME_DAY_STALL_COUNTRY_PEER | RUNTIME_DAY_STALL_EFFECT_ACK |
-                 RUNTIME_DAY_STALL_IDEOLOGY_ACK |
                  RUNTIME_DAY_STALL_FISCAL_PEER)) != 0u;
     if (!peer_bits) return;
     uint64_t expected = 0;
@@ -230,7 +229,7 @@ void NativeSimulationHost::clear_day_stall_bits(uint32_t bits) {
     }
     constexpr uint32_t kPeerTimerBits =
         RUNTIME_DAY_STALL_COUNTRY_PEER | RUNTIME_DAY_STALL_EFFECT_ACK |
-        RUNTIME_DAY_STALL_IDEOLOGY_ACK | RUNTIME_DAY_STALL_FISCAL_PEER |
+        RUNTIME_DAY_STALL_FISCAL_PEER |
         RUNTIME_DAY_STALL_ECONOMY_INPUT;
     if ((_day_stall_reason_mask.load(std::memory_order_acquire) &
          kPeerTimerBits) == 0u) {
@@ -245,7 +244,6 @@ void NativeSimulationHost::clear_day_stall_bits(uint32_t bits) {
 void NativeSimulationHost::clear_day_stall_peer_bits() {
     clear_day_stall_bits(RUNTIME_DAY_STALL_COUNTRY_PEER |
                          RUNTIME_DAY_STALL_EFFECT_ACK |
-                         RUNTIME_DAY_STALL_IDEOLOGY_ACK |
                          RUNTIME_DAY_STALL_FISCAL_PEER |
                          RUNTIME_DAY_STALL_ECONOMY_INPUT);
 }

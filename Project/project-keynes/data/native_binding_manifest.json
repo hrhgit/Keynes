@@ -1,6 +1,6 @@
 {
   "class": "DCWorldExt",
-  "count": 677,
+  "count": 674,
   "methods": [
     "_debug_poke_f32",
     "_debug_poke_f32_with_flush",
@@ -26,11 +26,8 @@
     "apply_mobilization_result",
     "apply_runtime_climate_writeback",
     "apply_runtime_economy_resource_writeback",
-    "apply_runtime_effect_snapshot",
-    "apply_runtime_ideology_snapshot",
     "apply_runtime_modifier_snapshot",
     "apply_runtime_species_writeback",
-    "apply_runtime_trigger_snapshot",
     "archetype_count",
     "arm_runtime_fault_injection",
     "assign_archetype",

@@ -680,8 +680,7 @@ bool NativeSimulationHost::execute_country_worker_stage(
         // Country peers are done; do not wipe Economy fiscal/input stalls —
         // those still park the day until fiscal peers / capture catch up.
         clear_day_stall_bits(RUNTIME_DAY_STALL_COUNTRY_PEER |
-                             RUNTIME_DAY_STALL_EFFECT_ACK |
-                             RUNTIME_DAY_STALL_IDEOLOGY_ACK);
+                             RUNTIME_DAY_STALL_EFFECT_ACK);
         for (auto &character : _country_pod_fallback_reason) {
             character.store('\0', std::memory_order_release);
         }
@@ -734,8 +733,7 @@ bool NativeSimulationHost::execute_country_worker_stage(
     _country_peer_wait_preview_published = false;
     // Same as soft-reject path: Country commit must not clear Economy stalls.
     clear_day_stall_bits(RUNTIME_DAY_STALL_COUNTRY_PEER |
-                         RUNTIME_DAY_STALL_EFFECT_ACK |
-                         RUNTIME_DAY_STALL_IDEOLOGY_ACK);
+                         RUNTIME_DAY_STALL_EFFECT_ACK);
     for (auto &character : _country_pod_fallback_reason) {
         character.store('\0', std::memory_order_release);
     }

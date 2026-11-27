@@ -125,17 +125,9 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 
 ### 主线程镜像
 
-PlayerGame 领取新的整图提交后，依次更新国家读视图与 Modifier 镜像。四个脚本绑定的调用方如下。
-原生路径均从 `gdext/src/` 起算，脚本和测试从 `Project/project-keynes/` 起算。
+PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`world_runtime_daily_adapter_part3.gd:118` 经 `world_runtime_daily_adapter_part2.gd:80` 调用 `world_runtime_modifier_writeback.gd:15`。适配器检查 Modifier 授权位 `0x040`，经 `map_generator.gd:79` 和 `map_rules_initializer.gd:99` 调用原生 `apply_runtime_modifier_snapshot`。
 
-| DCWorldExt 入口 | 调用范围 | 调用点 |
-|---|---|---|
-| `apply_runtime_modifier_snapshot` | 正式路径调用 | `scripts/game/world_runtime_daily_adapter_part3.gd:118` → `world_runtime_daily_adapter_part2.gd:80` → `world_runtime_modifier_writeback.gd:15`。该适配器先检查 Modifier 授权位 `0x040`。`scripts/geography/map_generator.gd:79` 转到 `scripts/game/map_rules_initializer.gd:99`，第 105 行按名调用扩展。原生实现在 `world_ext_modifier_section_derived_values.inc:600`；收到新代数后，第 662 行安装镜像。 |
-| `apply_runtime_effect_snapshot` | 只被测试调用 | `tests/runtime/runtime_world_rules_rebuild_test.gd:144`、`:155`。绑定在 `world_ext_bind_effect.cpp:11`。 |
-| `apply_runtime_ideology_snapshot` | 无调用方 | 只有声明、实现（`world_ext_ideology.cpp:595`）、绑定（`world_ext_bind_ideology.cpp:28`）及绑定清单。 |
-| `apply_runtime_trigger_snapshot` | 只被测试调用 | `tests/runtime/runtime_world_rules_rebuild_test.gd:180`。绑定在 `world_ext_bind_trigger.cpp:23`。 |
-
-核对范围包括游戏场景、脚本的直接调用、`call`、`callv`、`has_method` 及其传入的方法名，以及 C++ 的函数调用和成员指针。四个名字在 C++ 的成员指针用途都限于绑定。测试也调用 Modifier（如 `tests/runtime/runtime_world_rules_rebuild_test.gd:138`、`:152` 和 `tests/ideology/ideology_cell_layer_m0_prototype_test.gd:117`）。
+整图执行器在日尾更新 Effect、Trigger、Ideology 的规则对象并发布读视图。Effect 报告、Trigger 发展进度、Ideology 卡片与回执从这些视图取得。部分授权下，回退查询仍读旧适配对象，后台结果未进入这些查询时，读到的是开局、读档或本地适配的数据。见 [模块地图](module-map.md#每日域模块)。
 
 ### 日中途停等
 
@@ -145,14 +137,13 @@ PlayerGame 领取新的整图提交后，依次更新国家读视图与 Modifier
 2. 执行器从同日已提交输入或世界环境取得当日包（`native_simulation_host_environment.cpp:83`）。准备新一天时复制经济输入并改成当天日期（`runtime_world_environment.cpp:344`）。经济准备开新周期时先取已提交气候和执行器视野，按需采集环境和建筑输入，写入当日标记。错日或采集失败直接报告故障（`native_simulation_stage_economy.cpp:131`、`:186`，`economy_runtime_environment_capture.cpp:80`、`:95`）。
 3. 已开的当日周期继续执行（`economy_runtime_epoch_prelude.cpp:60`），新周期检查上述日期（`economy_runtime_epoch.cpp:20`、`:76`）。兼容路径若缺同日输入才会写请求日。主线程经 `world_ext_runtime_graph_section_runtime_pulse.inc:173` → `world_ext_economy.cpp:442` 回应，由 `native_simulation_host_owner_ports.inc:78` 清除请求并唤醒执行器。
 
-停等位定义在 `runtime_pod_protocol.h:47`。一个等待可设置多个位。日循环会把多类原因都记到计时项 `OTHER`（`native_simulation_host_worker_section_run_authoritative_days.inc:459`、`:492`），这项计时不能单独判断在等哪条线程。
+停等位定义在 `runtime_pod_protocol.h:47`。`0x08` 保留为空位，诊断中的财政和经济输入编号仍为 `0x10` 和 `0x20`。一个等待可设置多个位。日循环会把多类原因都记到计时项 `OTHER`（`native_simulation_host_worker_section_run_authoritative_days.inc:459`、`:492`），这项计时不能单独判断在等哪条线程。
 
 | `RUNTIME_DAY_STALL_` 后缀 | 置位点或报告条件 | 谁在等 |
 |---|---|---|
 | `CLIMATE_CAPACITY` 0x01 | `native_simulation_host_worker.cpp:181` 读取报告时发现环境队列已满。 | 兼容投递方等执行器腾出空间。正式世界由执行器准备逐日环境。 |
 | `COUNTRY_PEER` 0x02 | `native_simulation_host_country_stage.cpp:514` 等到期资产的最终结果，`:584` 等国家意图回执；`native_simulation_host_worker.cpp:187` 也会按待决意图数报告该位。 | 整图内 Country 等 Economy 或 Effect。部分授权可由前台适配器交付结果。 |
 | `EFFECT_ACK` 0x04 | `native_simulation_host_country_stage.cpp:584` 与 COUNTRY_PEER 一起设置。路径分流在同文件第 206、276 行。 | 全授权时 Country 等执行器内的效果回执，旧适配路径可等前台交付。 |
-| `IDEOLOGY_ACK` 0x08 | 有常量、清除和等待掩码引用，全源码无置位点（如 `native_simulation_host_country_stage.cpp:684`）。 | 当前无等待。 |
 | `FISCAL_PEER` 0x10 | `native_simulation_host_country_stage.cpp:514`；`native_simulation_stage_economy.cpp:99`、`:116`、`:347`、`:380` 分别对应气候未完成、缺经济对象、已知资产或科研等请求、其他输入待决；整日循环在经济未完成且缺少具体原因时也置位（`native_simulation_host_worker_section_run_authoritative_days.inc:350`）。 | 正式财政路径在后台协调 Country 与 Economy，另有未就绪和未分类原因。单看此位无法判断是否在等前台。 |
 | `ECONOMY_INPUT` 0x20 | `native_simulation_stage_economy.cpp:333` 识别两种缺同日输入的原因，写请求日并置位；`native_simulation_host_worker.cpp:184` 按请求日也会报告。 | 兼容路径由后台等主线程采集。正常开局、整图授权、经济已由后台接管时，上述采集先于开周期检查。 |
 

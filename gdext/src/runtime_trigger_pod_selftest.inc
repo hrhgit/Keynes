@@ -245,6 +245,5 @@ bool RuntimeTriggerPodAuthority::self_test(std::string &error) {
             return false;
         }
     }
-    if (!RuntimeTriggerSnapshotRing::self_test()) { error = "trigger_snapshot_ring_self_test_failed"; return false; }
     return true;
 }

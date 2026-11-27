@@ -20,9 +20,6 @@ void DCWorldExt::_bind_trigger_methods() {
                          &DCWorldExt::trigger_should_run);
     ClassDB::bind_method(D_METHOD("trigger_worker_authoritative"),
                          &DCWorldExt::trigger_worker_authoritative);
-    ClassDB::bind_method(D_METHOD("apply_runtime_trigger_snapshot", "after_generation"),
-                         &DCWorldExt::apply_runtime_trigger_snapshot,
-                         DEFVAL(-1));
     ClassDB::bind_method(D_METHOD("poll_trigger_worker_intent"),
                          &DCWorldExt::poll_trigger_worker_intent);
     ClassDB::bind_method(D_METHOD("submit_trigger_worker_ack", "ack"),

@@ -252,8 +252,6 @@
         bootstrap_environment != nullptr ? bootstrap_environment->cell_count : 0u,
         bootstrap_country != nullptr ? bootstrap_country->country_count : 0u);
     _modifier_snapshots.reset();
-    _effect_snapshots.reset();
-    _ideology_snapshots.reset();
     _opinion_view_version = {}; _annual_ideology_view_version = {}; _country_ai_economy_view_version = {}; _annual_country_view_version = {};
     _events_authority.reset();
     _events_snapshots.reset();

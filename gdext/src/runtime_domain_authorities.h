@@ -131,7 +131,7 @@ public:
     bool copy_trigger_snapshot(RuntimeTriggerSnapshot &out, std::string &error) const;
     // H8 ACTIVE Trigger stage. Same authority object the SHADOW probe uses; the
     // difference is that ACTIVE supplies real peer ACKs and reads the committed
-    // snapshot back out for the main-thread write-back ring. `intents` is filled
+    // snapshot back out for the stage's generation and work counters. `intents` is filled
     // from the plan even when the commit fails, because an incomplete ACK
     // barrier is exactly the case where the caller must publish them.
     bool run_trigger_active_day(int64_t day, uint64_t input_generation,

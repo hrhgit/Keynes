@@ -128,8 +128,8 @@
     // Same atomic-char trick the country field uses: written on the economy thread
     // while the main thread may be formatting a report.
     std::array<std::atomic<char>, 48> _ideology_parity_field{};
-    // `_ideology_transport_mutex` already exists for the snapshot ring; this one
-    // only guards the reference map so the two cannot deadlock on each other.
+    // `_ideology_transport_mutex` guards the Ideology transport; this one only
+    // guards the reference map so the two cannot deadlock on each other.
     mutable std::mutex _ideology_parity_mutex;
     void record_ideology_parity_locked(const RuntimeIdeologyPodSnapshot &worker);
     std::atomic<bool> _ideology_parity_compared{false};

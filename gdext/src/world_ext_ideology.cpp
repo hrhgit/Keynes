@@ -13,7 +13,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <limits>
 #include <optional>
 
 namespace pk {
@@ -589,76 +588,6 @@ Dictionary DCWorldExt::step_ideology_derived_rebuild(int64_t day_index) {
     out["day"] = day_index;
     out["steps"] = steps;
     if (!error.empty()) out["reason"] = String(error.c_str());
-    return out;
-}
-
-Dictionary DCWorldExt::apply_runtime_ideology_snapshot(int64_t after_generation) {
-    Dictionary out;
-    out["ok"] = false;
-    out["applied"] = false;
-    if (_ideology_runtime == nullptr || _runtime_host == nullptr) {
-        out["code"] = "ideology_runtime_unavailable";
-        return out;
-    }
-    if (_runtime_host->effect_adapter_owned() || !_runtime_host->domain_is_worker_authoritative(
-            RuntimeDomainId::IDEOLOGY)) {
-        out["code"] = "ideology_not_worker_authoritative";
-        return out;
-    }
-    auto boundary_lock = _runtime_host->try_lock_economy_input_capture();
-    if (!boundary_lock.owns_lock()) {
-        out["ok"] = true;
-        out["code"] = "economy_day_inflight";
-        return out;
-    }
-    NativeIdeologyRuntime *self = ideology_runtime_from(_ideology_runtime);
-    // The worker Ideology stage cannot run before it has an opinion snapshot.
-    // The runtime graph pulse publishes one too, but it may be disabled or out
-    // of budget; this per-tick write-back path is the guaranteed hand-off.
-    if (_economy_runtime != nullptr &&
-        static_cast<NativeEconomyRuntime *>(_economy_runtime)
-                ->country_class_opinion_snapshot().revision !=
-            _ideology_opinion_published_revision) {
-        publish_ideology_worker_inputs();
-    }
-    const uint64_t cursor = after_generation < 0
-        ? std::numeric_limits<uint64_t>::max()
-        : static_cast<uint64_t>(after_generation);
-    uint32_t slot = 0;
-    if (!_runtime_host->try_acquire_ideology_snapshot(cursor, slot)) {
-        out["ok"] = true;
-        out["code"] = "ideology_snapshot_unavailable";
-        return out;
-    }
-    // Copy out of the ring before apply so release cannot race a concurrent
-    // publish that reclaims the READY slot under the rebuild.
-    const RuntimeIdeologyPodSnapshot snapshot =
-        _runtime_host->ideology_snapshot_buffer(slot);
-    const int64_t generation = static_cast<int64_t>(snapshot.generation);
-    const std::shared_ptr<const RuntimeIdeologyOpinionSnapshot> opinion =
-        _runtime_host->worker_opinion_snapshot_for_ideology_generation(
-            snapshot.generation);
-    if (opinion != nullptr) {
-        ideology_runtime_from(_ideology_runtime)
-            ->set_worker_opinion_inputs(*opinion);
-    }
-    _runtime_host->release_ideology_snapshot(slot);
-    std::string apply_error;
-    const bool applied = ideology_runtime_from(_ideology_runtime)
-        ->apply_pod_snapshot(snapshot, apply_error);
-    // A snapshot older than the generation an IMPORT adopted is not a failure: it was
-    // published before the load and the imported state supersedes it. Reporting that as
-    // "generation regression" would make a durable load look like a rejected write.
-    const bool superseded = !applied &&
-        apply_error == "ideology_pod_snapshot_generation_regression" &&
-        self->worker_import_last_code() == "applied";
-    out["ok"] = applied || superseded;
-    out["applied"] = applied;
-    out["superseded"] = superseded;
-    out["generation"] = generation;
-    out["code"] = applied ? "ok"
-        : (superseded ? "ideology_pod_snapshot_superseded"
-                      : String(apply_error.c_str()));
     return out;
 }
 

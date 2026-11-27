@@ -586,7 +586,7 @@ bool EffectInstanceForwarder::instance_fire_acked(int64_t instance_id,
     }
     if (worker_authoritative()) {
         // Same rule as instance_exists: the worker owns fire_seq/ack, and the
-        // main thread's copy only catches up on its own writeback pump.
+        // main thread's copy is not updated from the worker.
         if (_host == nullptr || !_host->effect_pod_transport_ready()) {
             error = result_token(Result::WORKER_TRANSPORT_NOT_READY);
             return false;
