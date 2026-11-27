@@ -36,12 +36,13 @@ import work
 import watch_prs
 import world_ext_bindings
 from check_day_stage_reuse import stage_reuse_violations
-from check_tax_row_keys import tax_row_key_violations
+from check_tax_row_keys import tax_row_key_violations, validate_tax_row_baseline
 from check_test_strictness import validate_test_diff
 from common import Result, legacy_lane_gate, load_config
 import test_frontend_and_save_guards as continued_state_inputs
 from test_day_stage_reuse import WITHOUT_REUSE, gameplay_sources
-from test_tax_row_keys import PACKED_ROWS, TAX_ROWS
+from test_generated_manifests import CATALOG_BAKE, skip_data_subdirectories
+from test_tax_row_keys import MASTER_ENTRY, PACKED_ROWS, TAX_ROWS
 from test_test_strictness import SEED_AFTER, SEED_BEFORE
 
 CFG = load_config()
@@ -154,6 +155,30 @@ def refuses_unrelated_cpp_baseline():
     return False
 
 
+def refuses_changed_catalog_collector():
+    try:
+        check_generated_manifests.validate_catalog_collector(skip_data_subdirectories(CATALOG_BAKE))
+    except ValueError:
+        return True
+    return False
+
+
+def refuses_wrong_narrative_field_type():
+    root = FACTORY.parents[1]
+    source = (root / narrative_layout.SOURCE).read_text(encoding="utf-8")
+    checkpoint = (root / "gdext/src/runtime_narrative_checkpoint.cpp").read_text(encoding="utf-8")
+    changed = source.replace('out["world_seed"] = static_cast<int64_t>(_seed);',
+                             'out["world_seed"] = String::num_int64(_seed);')
+    return any("world_seed" in error for error in narrative_layout._roundtrip_violations(changed, checkpoint))
+
+
+def refuses_narrative_state_write_before_validation():
+    source = (FACTORY.parents[1] / "gdext/src/runtime_narrative.cpp").read_text(encoding="utf-8")
+    old = "    const String error = checkpoint_error(archive);"
+    changed = source.replace(old, "    ++_seed;\n" + old, 1)
+    return changed != source and bool(narrative_layout._install_violations(changed))
+
+
 # name -> list of (description, callable returning True when the gate refused the input)
 GATES = {
     "tools/ci/check_cpp_deps.py:reclassify_family_baseline": [
@@ -188,6 +213,10 @@ GATES = {
         ("mode bits overlap a legal tax amount in the settlement cache",
          lambda: bool(tax_row_key_violations({TAX_ROWS: PACKED_ROWS}, {})[0])),
     ],
+    "tools/ci/check_tax_row_keys.py:validate_tax_row_baseline": [
+        ("a new exception cannot be added to an empty tax row baseline",
+         lambda: bool(validate_tax_row_baseline(MASTER_ENTRY, {}))),
+    ],
     "tools/ci/check_script_native_access.py:allowed": [
         ("a UI script is outside the owning Economy directory", lambda: not script_access.allowed(
             "scripts/ui/calendar.gd", "economy", {"economy": ["scripts/economy"]})),
@@ -197,6 +226,13 @@ GATES = {
             script_access.frontend_live_read_violations(
                 continued_state_inputs.PLAYER_GAME, continued_state_inputs.HISTORICAL_CALENDAR,
                 continued_state_inputs.CALENDAR_BASELINE))),
+        ("a calendar initializer reads the live report before its first method", lambda: bool(
+            script_access.frontend_live_read_violations("scripts/ui/calendar.gd",
+                "var day = _economy_facade.report()\nfunc update():\n\tpass\n", {}))),
+    ],
+    "tools/ci/check_script_native_access.py:native_baseline_violations": [
+        ("a removed reference cannot leave an unused allowance behind",
+         lambda: bool(script_access.native_baseline_violations({}, {"scripts/ui/calendar.gd": {"economy": 1}}))),
     ],
     "tools/ci/check_script_native_access.py:live_baseline_violations": [
         ("an additional function is added to the historical Economy access exception", lambda: bool(
@@ -208,6 +244,13 @@ GATES = {
                 narrative_layout.archive_shapes(continued_state_inputs.unversioned_last_city_capture()),
                 continued_state_inputs.SAVE_BASELINE))),
     ],
+    "tools/ci/narrative_save_layout.py:_roundtrip_violations": [
+        ("write a string to a saved seed that must restore as an integer", refuses_wrong_narrative_field_type),
+    ],
+    "tools/ci/narrative_save_layout.py:_install_violations": [
+        ("increment the live seed before rejecting an invalid archive",
+         refuses_narrative_state_write_before_validation),
+    ],
     "tools/ci/narrative_save_layout.py:drained_state_violations": [
         ("the last-city state queued for the next day is absent from the archive", lambda: bool(
             narrative_layout.drained_state_violations(continued_state_inputs.SAVE_SOURCE, [
@@ -217,6 +260,10 @@ GATES = {
         ("a hand-edited list omits a discovered binding", lambda: bool(
             check_generated_manifests.validate_binding_manifest_bytes(
                 b'{"class":"DCWorldExt","count":0,"methods":[]}', [{"name": "poll_runtime_commit"}]))),
+    ],
+    "tools/ci/check_generated_manifests.py:validate_catalog_collector": [
+        ("the producer skips data subdirectories while retaining the source suffixes",
+         refuses_changed_catalog_collector),
     ],
     "tools/ci/check_generated_manifests.py:validate_catalog_manifest_bytes": [
         ("a hand-edited fingerprint disagrees with the source bytes", lambda: bool(
@@ -330,12 +377,17 @@ GATES = {
 NAME_PARTS = ("matches", "touching", "scope", "gate", "parse", "classify", "validate", "allowed", "native_line", "extra_checks", "unknown_findings", "preflight")
 
 
+def _is_gate_name(name: str) -> bool:
+    if name.startswith("_"):
+        return name.lstrip("_").startswith("validate_") or name.endswith("_violations")
+    return any(part in name for part in NAME_PARTS)
+
+
 def _named_gates(node, prefix=()):
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             qualified = (*prefix, child.name)
-            if (not isinstance(child, ast.ClassDef) and not child.name.startswith("_")
-                    and any(part in child.name for part in NAME_PARTS)):
+            if not isinstance(child, ast.ClassDef) and _is_gate_name(child.name):
                 yield ".".join(qualified)
             yield from _named_gates(child, qualified)
         else:
@@ -377,6 +429,11 @@ class GatesRefuse(unittest.TestCase):
                 self.assertEqual(gate_functions() - set(GATES), {
                     "tools/ci/check_another_rule.py:validate_test_diff",
                 })
+
+    def test_private_validation_entries_require_refusals(self):
+        module = ast.parse("def _validate_archive(): pass\ndef _restore_violations(): pass\n"
+                           "def _scan_tokens(): pass\n")
+        self.assertEqual(set(_named_gates(module)), {"_validate_archive", "_restore_violations"})
 
     def test_rule_text_matches_the_evidence_and_names_this_test(self):
         rules = FACTORY.parents[1] / "AGENTS.md"

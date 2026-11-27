@@ -77,6 +77,45 @@ class MarkdownLinkTests(unittest.TestCase):
                          "[protocol relative](//example.org/none)\n",
         }), [])
 
+    def test_uses_list_relative_indent_for_continuation_paragraphs(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "- Entry\n\n    [continued](missing.md)\n\n"
+                         "      [code sample](not-a-link.md)\n\n"
+                         "1. Numbered\n\n    [also continued](missing-numbered.md)\n",
+        }), [
+            LinkProblem("README.md", 3, "missing.md", "missing repository path"),
+            LinkProblem("README.md", 9, "missing-numbered.md", "missing repository path"),
+        ])
+
+    def test_ignores_markdown_text_inside_html_pre_but_checks_real_links(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": '<pre class="example" id="sample">\n'
+                         "[literal markup](not-a-link.md)\n\n"
+                         '<a href="missing-html.md">actual HTML link</a>\n'
+                         '<!-- <a href="not-a-link.md">comment</a> -->\n'
+                         "</pre>\n\n[continued](missing.md)\n[example](#sample)\n",
+        }), [
+            LinkProblem("README.md", 4, "missing-html.md", "missing repository path"),
+            LinkProblem("README.md", 8, "missing.md", "missing repository path"),
+        ])
+
+    def test_list_indent_does_not_escape_block_quote(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "> - Quoted item\n>\n>     [continued](missing.md)\n\n"
+                         "    [outside code sample](not-a-link.md)\n",
+        }), [LinkProblem("README.md", 3, "missing.md", "missing repository path")])
+
+    def test_list_indent_survives_lazy_continuation(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "- Entry\ncontinued without an indent\n\n    [continued](missing.md)\n",
+        }), [LinkProblem("README.md", 4, "missing.md", "missing repository path")])
+
+    def test_multiline_html_pre_opening_preserves_anchor(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": '<pre\n  id="example"\n>\n[literal](not-a-link.md)\n</pre>\n\n'
+                         '[example](#example)\n',
+        }), [])
+
     def test_refuses_wrong_case_and_unknown_heading_suffix(self):
         self.assertEqual(markdown_fixture({
             "README.md": "[wrong file](DOC.md)\n[wrong anchor](doc.md#intro-1 \"See )\")\n",

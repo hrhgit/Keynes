@@ -170,15 +170,85 @@ def _named_functions(tokens: list[Token]):
         yield tokens[start + 1].value, tokens[start:end]
 
 
-def _owner_names(tokens: list[Token], inherited: dict, members: set[str] | None = None) -> dict:
+def _parameter_names(tokens: list[Token]) -> set[str]:
+    if len(tokens) < 3 or tokens[0].value != "func":
+        return set()
+    names = set()
+    depth = 0
+    for index, token in enumerate(tokens[2:], start=2):
+        if token.kind != "punct":
+            continue
+        if token.value in {"(", "[", "{"}:
+            depth += 1
+        elif token.value in {")", "]", "}"}:
+            depth -= 1
+            if not depth:
+                break
+        if depth == 1 and token.value in {"(", ","}:
+            parameter = tokens[index + 1:index + 2]
+            if parameter and parameter[0].kind == "id":
+                names.add(parameter[0].value)
+    return names
+
+
+def _line_parents(source: str, tokens: list[Token]) -> dict[int, Token | None]:
+    parents = {}
+    indentation = []
+    for token in tokens:
+        line = source.rfind("\n", 0, token.offset) + 1
+        if line in parents:
+            continue
+        width = token.offset - line
+        while indentation and indentation[-1][0] >= width:
+            indentation.pop()
+        parents[line] = indentation[-1][1] if indentation else None
+        indentation.append((width, token))
+    return parents
+
+
+def _member_initializers(source: str, tokens: list[Token], parents: dict[int, Token | None]):
+    """Separate variable declarations in a script or an inner class from their methods."""
+    for index, token in enumerate(tokens[:-1]):
+        if token.kind != "id" or token.value != "var":
+            continue
+        line = source.rfind("\n", 0, token.offset) + 1
+        parent = parents[line]
+        if parent is not None and (parent.kind != "id" or parent.value != "class"):
+            continue
+        prefix = source[line:token.offset]
+        indent = len(prefix) - len(prefix.lstrip())
+        if not re.fullmatch(r"(?:@\w+(?:\([^\n]*?\))?[ \t]+|static +)*", prefix[indent:]):
+            continue
+        depth = 0
+        end = index + 1
+        for next_index in range(index + 1, len(tokens)):
+            item = tokens[next_index]
+            line_start = source.rfind("\n", 0, item.offset) + 1
+            if not depth and line_start > line and item.offset - line_start <= indent:
+                break
+            if item.kind == "punct":
+                depth += int(item.value in {"(", "[", "{"}) - int(item.value in {")", "]", "}"})
+            end = next_index + 1
+        yield line, parent, tokens[index:end]
+
+
+def _owner_names(tokens: list[Token], inherited: dict, members: set[Token] | None = None) -> dict:
     """Track GDScript declarations and the simple aliases used by presentation code."""
     names = inherited.copy()
+    member_names = {token.value for token in members} if members is not None else None
+    if members is None:
+        names.update(dict.fromkeys(_parameter_names(tokens)))
     aliases = []
     for i, token in enumerate(tokens):
-        if token.kind != "id" or (members is not None and token.value not in members):
+        if token.kind != "id" or (member_names is not None and token.value not in member_names):
             continue
-        if i >= 2 and tokens[i - 1].value == "." and tokens[i - 2].value != "self":
+        prior = tokens[i - 1].value if i else ""
+        if i >= 2 and prior == "." and (tokens[i - 2].value != "self" or members is None):
             continue
+        if members is not None and prior in {"var", "const", "(", ","} and token not in members:
+            continue
+        if members is None and prior in {"var", "const"}:
+            names[token.value] = None  # A new local shadows the same-name member.
         j = i + 1
         if j < len(tokens) and tokens[j].value == ":":
             j += 1
@@ -189,6 +259,7 @@ def _owner_names(tokens: list[Token], inherited: dict, members: set[str] | None 
         if j >= len(tokens) or tokens[j].value != "=" or tokens[j:j + 2][-1].value == "=":
             continue
         j += 1
+        alias_of_member = [t.value for t in tokens[j:j + 2]] == ["self", "."]
         owner_type = OWNER_TYPES.get(tokens[j].value) if j < len(tokens) else None
         while j < len(tokens) and tokens[j].kind == "id":
             name = tokens[j].value
@@ -202,16 +273,19 @@ def _owner_names(tokens: list[Token], inherited: dict, members: set[str] | None 
                     names[token.value] = OWNER_FACTORIES[name]
                     if (name == "get_economy_facade" and origin >= 2
                             and tokens[origin - 1].value == "." and tokens[origin - 2].kind == "id"):
-                        names.setdefault(tokens[origin - 2].value, "generator")
+                        receiver_name = tokens[origin - 2].value
+                        if names.get(receiver_name) is None:
+                            names[receiver_name] = "generator"
                 elif called and name == "new" and owner_type:
                     names[token.value] = owner_type
                 elif not called:
-                    aliases.append((token.value, name))
+                    aliases.append((token.value, name, alias_of_member))
                 break
             j += 1
-    missing = {name: alias for name, alias in aliases if not names.get(name)}
+    missing = {name: (alias, member) for name, alias, member in aliases if not names.get(name)}
     while missing:
-        resolved = {name: names[alias] for name, alias in missing.items() if names.get(alias)}
+        resolved = {name: value for name, (alias, member) in missing.items()
+                    if (value := (inherited if member else names).get(alias))}
         if not resolved:
             break
         names.update(resolved)
@@ -220,14 +294,16 @@ def _owner_names(tokens: list[Token], inherited: dict, members: set[str] | None 
 
 
 def _live_reads(tokens: list[Token], inherited: dict):
-    names = _owner_names(tokens, inherited)
     positions = {token.offset: i for i, token in enumerate(tokens)}
     for token, kind, target in candidates(tokens, {"report", "get_economy_report"}, probes=False):
         expected = {"facade"} if token.value == "report" else {"generator", "native"}
-        if names.get(target) in expected:
+        i = positions[token.offset]
+        names = _owner_names(tokens[:i], inherited)
+        explicit_member = (kind == "call" and i >= 4
+                           and [t.value for t in tokens[i - 4:i - 2]] == ["self", "."])
+        if (inherited if explicit_member else names).get(target) in expected:
             yield token
         elif kind == "call":
-            i = positions[token.offset]
             chain = [t.value for t in tokens[max(0, i - 4):i]]
             if len(chain) == 4 and chain[1:] == ["(", ")", "."] and OWNER_FACTORIES.get(chain[0]) in expected:
                 yield token
@@ -286,23 +362,37 @@ def frontend_live_read_violations(
         return []
     tokens = tokenize(source) if tokens is None else tokens
     errors = []
-    member_names = {tokens[i + 1].value for i, token in enumerate(tokens[:-1]) if token.value == "var"
-                    and token.kind == "id" and re.fullmatch(r"(?:@\w+ +)*", source[
-                        source.rfind("\n", 0, token.offset) + 1:token.offset])}
+    parents = _line_parents(source, tokens)
+    members = list(_member_initializers(source, tokens, parents))
     inherited = {name: "facade" for name in ECONOMY_FACADES}
     inherited.update({name: "native" for name in world_variables(tokens)})
-    inherited = _owner_names(tokens, inherited, member_names)
-    functions = list(_named_functions(tokens))
-    if legacy_probe and tokens:
-        before = [token for token in tokens if not functions or token.offset < functions[0][1][0].offset]
-        functions.insert(0, ("class body", before))
-    for name, function in functions:
+    functions = []
+    for name, body in _named_functions(tokens):
+        start = source.rfind("\n", 0, body[0].offset) + 1
+        end = next((line for line, _, _ in members if body[0].offset < line <= body[-1].offset), None)
+        functions.append((name, parents[start], body if end is None else [token for token in body if token.offset < end]))
+    class_tokens = defaultdict(set)
+    member_names = defaultdict(set)
+    for _, parent, declaration in members:
+        class_tokens[parent].update(declaration)
+        member_names[parent].add(declaration[1])
+    if legacy_probe:
+        class_tokens[None].update(token for token in tokens
+                                  if not functions or token.offset < functions[0][2][0].offset)
+    scopes = [("class body", parent, sorted(items, key=lambda token: token.offset))
+              for parent, items in class_tokens.items()] + functions
+    owner_tokens = defaultdict(list)
+    for _, parent, body in scopes:
+        owner_tokens[parent].extend(body)
+    owner_names = {parent: _owner_names(body, inherited, member_names[parent])
+                   for parent, body in owner_tokens.items()}
+    for name, parent, function in scopes:
         if legacy_probe:
             calls = _probe_references(function)
             if calls and not (file == PLAYER_GAME and _approved_consumer(source, name, function, calls)):
                 line = source.count("\n", 0, calls[0].offset) + 1
                 errors.append(f"{PROJECT}/{file}:{line}: {name} uses the live {PROBE} outside the unchanged heartbeat log")
-        reads = list(_live_reads(function, inherited)) if frontend else []
+        reads = list(_live_reads(function, owner_names[parent])) if frontend else []
         if not reads:
             continue
         if baseline.get(file, {}).get(name) == _function_digest(source, function):
@@ -440,6 +530,17 @@ def reductions(current: dict, baseline: dict) -> list[str]:
             if current.get(file, {}).get(module, 0) < count]
 
 
+def native_baseline_violations(current: dict, baseline: dict, *, writing: bool = False) -> list[str]:
+    problems = violations(current, baseline)
+    if writing:
+        return problems
+    return problems + [
+        f"{BASELINE}: unused native access allowance: {change}. "
+        "Run python3 tools/ci/check_script_native_access.py --write-baseline"
+        for change in reductions(current, baseline)
+    ]
+
+
 def report(current: dict, modules: dict) -> None:
     print("script native access report (cross-module references):")
     for module in modules:
@@ -506,13 +607,10 @@ def main() -> int:
                                 for change in violations(proposed, previous))
         if not problems:
             if path.exists() or not args.write_baseline:
-                problems.extend(violations(current, baseline))
+                problems.extend(native_baseline_violations(current, baseline, writing=args.write_baseline))
             if not problems and args.write_baseline:
                 path.write_text(json.dumps(current, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 print(f"wrote {BASELINE} (initial capture or tightening only)")
-            elif not args.write_baseline:
-                for reduction in reductions(current, baseline):
-                    print(f"can tighten baseline: {reduction}")
         if args.report:
             report(current, inventory.load_table(args.root)["modules"])
         if args.audit:

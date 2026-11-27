@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
@@ -15,7 +16,12 @@ SOURCE = "gdext/src/runtime_narrative_save.cpp"
 CHECKPOINT = "gdext/src/runtime_narrative_checkpoint.cpp"
 RUNTIME = "gdext/src/runtime_narrative.cpp"
 DICTIONARIES = {"out": "PKNarrativeRuntime", "unrest": "PKStratumUnrest"}
-TOKENS = re.compile(COMMENTS.pattern + r"|[A-Za-z_]\w*|\d+|\S")
+HEADER_FIELDS = {("out", "schema"), ("out", "version")}
+# A single AI request, its optional reply, and the multi-request representation
+# use different fields. Pending settings are absent when there are no updates.
+OPTIONAL_FIELDS = {("out", key) for key in
+                   ("pending_ai_reply", "pending_ai_requests", "pending_ai_settings")}
+TOKENS = re.compile(COMMENTS.pattern + r"|[A-Za-z_]\w*|\d+|\+\+|--|<<=|>>=|[+\-*/%&|^]=|\S")
 EXCHANGES = re.compile(r"\bstd : : exchange \( (_\w+) , \{ \} \)")
 # These have consumers in stage_narrative before the current day commits.
 SAME_DAY = {"_independence_actions", "_notices"}
@@ -80,42 +86,219 @@ def _assignments(body: list[str]):
                 yield i, receiver, key[1:-1], body[i + 6:_closing(body, i + 3)]
 
 
-def _record_fields(body: list[str], assignments: list[tuple]) -> dict[str, list[str]]:
-    """Group literal fields by their record and the archive being written."""
+@dataclass(frozen=True)
+class _Field:
+    values: frozenset[tuple[str, ...]]
+    required: bool = True
+
+
+_Fields = dict[tuple[str, str], _Field]
+_Return = tuple[list[str], _Fields, bool]
+
+
+def _combine_paths(left: _Fields | None, right: _Fields | None) -> _Fields | None:
+    if left is None or right is None:
+        return left if right is None else right
+    absent = _Field(frozenset(), required=False)
+    joined = {}
+    for key in left.keys() | right.keys():
+        a, b = left.get(key, absent), right.get(key, absent)
+        joined[key] = _Field(a.values | b.values, a.required and b.required)
+    return joined
+
+
+def _statement_end(body: list[str], start: int) -> int:
+    token = body[start]
+    if token == "{":
+        return _closing(body, start) + 1
+    if token in {"if", "while", "for"}:
+        opening = start + (2 if body[start + 1:start + 2] == ["constexpr"] else 1)
+        end = _statement_end(body, _closing(body, opening) + 1)
+        if token == "if" and body[end:end + 1] == ["else"]:
+            return _statement_end(body, end + 1)
+        return end
+    return _until(body, start, {";"}) + 1
+
+
+def _single_statement(body: list[str], start: int) -> tuple[list[str], int]:
+    stop = _statement_end(body, start)
+    if body[start] == "{":
+        return body[start + 1:stop - 1], stop
+    return body[start:stop], stop
+
+
+_DICTIONARY_MUTATORS = {"erase", "clear", "set", "get_or_add", "merge", "assign", "make_read_only"}
+
+
+def _apply_dictionary_methods(fields: _Fields, tokens: list[str], names: set[str]) -> bool:
+    """Apply direct dictionary methods even where their result is used."""
+    found = False
+    i = 0
+    while i < len(tokens):
+        name = tokens[i]
+        if name == "{":
+            i = _closing(tokens, i) + 1  # A lambda's statements are not evaluated here.
+            continue
+        if (name in names and tokens[i + 1:i + 2] == ["."] and tokens[i + 3:i + 4] == ["("]
+                and tokens[i + 2] in _DICTIONARY_MUTATORS):
+            stop = _closing(tokens, i + 3)
+            arguments = tokens[i + 4:stop]
+            method = tokens[i + 2]
+            found = True
+            if method == "erase" and len(arguments) == 1 and arguments[0].startswith('"'):
+                fields.pop((name, arguments[0][1:-1]), None)
+            elif method == "clear" and not arguments:
+                for key in list(fields):
+                    if key[0] == name:
+                        del fields[key]
+            elif method == "set" and arguments[:1] and arguments[0].startswith('"') and arguments[1:2] == [","]:
+                fields[name, arguments[0][1:-1]] = _Field(frozenset({tuple(arguments[2:])}))
+            else:
+                raise ValueError(f"cannot determine returned Narrative fields after {' '.join(tokens[i:stop + 1])}")
+            i = stop + 1
+        else:
+            i += 1
+    return found
+
+
+def _write_dictionary(fields: _Fields, statement: list[str], names: set[str]) -> None:
+    if not statement:
+        return
+    if statement[0] == "Dictionary" and len(statement) > 1 and statement[1] in names:
+        if any(key[0] == statement[1] for key in fields):
+            raise ValueError(f"capture shadows the populated {statement[1]} dictionary")
+        return
+    calls = _apply_dictionary_methods(fields, statement, names)
+    name = statement[0]
+    if name not in names or (calls and statement[1:2] == ["."]):
+        return
+    assignment = next(_assignments(statement), None)
+    if assignment is not None and assignment[0] == 0:
+        _, _, key, value = assignment
+        fields[name, key] = _Field(frozenset({tuple(value)}))
+        return
+    if statement[1:] in (["=", "{", "}", ";"], ["=", "Dictionary", "(", ")", ";"],
+                          ["=", "Dictionary", "{", "}", ";"]):
+        for key in list(fields):
+            if key[0] == name:
+                del fields[key]
+        return
+    raise ValueError(f"cannot determine returned Narrative fields after {' '.join(statement)}")
+
+
+def _follow_dictionaries(body: list[str], state: _Fields, names: set[str],
+                         returns: list[_Return], header_only: bool = False) -> _Fields | None:
+    """Follow the direct dictionary edits down both branches of a capture."""
+    state = state.copy()
+    i = 0
+    while i < len(body):
+        token = body[i]
+        if token == "{":
+            block, i = _single_statement(body, i)
+            state = _follow_dictionaries(block, state, names, returns, header_only)
+        elif token in {"if", "for", "while"}:
+            opening = i + (2 if body[i + 1:i + 2] == ["constexpr"] else 1)
+            end = _closing(body, opening)
+            condition = body[opening + 1:end]
+            affected = state.copy()
+            if _apply_dictionary_methods(affected, condition, names):
+                # A short-circuited condition may skip an edit. Either result
+                # must preserve every required key.
+                state = _combine_paths(affected, state)
+            block, i = _single_statement(body, end + 1)
+            header_return = token == "if" and condition == ["_country", "=", "=", "0"]
+            taken = _follow_dictionaries(block, state, names, returns, header_only or header_return)
+            if token == "if" and body[i:i + 1] == ["else"]:
+                otherwise, i = _single_statement(body, i + 1)
+                state = _follow_dictionaries(otherwise, state, names, returns, header_only)
+            state = _combine_paths(taken, state)
+        else:
+            stop = _statement_end(body, i)
+            if token == "return":
+                returns.append((body[i + 1:stop - 1], state, header_only))
+                return None
+            _write_dictionary(state, body[i:stop], names)
+            i = stop
+        if state is None:
+            break
+    return state
+
+
+def _returns_dictionary(expression: list[str], name: str) -> bool:
+    if expression == [name]:
+        return True
+    return (expression[:4] == [name, ".", "duplicate", "("]
+            and _closing(expression, 3) == len(expression) - 1)
+
+
+def _returned_fields(capture: list[str]) -> _Fields:
+    returns: list[_Return] = []
+    fallthrough = _follow_dictionaries(capture, {}, set(DICTIONARIES), returns)
+    fields = None
+    for expression, path, header_only in returns:
+        if not _returns_dictionary(expression, "out"):
+            raise ValueError(f"{SOURCE}: capture must return the populated out dictionary")
+        # An unconfigured runtime is allowed to return the header on this path.
+        if header_only and set(path) == HEADER_FIELDS and all(item.required for item in path.values()):
+            continue
+        fields = _combine_paths(fields, path)
+    if fallthrough is not None or fields is None:
+        raise ValueError(f"{SOURCE}: capture must return the full Narrative archive")
+    nested = fields.get(("out", "stratum_unrest"))
+    if nested is None or not nested.required or nested.values != {("unrest",)}:
+        raise ValueError(f"{SOURCE}: returned archive must include the populated stratum_unrest dictionary")
+    uncertain = sorted(key for key, field in fields.items() if not field.required and key not in OPTIONAL_FIELDS)
+    if uncertain:
+        raise ValueError(f"{SOURCE}: required fields may be absent from the returned archive: "
+                         + ", ".join(key for _, key in uncertain))
+    return fields
+
+
+def _record_fields(body: list[str]) -> dict[str, list[str]]:
+    """Read record keys as they leave their local scope, including erasures."""
     archives = {schema: [] for schema in DICTIONARIES.values()}
-    sections = iter(sorted(assignments, reverse=True))
-    assignment = next(sections, None)
-    # Walk backwards to collect fields until we reach their Dictionary declaration.
-    current: dict[str, set[str]] = {}
-    schema = DICTIONARIES["unrest"]
-    for i in range(len(body) - 1, -1, -1):
-        if assignment is not None and assignment[0] == i:
-            _, receiver, key, _ = assignment
-            if receiver not in DICTIONARIES:
-                current.setdefault(receiver, set()).add(key)
-            assignment = next(sections, None)
-        if body[i] != "Dictionary" or body[i + 2:i + 3] != [";"]:
+    schema = DICTIONARIES["out"]
+    scopes = []
+    for i, token in enumerate(body[:-2]):
+        if token == "{":
+            scopes.append(_closing(body, i))
+        elif token == "}":
+            scopes.pop()
+        if token != "Dictionary" or body[i + 2] != ";":
             continue
         name = body[i + 1]
-        fields = current.pop(name, set())
-        if fields:
-            archives[schema].append(f"record[{','.join(sorted(fields))}]")
-        if name == "unrest":
-            schema = DICTIONARIES["out"]
+        if name in DICTIONARIES:
+            schema = DICTIONARIES[name]
+            continue
+        block = body[i + 3:scopes[-1] if scopes else len(body)]
+        if not any(receiver == name for _, receiver, _, _ in _assignments(block)):
+            continue  # Dynamic map keys are not named record fields.
+        returns: list[_Return] = []
+        fields = _follow_dictionaries(block, {}, {name}, returns)
+        for expression, path, _ in returns:
+            if _returns_dictionary(expression, name):
+                fields = _combine_paths(fields, path)
+        if not fields:
+            continue
+        missing = sorted(key for (_, key), field in fields.items() if not field.required)
+        if missing:
+            raise ValueError(f"{SOURCE}: required record fields may be absent: {', '.join(missing)}")
+        archives[schema].append(f"record[{','.join(sorted(key for _, key in fields))}]")
     return archives
 
 
 def archive_shapes(source: str) -> dict[str, tuple[int, list[str]]]:
     tokens = _tokens(source)
     capture = _body(tokens, "capture")
-    assignments = list(_assignments(capture))
-    records = _record_fields(capture, assignments)
+    fields = _returned_fields(capture)
+    records = _record_fields(capture)
     result = {}
     for name, schema in DICTIONARIES.items():
-        keys = {key: value for _, receiver, key, value in assignments if receiver == name}
-        if keys.get("schema") != [json.dumps(schema)] or "version" not in keys:
+        keys = {key: field.values for (receiver, key), field in fields.items() if receiver == name}
+        if keys.get("schema") != {(json.dumps(schema),)} or "version" not in keys:
             raise ValueError(f"{schema} missing literal schema tag or version")
-        version = _version(keys.pop("version"), tokens)
+        versions = keys.pop("version")
+        version = _version(list(next(iter(versions))), tokens) if len(versions) == 1 else 0
         if version <= 0:
             raise ValueError(f"{schema} must write a positive integer version")
         result[schema] = version, sorted([*keys, *records[schema]])
@@ -148,11 +331,14 @@ def layout_violations(shapes: dict, baseline: dict, previous: dict | None = None
         for tag, old_keys in old_history.items():
             if history.get(tag) != old_keys:
                 errors.append(f"{BASELINE}: cannot remove or rewrite {schema} version {tag}")
-        if old_history:
-            old_latest = max(map(int, old_history))
-            for tag in history.keys() - old_history.keys():
+        if previous is not None:
+            old_latest = max(map(int, old_history), default=0)
+            for tag in sorted(history.keys() - old_history.keys(), key=int):
                 if int(tag) <= old_latest:
                     errors.append(f"{BASELINE}: {schema} version {tag} precedes the existing version {old_latest}")
+                elif int(tag) != version:
+                    errors.append(f"{BASELINE}: cannot add {schema} version {tag}; "
+                                  f"capture writes version {version}")
         latest = max(map(int, history))
         if version != latest:
             errors.append(f"{SOURCE}: {schema} writes version {version}, latest layout is {latest}; "
@@ -185,9 +371,9 @@ def _statements(body: list[str]):
 
 
 def _field_writes(capture: list[str]):
-    for _, receiver, key, value in _assignments(capture):
-        if receiver in DICTIONARIES:
-            yield receiver, key, value
+    for (receiver, key), field in sorted(_returned_fields(capture).items()):
+        for value in sorted(field.values):
+            yield receiver, key, list(value)
 
 
 _READ_KEY = re.compile(r'\b(state|unrest) (?:\. get \(|\[) "([^"]+)"')
@@ -292,6 +478,62 @@ def _roundtrip_violations(save_source: str, checkpoint_source: str) -> list[str]
     return errors
 
 
+def _live_member(body: list[str], index: int) -> bool:
+    if not _MEMBER.fullmatch(body[index]):
+        return False
+    if body[index - 3:index] == ["this", "-", ">"]:
+        return True
+    return body[index - 1:index] != ["."] and body[index - 2:index] != ["-", ">"]
+
+
+def _direct_live_writes(body: list[str]) -> set[str]:
+    """Recognize direct writes through the live RuntimeNarrative, including C++ updates."""
+    writes = set()
+    updates = {"++", "--"}
+    compound = {"+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="}
+    queries = {"at", "back", "begin", "contains", "count", "empty", "end", "find", "front",
+               "get", "has", "is_empty", "keys", "size", "values"}
+    for i, name in enumerate(body):
+        if not _live_member(body, i):
+            continue
+        opening = i - 3 if body[i - 3:i] == ["this", "-", ">"] else i
+        end = i + 1
+        while end < len(body):
+            if body[end] == "[":
+                end = _closing(body, end) + 1
+            elif body[end] == "." and end + 1 < len(body):
+                method = body[end + 1]
+                end += 2
+                if body[end:end + 1] == ["("] and method in queries:
+                    end = _closing(body, end) + 1
+            elif body[end:end + 2] == ["-", ">"] and end + 2 < len(body):
+                end += 3
+            else:
+                break
+        after = body[end] if end < len(body) else ""
+        prefix_update = opening > 0 and body[opening - 1] in updates
+        assignment = after == "=" and body[end + 1:end + 2] != ["="]
+        if prefix_update or assignment or after in updates | compound or after == "(":
+            writes.add(name)
+
+    # Conventional library helpers also modify the objects passed by reference.
+    for i in range(len(body) - 1):
+        helper = body[i]
+        if helper not in {"swap", "exchange", "move"} or body[i + 1] != "(":
+            continue
+        stop = _closing(body, i + 1)
+        arg = i + 2
+        while arg < stop:
+            end = _until(body, arg, {",", ")"})
+            receiver = arg + 3 if body[arg:arg + 3] == ["this", "-", ">"] else arg
+            if receiver < end and _live_member(body, receiver):
+                writes.add(body[receiver])
+            if helper != "swap":
+                break
+            arg = end + 1
+    return writes
+
+
 def _install_violations(runtime_source: str) -> list[str]:
     body = _body(_tokens(runtime_source), "configure")
     statements = list(_statements(body))
@@ -316,8 +558,9 @@ def _install_violations(runtime_source: str) -> list[str]:
               and steps[index + 1:] == ["return true ;"]):
             installed = True
     implementation = " ".join(body)
-    direct_mutation = re.search(r'\bthis - >|(?<!\. )\b_\w+ (?:=(?!=)|\. \w+ \()', implementation)
-    if (installed and not direct_mutation and implementation.count("decode_checkpoint (") == 1
+    if writes := _direct_live_writes(body):
+        return [f"{RUNTIME}: configure writes live state before installation: {', '.join(sorted(writes))}"]
+    if (installed and implementation.count("decode_checkpoint (") == 1
             and implementation.count("* this") == 1 and implementation.count("return true ;") == 1):
         return []
     return [f"{RUNTIME}: configure must validate the archive, decode into a local candidate, "

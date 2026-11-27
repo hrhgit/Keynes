@@ -38,6 +38,14 @@ class TestStrictness(unittest.TestCase):
         before = "if (ready) {\n    prepare();\n} else {\n    assert(day == 3);\n}\n"
         self.assertEqual(validate_test_diff(before, before.replace("(ready)", "(false)")), [])
 
+    def test_assertion_after_a_same_line_false_branch_remains_reachable(self):
+        for before in (
+            "if (ready) {\n    prepare();\n} else { CHECK(day == 3); }\n",
+            "if (ready) { prepare(); } else { CHECK(day == 3); }\n",
+        ):
+            with self.subTest(before=before):
+                self.assertEqual(validate_test_diff(before, before.replace("(ready)", "(false)")), [])
+
     def test_rejects_multiline_assertion_whose_expected_value_becomes_actual(self):
         before = "self.assertEqual(\n    sample.day,\n    expected_day,\n)\n"
         after = before.replace("expected_day", "sample.day")

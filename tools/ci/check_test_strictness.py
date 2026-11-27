@@ -92,17 +92,17 @@ def _source_lines(raw: list[str]) -> list[Line]:
     return [Line(lines[i], markers.get(i)) for i in range(len(raw))]
 
 
-def _brace_depth(code: str, depth: int) -> int:
+def _braced_prefix(code: str, depth: int) -> tuple[int, int]:
     for brace in re.finditer(r"[{}]", code):
         depth += 1 if brace[0] == "{" else -1
         if not depth:
-            break  # A following 'else {' starts a separate, reachable block.
-    return depth
+            return brace.end(), depth  # Any code after the brace remains reachable.
+    return len(code), depth
 
 
-def _disabled_lines(lines: list[Line]) -> set[int]:
-    """Recognize literal-false branches in indented and braced tests."""
-    disabled = set()
+def _disabled_lines(lines: list[Line]) -> dict[int, int]:
+    """Find the disabled prefix of each affected line for literal-false branches."""
+    disabled = {}
     indentation = None
     braces = 0
     next_statement = False
@@ -114,30 +114,31 @@ def _disabled_lines(lines: list[Line]) -> set[int]:
         if indentation is not None and indent <= indentation:
             indentation = None
         if braces or indentation is not None or next_statement:
-            disabled.add(index)
             if braces or (next_statement and code.lstrip().startswith("{")):
-                braces = _brace_depth(code, braces)
+                disabled[index], braces = _braced_prefix(code, braces)
+            else:
+                disabled[index] = len(code)
             next_statement = False
             continue
         branch = FALSE_BRANCH.match(code)
         if branch:
-            disabled.add(index)
+            disabled[index] = len(code)
             body = branch["indented"] or branch["braced"]
             if body.startswith(":"):
                 if not body[1:].strip():
                     indentation = indent
             elif body.startswith("{"):
-                braces = _brace_depth(body, 0)
+                end, braces = _braced_prefix(body, 0)
+                disabled[index] = branch.start("braced") + end
             elif not body:
                 next_statement = True
     return disabled
 
 
-def _assertions(lines: list[Line], raw: list[str], disabled: set[int]):
+def _assertions(lines: list[Line], raw: list[str], disabled: dict[int, int]):
     for index, line in enumerate(lines):
-        if index in disabled:
-            continue
-        code = line.code
+        prefix = disabled.get(index, 0)
+        code = " " * prefix + line.code[prefix:]
         bare = re.match(r"\s*assert\s+(?!\()(\S.*)", code)
         if bare and not re.match(r"\s*(?:true|True)(?:\s*,|\s*$)", bare[1]) and not SELF_COMPARISON.fullmatch(bare[1]):
             yield Assertion(index, index, "assert", raw[index].strip(), bare[1].strip())

@@ -29,7 +29,12 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = "tools/ci/markdown_links_baseline.json"
 CODE_SPAN = re.compile(r"(?<!\x60)(\x60+)(?!\x60)(.*?)" r"(?<!\x60)\1(?!\x60)", re.S)
 ESCAPE = re.compile(r"""\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_{}|~]|\x60)""")
-FENCE = re.compile(r"^\s*(\x60{3,}|~{3,})(.*)$")
+FENCE = re.compile(r"^ {0,3}(\x60{3,}|~{3,})(.*)$")
+LIST_ITEM = re.compile(r"^ {0,3}(?:[-+*]|[0-9]{1,9}[.)])(?P<pad> +|$)")
+THEMATIC_BREAK = re.compile(r"^ {0,3}([*_-])(?: *\1){2,} *$")
+PRE_OPEN = re.compile(r"^ {0,3}<pre(?=[ >]|$)", re.IGNORECASE)
+PRE_CLOSE = re.compile(r"</pre *>", re.IGNORECASE)
+QUOTE_MARKER = re.compile(r" {0,3}> ?")
 ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:\s+|$)(.*)$")
 REFERENCE = re.compile(r"^ {0,3}\[(?!\^)([^\[\]]+)\]:\s*(.*)$")
 INLINE_START = re.compile(r"\\.|[\x60]+|\[|<")
@@ -68,25 +73,77 @@ class _HtmlLinks(HTMLParser):
             self.targets.append(values[attr])
 
 
+def _html_only(line: str) -> str:
+    """Mask raw HTML text while retaining explicit HTML links and anchors."""
+    visible = []
+    end = 0
+    for tag in HTML_TAG.finditer(line):
+        visible.extend((" " * (tag.start() - end), tag[0]))
+        end = tag.end()
+    return "".join(visible)
+
+
+def _preformatted_line(line: str, header: str | None) -> tuple[str, str | None, bool]:
+    if header is not None:
+        joined = header + line
+        tag = HTML_TAG.match(joined, len(joined) - len(joined.lstrip()))
+        if tag is None:
+            return line, joined + "\n", True
+        start = tag.end() - len(header)
+    else:
+        start = 0
+    return line[:start] + _html_only(line[start:]), None, PRE_CLOSE.search(line[start:]) is None
+
+
+def _paragraph_text(line: str) -> bool:
+    return bool(line.strip()) and not line.lstrip().startswith("<") and not any(
+        pattern.match(line) for pattern in (FENCE, LIST_ITEM, THEMATIC_BREAK, ATX_HEADING)
+    )
+
+
 def _visible_lines(text: str) -> list[str]:
     """Mask comments and code blocks without changing source line numbers."""
     lines = []
     fence = ""
     comment = False
     indent_code = False
+    preformatted = False
+    pre_header = None
+    block_scope = (0, 0)
+    lists_by_quote: dict[int, list[int]] = {}
+    previous_quote = 0
     for source in text.splitlines():
-        line = re.sub(r"^(?: {0,3}> ?)+", "", source)
-        marker = FENCE.match(line)
+        block_quote, block_column = block_scope
+        quote_depth, quote_end = 0, 0
+        while (not (fence or preformatted) or quote_depth < block_quote) and (
+            quote := QUOTE_MARKER.match(source, quote_end)
+        ):
+            quote_depth += 1
+            quote_end = quote.end()
+        line = source[quote_end:].expandtabs(4)
+        leading = len(line) - len(line.lstrip())
+        if quote_depth < previous_quote:
+            lists_by_quote = {depth: columns for depth, columns in lists_by_quote.items() if depth <= quote_depth}
+        list_columns = lists_by_quote.setdefault(quote_depth, [])
+        lazy = (quote_depth == previous_quote and lines and _paragraph_text(lines[-1]) and _paragraph_text(line))
+        previous_quote = quote_depth
+        if quote_depth < block_quote or (quote_depth == block_quote and leading < block_column and line.strip()):
+            fence, preformatted, pre_header = "", False, None
+        if not fence and not preformatted and line.strip():
+            while list_columns and leading < list_columns[-1] and not lazy:
+                list_columns.pop()
+        column = list_columns[-1] if list_columns else 0
+        if line.startswith(" " * column):
+            line = line[column:]
         if fence:
+            marker = FENCE.match(line)
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
                 fence = ""
             lines.append("")
             continue
-        if marker and not comment:
-            fence = marker[1]
-            lines.append("")
-            continue
-        if not comment and line.startswith(("    ", "\t")) and (indent_code or not lines or not lines[-1]):
+        if not preformatted and not comment and line.startswith("    ") and (
+            indent_code or not lines or not lines[-1].strip()
+        ):
             indent_code = True
             lines.append("")
             continue
@@ -94,10 +151,33 @@ def _visible_lines(text: str) -> list[str]:
         if comment:
             _, end, line = line.partition("-->")
             comment = not end
-        while (start := CODE_SPAN.sub(lambda match: "x" * len(match[0]), line).find("<!--")) != -1:
+        while True:
+            comment_text = line if preformatted else CODE_SPAN.sub(lambda match: "x" * len(match[0]), line)
+            start = comment_text.find("<!--")
+            if start == -1:
+                break
             end = line.find("-->", start + 4)
             comment = end == -1
             line = line[:start] if comment else line[:start] + line[end + 3:]
+        if preformatted:
+            visible, pre_header, preformatted = _preformatted_line(line, pre_header)
+            lines.append(visible)
+            continue
+        item = LIST_ITEM.match(line)
+        if item and not THEMATIC_BREAK.fullmatch(line):
+            padding = len(item["pad"])
+            indent = item.start("pad") + (padding if 1 <= padding <= 4 else 1)
+            column += indent
+            list_columns.append(column)
+            line = line[indent:]
+        if marker := FENCE.match(line):
+            fence = marker[1]
+            block_scope = quote_depth, column
+            lines.append("")
+            continue
+        if PRE_OPEN.match(line):
+            line, pre_header, preformatted = _preformatted_line(line, "")
+            block_scope = quote_depth, column
         lines.append(line)
     return lines
 

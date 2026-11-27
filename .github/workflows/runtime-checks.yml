@@ -70,7 +70,8 @@ jobs:
               check_markdown_links.py check_test_strictness.py \
               test_tax_committed_view.py test_regression_evidence.py test_runtime_load_consistency.py \
               test_day_stage_reuse.py test_tax_row_keys.py test_frontend_and_save_guards.py \
-              test_generated_manifests.py test_markdown_links.py test_test_strictness.py test_guard_baselines.py; do
+              test_narrative_save_contracts.py test_generated_manifests.py test_markdown_links.py \
+              test_test_strictness.py test_guard_baselines.py; do
             echo "::group::$guard"
             python "$guard" || { status=1; echo "::error::$guard failed"; }
             echo "::endgroup::"

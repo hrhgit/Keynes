@@ -90,6 +90,39 @@ def unversioned_last_city_capture():
 
 
 class FrontendLiveReads(unittest.TestCase):
+    def test_live_read_in_member_initializer_is_refused(self):
+        for source in (
+            'var snapshot = _economy_facade.report()\nfunc update():\n\tpass\n',
+            'func update():\n\tpass\n@onready var snapshot = (\n\t_economy_facade.report()\n)\n',
+            '@warning_ignore("unsafe_method_access") @onready var snapshot := _economy_facade.report()\n',
+            'class Row extends Control:\n\t@onready var model := get_parent().get_economy_facade()\n'
+            '\t@onready var snapshot := model.report()\n\tfunc draw():\n\t\tpass\n',
+        ):
+            with self.subTest(source=source):
+                errors = script_access.frontend_live_read_violations("scripts/ui/calendar.gd", source, {})
+                self.assertEqual(len(errors), 1)
+                self.assertIn("class body reads the live Economy report", errors[0])
+
+    def test_published_parameter_shadows_same_named_live_member(self):
+        for parameter in ("_economy_facade", "_economy_facade: PublishedEconomyView"):
+            with self.subTest(parameter=parameter):
+                source = ("var _economy_facade: EconomyFacade\n"
+                          f"func update({parameter}):\n\treturn _economy_facade.report()\n")
+                self.assertEqual(
+                    script_access.frontend_live_read_violations("scripts/ui/calendar.gd", source, {}), [])
+                explicit = source.replace("return _economy_facade", "return self._economy_facade")
+                self.assertEqual(len(script_access.frontend_live_read_violations(
+                    "scripts/ui/calendar.gd", explicit, {})), 1)
+
+    def test_a_later_local_shadow_does_not_hide_an_earlier_live_read(self):
+        source = ("var _economy_facade: EconomyFacade\nfunc update():\n"
+                  "\tvar result := _economy_facade.report()\n\tif visible:\n"
+                  "\t\tvar _economy_facade: PublishedEconomyView = state.current_view\n"
+                  "\t\treturn _economy_facade.report()\n\treturn result\n")
+        errors = script_access.frontend_live_read_violations("scripts/ui/calendar.gd", source, {})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("calendar.gd:3", errors[0])
+
     def test_ci_refuses_a_manually_increased_native_reference_count(self):
         name = "Project/project-keynes/scripts/ui/calendar.gd"
         with tempfile.TemporaryDirectory() as directory:

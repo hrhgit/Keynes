@@ -2,7 +2,7 @@
 
 import unittest
 
-from check_tax_row_keys import LEGACY_PATH, _baseline_growth, tax_row_key_violations
+from check_tax_row_keys import LEGACY_PATH, tax_row_key_violations, validate_tax_row_baseline
 
 
 TAX_ROWS = LEGACY_PATH
@@ -17,8 +17,18 @@ PACKED_ROWS = """
             (static_cast<uint64_t>(static_cast<uint8_t>(base_mode & 0xff))
              << 24U) |
             static_cast<uint32_t>(base_rate);
-        return settlement_default_rows[settlement_key];
+        int32_t &row_number = display_only
+            ? display_default_rows[std::make_tuple(country, kind, base_rate, base_mode)]
+            : settlement_default_rows[settlement_key];
+        return row_number;
     };
+    const auto compile_cell_policy = [&](int32_t cell, bool display_only) {
+        const int32_t row_id = ensure_default_row(
+            country, kind, resolved_rate, resolved_mode, display_only);
+    };
+    compile_cell_policy(cell, false);
+    compile_cell_policy(cell, false);
+    compile_cell_policy(cell, true);
 """
 MASTER_ENTRY = {TAX_ROWS: ["7dcd33574ceaede7d250cdcedee50519b6b83e8297e2497ba40f193cbab414c1"]}
 FIXED_ROWS = """
@@ -70,6 +80,45 @@ class TaxRowKeyTests(unittest.TestCase):
         """
         self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
 
+    def test_accepts_ordinary_lookup_and_insert_by_a_country_handle(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = """
+            std::unordered_map<uint64_t, Policy> lookup;
+            lookup.insert({country_handle, row});
+            const auto policy = lookup.find(country_handle);
+        """
+        self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
+
+    def test_accepts_explicit_pairs_with_simple_id_keys(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = """
+            std::unordered_map<uint64_t, Policy> lookup;
+            lookup.insert(std::make_pair(entry.country_handle, row));
+            lookup.insert(std::pair<uint64_t, Policy>{0xFFu, row});
+        """
+        self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
+
+    def test_rejects_packed_insert_into_a_single_id_named_table(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = """
+            std::unordered_map<uint64_t, Policy> policy_by_id;
+            const auto policy = policy_by_id.find(policy_id);
+            policy_by_id.insert({(country_handle << 24U) | amount, row});
+        """
+        errors, retained = tax_row_key_violations({path: source}, {})
+        self.assertTrue(any("policy_by_id uses a scalar tax row key" in error for error in errors))
+        self.assertEqual(retained, {})
+
+    def test_rejects_an_id_named_key_that_was_computed_by_packing(self):
+        path = "gdext/src/economy_cell_tax_default_rows.h"
+        source = """
+            std::unordered_map<uint64_t, Policy> policy_by_id;
+            const auto policy_id = (country_handle << 24U) | amount;
+            policy_by_id.insert(std::make_pair(policy_id, row));
+        """
+        errors, _ = tax_row_key_violations({path: source}, {})
+        self.assertTrue(any("policy_by_id uses a scalar tax row key" in error for error in errors))
+
     def test_rejects_packing_in_a_table_named_like_a_single_id_index(self):
         path = "gdext/src/economy_cell_tax_default_rows.h"
         source = PACKED_ROWS.replace("settlement_default_rows", "policy_by_id")
@@ -116,10 +165,25 @@ class TaxRowKeyTests(unittest.TestCase):
                 self.assertTrue(errors)
         self.assertEqual(tax_row_key_violations({TAX_ROWS: FIXED_ROWS}, MASTER_ENTRY), ([], {}))
 
+    def test_legacy_cache_cannot_be_reused_for_display_rows(self):
+        for source in (
+            PACKED_ROWS.replace("row_number = display_only", "row_number = !display_only"),
+            PACKED_ROWS.replace("resolved_mode, display_only", "resolved_mode, false"),
+            PACKED_ROWS.replace("compile_cell_policy(cell, true)", "compile_cell_policy(cell, false)"),
+            PACKED_ROWS.replace("compile_cell_policy(cell, true)", "batch_display")
+                       .replace("compile_cell_policy(cell, false)", "compile_cell_policy(cell, true)", 1)
+                       .replace("batch_display", "compile_cell_policy(cell, false)"),
+        ):
+            with self.subTest(source=source):
+                errors, retained = tax_row_key_violations({TAX_ROWS: source}, MASTER_ENTRY)
+                self.assertTrue(any("settlement_default_rows uses a scalar tax row key" in error
+                                    for error in errors))
+                self.assertEqual(retained, {})
+
     def test_refuses_added_or_increased_baseline_entries(self):
-        self.assertEqual(_baseline_growth({}, MASTER_ENTRY), [])
-        self.assertTrue(_baseline_growth(MASTER_ENTRY, {}))
-        self.assertTrue(_baseline_growth({TAX_ROWS: MASTER_ENTRY[TAX_ROWS] * 2}, MASTER_ENTRY))
+        self.assertEqual(validate_tax_row_baseline({}, MASTER_ENTRY), [])
+        self.assertTrue(validate_tax_row_baseline(MASTER_ENTRY, {}))
+        self.assertTrue(validate_tax_row_baseline({TAX_ROWS: MASTER_ENTRY[TAX_ROWS] * 2}, MASTER_ENTRY))
 
 
 if __name__ == "__main__":
