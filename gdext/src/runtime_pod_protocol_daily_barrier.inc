@@ -224,4 +224,6 @@ struct RuntimeDomainIntent {
     // legitimate zero value. Adapters must not infer presence from `value != 0`.
     uint32_t reserved_effect_flags = 0;
     uint64_t idempotency_key = 0;
+    int32_t effect_source_type = 0;
+    int64_t effect_source_id = 0;
 };

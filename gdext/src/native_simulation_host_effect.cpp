@@ -14,7 +14,6 @@
 #include "country_runtime.h"
 #include "economy_runtime.h"
 #include "economy_hash.h"
-#include "effect_magnitude.h"
 #include "effect_runtime.h"
 #include "trigger_runtime.h"
 #include "ideology_runtime.h"
@@ -162,8 +161,7 @@ int32_t NativeSimulationHost::resolve_modifier_definition_id_for_effect_intent(
                 intent.request_id) {
                 continue;
             }
-            const uint32_t ordinal =
-                static_cast<uint32_t>(intent.sequence & 15u);
+            const uint64_t ordinal = intent.sequence - transaction.fire_sequence * 16u;
             if (ordinal >= transaction.command_count) break;
             const size_t command_index =
                 static_cast<size_t>(transaction.command_begin) + ordinal;
@@ -189,80 +187,14 @@ int32_t NativeSimulationHost::resolve_modifier_definition_id_for_effect_intent(
     return -1;
 }
 
-void NativeSimulationHost::reemit_effect_committed_pending_intents(int64_t day) {
-    if (!_effect_pod_configured) return;
-    const auto &snapshot = _effect_pod_authority.snapshot();
-    for (const auto &transaction : snapshot.transactions) {
-        if (transaction.status !=
-            RuntimeEffectPodTransactionStatus::COMMITTED) {
-            continue;
+void NativeSimulationHost::collect_day_modifier_intents() {
+    for (auto &intent : _effect_day_intents) {
+        if (intent.target_domain != static_cast<uint16_t>(RuntimeDomainId::MODIFIER)) continue;
+        if (intent.payload[0] <= 0) {
+            const int32_t id = resolve_modifier_definition_id_for_effect_intent(intent);
+            if (id >= 0) intent.payload[0] = id;
         }
-        for (uint32_t ordinal = 0; ordinal < transaction.command_count;
-             ++ordinal) {
-            const size_t command_index =
-                static_cast<size_t>(transaction.command_begin) + ordinal;
-            if (command_index >= snapshot.command_arena.size()) break;
-            const auto &command = snapshot.command_arena[command_index];
-            const uint32_t bit =
-                RuntimeEffectPodAuthority::adapter_ack_bit(command.action);
-            if (bit != 0u &&
-                (transaction.received_ack_mask & bit) == bit) {
-                continue;
-            }
-            RuntimeDomainIntent intent;
-            intent.source_domain =
-                static_cast<uint16_t>(RuntimeDomainId::EFFECT);
-            intent.target_domain =
-                RuntimeEffectPodAuthority::adapter_domain(command.action);
-            intent.opcode = static_cast<uint16_t>(command.opcode);
-            intent.effect_action = static_cast<uint16_t>(command.action);
-            intent.source_id =
-                static_cast<uint64_t>(command.source_instance_id);
-            intent.target_handle = command.target_handle;
-            intent.target_generation = command.target_generation;
-            intent.value = command.value;
-            intent.reserved_effect_flags |=
-                RUNTIME_DOMAIN_INTENT_HAS_EFFECT_VALUE;
-            intent.effective_day = command.effective_day >= 0
-                ? command.effective_day : day;
-            intent.payload = command.payload;
-            intent.request_id =
-                static_cast<uint64_t>(transaction.transaction_id);
-            intent.producer_id =
-                static_cast<uint32_t>(RuntimeDomainId::EFFECT);
-            intent.sequence =
-                transaction.fire_sequence * 16u + ordinal;
-            intent.idempotency_key = command.idempotency_key;
-            intent.duration_days = command.duration_days;
-            intent.stacks = command.stacks;
-            const int32_t instance_index =
-                _effect_pod_authority.instance_index_for_id(
-                    command.source_instance_id);
-            const int32_t magnitude_scale_q16 = instance_index >= 0
-                ? _effect_pod_authority.snapshot().instances[
-                    static_cast<size_t>(instance_index)].magnitude_scale_q16
-                : EFFECT_MAGNITUDE_Q16_ONE;
-            intent.magnitude_q16 = effect_scaled_magnitude_q16(
-                command.value, magnitude_scale_q16);
-            if (command.action == RuntimeEffectPodAction::MODIFIER_COMMAND &&
-                intent.payload[1] == 0 && command.domain >= 0 &&
-                command.domain < 4) {
-                intent.payload[1] = command.domain;
-            }
-            if (command.action == RuntimeEffectPodAction::MODIFIER_COMMAND &&
-                intent.payload[0] <= 0 &&
-                command.definition_key_hash != 0) {
-                const auto found = _modifier_definition_id_by_key_hash.find(
-                    command.definition_key_hash);
-                if (found != _modifier_definition_id_by_key_hash.end())
-                    intent.payload[0] = found->second;
-            }
-            _effect_day_intents.push_back(intent);
-            if (intent.target_domain ==
-                static_cast<uint16_t>(RuntimeDomainId::MODIFIER)) {
-                _effect_day_modifier_intents.push_back(intent);
-            }
-        }
+        _effect_day_modifier_intents.push_back(intent);
     }
 }
 
@@ -466,7 +398,7 @@ bool NativeSimulationHost::submit_effect_pod_ack(
 
 #include "native_simulation_host_effect_section_country_peers.inc"
 
-bool NativeSimulationHost::drain_effect_transport_queues(std::string &error) {
+bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int64_t open_day) {
     error.clear();
     if (!_effect_pod_configured) {
         error = "effect_pod_not_configured";
@@ -547,19 +479,9 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error) {
         const EffectPodInstanceQueueItem queued = instances.front();
         instances.pop_front();
         RuntimeEffectPodInstanceInput input = queued.input;
-        // Queue may have waited across Effect soft-skips / climate parks.
-        // Never-fired technology installs must land on the next plan day.
-        const int64_t committed = _effect_pod_authority.snapshot().committed_day;
-        // 负数 due day 是「还没排期」，不是非法值：声明式注册在地图生成阶段就跑过
-        // 一遍，那时主线程时钟还是 day -1，于是整批 ENSURE 带着 next_due_day=-1
-        // 进队。validate_instance 只能拒绝它，而这个拒绝又会把 host 日钉死
-        // （新开局冻在 day 2 的直接原因）。这里和其它「已过期」的情形一起归一到
-        // 下一个计划日。
-        if (input.next_due_day < 0) {
-            input.next_due_day = std::max<int64_t>(0, committed + 1);
-        } else if (committed >= 0 && input.next_due_day <= committed) {
-            input.next_due_day = committed + 1;
-        }
+        // Unscheduled map-generation inputs become due on the first open day.
+        // An explicit future date belongs to the producer.
+        input.next_due_day = std::max(input.next_due_day, open_day);
         if (!_effect_pod_authority.upsert_instance(input, error)) {
             // `effect_pod_instance_invalid` 是队列行自身的属性（program 越界 /
             // target_generation 为 0 / next_due_day 为负 / id 非正），排队再久也
@@ -627,7 +549,7 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error) {
 
 bool NativeSimulationHost::execute_effect_worker_stage(
         int64_t day, uint64_t input_generation, RuntimeDayCommit &commit,
-        std::string &error) {
+        std::string &error, std::vector<RuntimeCommandPacket> *event_packets) {
     (void)commit;
     error.clear();
     _effect_day_modifier_intents.clear();
@@ -638,11 +560,24 @@ bool NativeSimulationHost::execute_effect_worker_stage(
         return false;
     }
 
-    if (!drain_effect_transport_queues(error)) return false;
+    if (!drain_effect_transport_queues(error, day)) return false;
+    const auto &previous = _effect_pod_authority.snapshot();
+    const bool revisit = event_packets && day <= previous.committed_day;
+    if (revisit) {
+        _effect_pod_authority.append_committed_pending_intents(day, _effect_day_intents);
+        if (day != previous.committed_day ||
+            std::none_of(previous.instances.begin(), previous.instances.end(),
+                [day](const auto &instance) { return instance.first_fire_due(day); })) {
+            collect_day_modifier_intents();
+            ack_effect_events_intents_in_worker(_effect_day_intents);
+            _effect_day_stage_ok = true;
+            return true;
+        }
+    }
 
     const auto plan_started = std::chrono::steady_clock::now();
     RuntimeEffectPodPlan plan;
-    if (!_effect_pod_authority.plan_day(day, input_generation, plan, error)) {
+    if (!_effect_pod_authority.plan_day(day, input_generation, plan, error, revisit)) {
         _effect_pod_authority.discard_plan();
         return false;
     }
@@ -654,15 +589,22 @@ bool NativeSimulationHost::execute_effect_worker_stage(
         emitted_program_ids{};
     emitted_program_ids.fill(-1);
     uint32_t emitted_program_count = 0;
-    uint32_t modifier_targeted = 0;
+    const auto replay_started = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-        for (const RuntimeDomainIntent &intent : plan.intents) {
-            if (_effect_intents.size() >= RUNTIME_DOMAIN_INTENT_CAPACITY) {
-                _effect_pod_authority.discard_plan();
-                error = "effect_intent_capacity_exceeded";
-                return false;
-            }
+        if (plan.intents.size() > RUNTIME_DOMAIN_INTENT_CAPACITY - _effect_intents.size()) {
+            _effect_pod_authority.discard_plan();
+            error = "effect_intent_capacity_exceeded";
+            return false;
+        }
+        if (!_effect_pod_authority.commit_day(plan, error)) {
+            _effect_pod_authority.discard_plan();
+            return false;
+        }
+        for (RuntimeDomainIntent intent : plan.intents) {
+            // A receipt can outlive the Events journal's deduplication window.
+            if (event_packets && !(intent.reserved_effect_flags & RUNTIME_DOMAIN_INTENT_EFFECT_REDELIVERY))
+                event_packets->push_back(make_effect_intent_events_packet(intent, day));
             _effect_intents.push_back(intent);
             _effect_day_intents.push_back(intent);
             const int32_t source_instance_index =
@@ -688,39 +630,9 @@ bool NativeSimulationHost::execute_effect_worker_stage(
                     source_program_id;
             }
             ++emitted;
-            if (intent.target_domain ==
-                static_cast<uint16_t>(RuntimeDomainId::MODIFIER)) {
-                _effect_day_modifier_intents.push_back(intent);
-                ++modifier_targeted;
-            }
         }
     }
-    (void)modifier_targeted;
-
-    const auto replay_started = std::chrono::steady_clock::now();
-    if (!_effect_pod_authority.commit_day(plan, error)) {
-        _effect_pod_authority.discard_plan();
-        return false;
-    }
-    // After commit the transaction arena is published; resolve Modifier
-    // definition ids so the same-day Modifier stage (and soft-skip reemit)
-    // see a dense payload[0] even when the Effect catalog left it unset.
-    for (RuntimeDomainIntent &intent : _effect_day_modifier_intents) {
-        if (intent.payload[0] > 0) continue;
-        const int32_t definition_id =
-            resolve_modifier_definition_id_for_effect_intent(intent);
-        if (definition_id >= 0) intent.payload[0] = definition_id;
-    }
-    for (RuntimeDomainIntent &intent : _effect_day_intents) {
-        if (intent.target_domain !=
-                static_cast<uint16_t>(RuntimeDomainId::MODIFIER) ||
-            intent.payload[0] > 0) {
-            continue;
-        }
-        const int32_t definition_id =
-            resolve_modifier_definition_id_for_effect_intent(intent);
-        if (definition_id >= 0) intent.payload[0] = definition_id;
-    }
+    collect_day_modifier_intents();
     // PUBLISH_EVENT (technology.adopted) is published by the Events stage but
     // never ACKed there. Settle the Events bit in-worker so technology fire
     // does not wait on the main-thread Effect pump.

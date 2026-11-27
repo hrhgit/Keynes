@@ -1,11 +1,12 @@
 bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
                                          RuntimeEffectPodPlan &plan,
-                                         std::string &error) {
+                                         std::string &error, bool first_fires_only) {
     error.clear();
     plan = RuntimeEffectPodPlan{};
     if (!_configured) { error = "effect_pod_not_configured"; set_blocker(error.c_str()); return false; }
-    if (day < 0 || input_generation == 0 ||
-        (_current.committed_day >= 0 && day != _current.committed_day + 1)) {
+    const bool valid_day = first_fires_only ? day == _current.committed_day :
+        (_current.committed_day < 0 || day == _current.committed_day + 1);
+    if (day < 0 || input_generation == 0 || !valid_day) {
         error = _current.committed_day >= 0 ? "effect_pod_day_not_sequential"
                                             : "effect_pod_context_invalid";
         set_blocker(error.c_str());
@@ -25,6 +26,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
     for (size_t instance_index_value = 0;
          instance_index_value < _next.instances.size(); ++instance_index_value) {
         RuntimeEffectPodInstance &instance = _next.instances[instance_index_value];
+        if (first_fires_only && !instance.first_fire_due(day)) continue;
         // An explicit retire keeps the tombstone active only until its REMOVE
         // ACKs. Planning the removal is the whole point of that state.
         if (instance.active == 0 && instance.retire_requested == 0) continue;
@@ -50,8 +52,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
                 transaction.status = RuntimeEffectPodTransactionStatus::PREFLIGHTED;
                 ++plan.retried_transaction_count;
                 plan.required_ack_mask |= transaction.required_ack_mask;
-                append_transaction_intents(_next, definition, instance, transaction,
-                                           plan.intents, &plan_hash);
+                append_transaction_intents(_next, transaction, plan.intents, &plan_hash, true);
             }
             continue;
         }
@@ -65,7 +66,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
                     return false;
                 }
                 plan.required_ack_mask |= transaction.required_ack_mask;
-                append_transaction_intents(_next, definition, instance, transaction,
+                append_transaction_intents(_next, transaction,
                                            plan.intents, &plan_hash);
                 continue;
             }
@@ -93,7 +94,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
                 return false;
             }
             plan.required_ack_mask |= transaction.required_ack_mask;
-            append_transaction_intents(_next, definition, instance, transaction,
+            append_transaction_intents(_next, transaction,
                                        plan.intents, &plan_hash);
             continue;
         }
@@ -119,8 +120,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
                 return false;
             }
             plan.required_ack_mask |= transaction.required_ack_mask;
-            append_transaction_intents(_next, definition, instance,
-                                       transaction, plan.intents,
+            append_transaction_intents(_next, transaction, plan.intents,
                                        &plan_hash);
             continue;
         }
@@ -155,7 +155,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
             return false;
         }
         plan.required_ack_mask |= transaction.required_ack_mask;
-        append_transaction_intents(_next, definition, instance, transaction,
+        append_transaction_intents(_next, transaction,
                                    plan.intents, &plan_hash);
     }
     _next.generation = _current.generation + 1u;
@@ -218,18 +218,25 @@ bool RuntimeEffectPodAuthority::apply_ack(const RuntimeDomainAck &ack,
     const int32_t tx_index = transaction_index(static_cast<int64_t>(ack.transaction_id));
     if (tx_index < 0) { error = "effect_pod_ack_transaction_unknown"; return false; }
     auto &transaction = _current.transactions[static_cast<size_t>(tx_index)];
-    bool matched = false;
-    uint32_t matched_bit = 0;
+    uint32_t adapter_bit = 0;
+    uint32_t legacy_subdomain_bits = 0;
     for (uint32_t ordinal = 0; ordinal < transaction.command_count; ++ordinal) {
         const size_t command_index = static_cast<size_t>(transaction.command_begin) + ordinal;
         if (command_index >= _current.command_arena.size()) continue;
         const auto &command = _current.command_arena[command_index];
-        if (ack_matches(ack, command)) {
-            matched = true;
-            matched_bit |= adapter_ack_bit(command.action);
-        }
+        if (!ack_matches(ack, command)) continue;
+        if (ack.domain == adapter_domain(command.action))
+            adapter_bit = adapter_ack_bit(command.action);
+        else
+            legacy_subdomain_bits |= adapter_ack_bit(command.action);
     }
-    if (!matched) { error = "effect_pod_ack_command_mismatch"; return false; }
+    // A receipt names its adapter. Old senders used the command subdomain,
+    // which is safe only when it identifies a single adapter in this batch.
+    const uint32_t matched_bit = adapter_bit != 0 ? adapter_bit : legacy_subdomain_bits;
+    if (matched_bit == 0 || (matched_bit & (matched_bit - 1u)) != 0u) {
+        error = "effect_pod_ack_command_mismatch";
+        return false;
+    }
     transaction.last_ack_code = static_cast<uint16_t>(ack.code);
     if (ack.code == RuntimeDomainAckCode::OK) {
         if ((transaction.received_ack_mask & matched_bit) != 0u) {
@@ -251,7 +258,7 @@ bool RuntimeEffectPodAuthority::apply_ack(const RuntimeDomainAck &ack,
                 instance.pending_idempotency_key = 0;
                 instance.last_acked_fire_sequence = transaction.fire_sequence;
                 const auto &definition = _catalog.definitions[
-                    static_cast<size_t>(instance.program_id)];
+                    static_cast<size_t>(transaction.delivery_program_id)];
                 const bool retirement =
                     transaction.transition_stack_count == 0;
                 if (definition.managed != 0 && retirement) {
@@ -270,13 +277,17 @@ bool RuntimeEffectPodAuthority::apply_ack(const RuntimeDomainAck &ack,
                     instance.applied_stack_count = std::max(
                         1, transaction.transition_stack_count);
                 } else {
-                    // Unmanaged programs keep their historical bookkeeping.
-                    instance.applied_stack_count = instance.stack_count;
+                    // Unmanaged fire counts belong to the unmanaged binding.
+                    // A newly bound managed program counts only acknowledged
+                    // managed applications in this field.
+                    if (!definition_is_managed(instance.program_id))
+                        instance.applied_stack_count = transaction.transition_stack_count;
                     if (instance.retire_requested) instance.active = 0;
                 }
             }
         }
     } else if (ack.code == RuntimeDomainAckCode::RETRY) {
+        transaction.received_ack_mask &= ~matched_bit;
         transaction.status = RuntimeEffectPodTransactionStatus::PLANNED;
         ++transaction.retry_count;
     } else if (ack.code == RuntimeDomainAckCode::REJECTED) {

@@ -160,7 +160,6 @@ void RuntimeEffectPodAuthority::reset(uint32_t instance_capacity,
     _next.command_arena.reserve(std::min<uint32_t>(_command_capacity, 4096u));
     _current.deterministic_state_hash = state_hash(_current);
     _next.deterministic_state_hash = state_hash(_next);
-    _next_transaction_id = 1;
     _active_plan = nullptr;
     _plan_ready = false; _view_cursor = {};
     _snapshot = RuntimeEffectPodSnapshot{};
@@ -298,7 +297,7 @@ uint64_t RuntimeEffectPodAuthority::catalog_hash(
 bool RuntimeEffectPodAuthority::validate_catalog(
         const RuntimeEffectPodCatalog &catalog, std::string &error) const {
     error.clear();
-    if (catalog.abi_version != RUNTIME_EFFECT_POD_ABI_VERSION ||
+    if (catalog.abi_version != RUNTIME_EFFECT_POD_CATALOG_ABI_VERSION ||
         catalog.catalog_version != RUNTIME_EFFECT_POD_CATALOG_VERSION) {
         error = "effect_pod_catalog_version_invalid";
         return false;

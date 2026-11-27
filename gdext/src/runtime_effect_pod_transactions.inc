@@ -12,7 +12,7 @@ bool RuntimeEffectPodAuthority::append_transaction(
         return false;
     }
     transaction = RuntimeEffectPodTransaction{};
-    transaction.transaction_id = _next_transaction_id;
+    transaction.transaction_id = state.next_transaction_id;
     transaction.source_instance_id = instance.instance_id;
     transaction.source_generation = instance.generation;
     transaction.effective_day = day;
@@ -21,6 +21,10 @@ bool RuntimeEffectPodAuthority::append_transaction(
     transaction.status = RuntimeEffectPodTransactionStatus::PREFLIGHTED;
     transaction.fire_sequence = instance.fire_sequence + 1u;
     transaction.input_revision = instance.input_revision;
+    transaction.delivery_program_id = instance.program_id;
+    transaction.delivery_source_type = instance.source_type;
+    transaction.delivery_source_id = instance.source_id;
+    transaction.delivery_magnitude_scale_q16 = instance.magnitude_scale_q16;
     transaction.transition_stack_count =
         retirement ? 0 : std::max(1, instance.stack_count);
     for (const auto &command : commands) {
@@ -47,7 +51,7 @@ bool RuntimeEffectPodAuthority::append_retirement_transaction(
     if (!append_transaction(state, instance, day, commands, true, transaction,
                             error))
         return false;
-    ++_next_transaction_id;
+    ++state.next_transaction_id;
     instance.fire_sequence += 1u;
     instance.pending_transaction_id = transaction.transaction_id;
     instance.pending_idempotency_key = commands.front().idempotency_key;
@@ -57,17 +61,25 @@ bool RuntimeEffectPodAuthority::append_retirement_transaction(
     return true;
 }
 
+void RuntimeEffectPodAuthority::append_committed_pending_intents(
+        int64_t day, std::vector<RuntimeDomainIntent> &out) const {
+    for (const auto &transaction : _current.transactions) {
+        if (transaction.effective_day <= day &&
+            transaction.status == RuntimeEffectPodTransactionStatus::COMMITTED)
+            append_transaction_intents(_current, transaction, out, nullptr, true);
+    }
+}
+
 void RuntimeEffectPodAuthority::append_transaction_intents(
-        const State &state, const RuntimeEffectPodDefinition &definition,
-        const RuntimeEffectPodInstance &instance,
-        const RuntimeEffectPodTransaction &transaction,
-        std::vector<RuntimeDomainIntent> &out_intents,
-        uint64_t *plan_hash) const {
+        const State &state, const RuntimeEffectPodTransaction &transaction,
+        std::vector<RuntimeDomainIntent> &out_intents, uint64_t *plan_hash, bool redelivery) const {
+    const auto &definition = _catalog.definitions[transaction.delivery_program_id];
     for (uint32_t ordinal = 0; ordinal < transaction.command_count; ++ordinal) {
         const size_t command_index =
             static_cast<size_t>(transaction.command_begin) + ordinal;
         if (command_index >= state.command_arena.size()) return;
         const auto &command = state.command_arena[command_index];
+        if ((transaction.received_ack_mask & adapter_ack_bit(command.action)) != 0u) continue;
         RuntimeDomainIntent intent;
         intent.source_domain = static_cast<uint16_t>(RuntimeDomainId::EFFECT);
         intent.target_domain = adapter_domain(command.action);
@@ -78,6 +90,7 @@ void RuntimeEffectPodAuthority::append_transaction_intents(
         intent.target_generation = command.target_generation;
         intent.value = command.value;
         intent.reserved_effect_flags |= RUNTIME_DOMAIN_INTENT_HAS_EFFECT_VALUE;
+        if (redelivery) intent.reserved_effect_flags |= RUNTIME_DOMAIN_INTENT_EFFECT_REDELIVERY;
         intent.effective_day = command.effective_day;
         intent.payload = command.payload;
         intent.request_id = static_cast<uint64_t>(transaction.transaction_id);
@@ -87,13 +100,16 @@ void RuntimeEffectPodAuthority::append_transaction_intents(
         intent.duration_days = command.duration_days;
         intent.stacks = command.stacks;
         intent.magnitude_q16 = effect_scaled_magnitude_q16(
-            command.value, instance.magnitude_scale_q16);
+            command.value, transaction.delivery_magnitude_scale_q16);
         if (command.action == RuntimeEffectPodAction::MODIFIER_COMMAND &&
             intent.payload[1] == 0 && command.domain >= 0 &&
             command.domain < 4) {
             intent.payload[1] = command.domain;
         }
         if (command.action == RuntimeEffectPodAction::MODIFIER_COMMAND) {
+            intent.reserved_effect_flags |= RUNTIME_DOMAIN_INTENT_HAS_EFFECT_SOURCE;
+            intent.effect_source_type = transaction.delivery_source_type;
+            intent.effect_source_id = transaction.delivery_source_id;
             int32_t adapter = 0;
             if (command.command_definition_id <
                 _catalog.command_native_adapters.size()) {
@@ -120,7 +136,7 @@ bool RuntimeEffectPodAuthority::schedule_application(
     if (!append_transaction(state, instance, day, commands, false, transaction,
                             error))
         return false;
-    ++_next_transaction_id;
+    ++state.next_transaction_id;
     instance.fire_sequence += 1u;
     instance.pending_transaction_id = transaction.transaction_id;
     instance.pending_idempotency_key = commands.front().idempotency_key;
@@ -216,6 +232,12 @@ uint64_t RuntimeEffectPodAuthority::transaction_hash(
     hash = mix_value(hash, transaction.fire_sequence);
     hash = mix_value(hash, transaction.input_revision);
     hash = mix_value(hash, transaction.transition_stack_count);
+    if (transaction.delivery_program_id >= 0) {
+        hash = mix_value(hash, transaction.delivery_program_id);
+        hash = mix_value(hash, transaction.delivery_source_type);
+        hash = mix_value(hash, transaction.delivery_source_id);
+        hash = mix_value(hash, transaction.delivery_magnitude_scale_q16);
+    }
     return hash;
 }
 

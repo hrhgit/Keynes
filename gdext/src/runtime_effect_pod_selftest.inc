@@ -1,3 +1,6 @@
+#include "runtime_effect_pod_checkpoint_selftest.inc"
+#include "runtime_effect_pod_mixed_ack_selftest.inc"
+
 bool RuntimeEffectPodAuthority::magnitude_scale_self_test(std::string &error) {
     const auto fail = [&error](const char *reason) {
         error = reason;
@@ -97,7 +100,8 @@ bool RuntimeEffectPodAuthority::self_test(std::string &error) {
     // second program to its catalog would move all of them.
     if (!cell_target_self_test(error)) return false;
     if (!latch_self_test(error)) return false;
-    if (!magnitude_scale_self_test(error)) return false;
+    if (!magnitude_scale_self_test(error) || !checkpoint_frozen_delivery_test(error)) return false;
+    if (!mixed_adapter_ack_self_test(error)) return false;
     // Managed lifecycle: one apply, one deactivation after the condition
     // falls, and no idle churn while the same input stays applied. The
     // fixture also pins ACK semantics and ACKED transaction compaction.
@@ -574,7 +578,9 @@ bool RuntimeEffectPodAuthority::self_test(std::string &error) {
     RuntimeEffectPodPlan retry_plan;
     if (!authority.plan_day(1, 2, retry_plan, error) || retry_plan.intents.size() != 6u ||
         !authority.commit_day(retry_plan, error)) return fail("effect_self_test_retry_plan_failed");
-    for (const RuntimeEffectPodCommand &command : authority.snapshot().command_arena) {
+    // Applying an ACK republishes the authority snapshot. The returned plan
+    // retains the command list being acknowledged across those publications.
+    for (const RuntimeEffectPodCommand &command : retry_plan.next_snapshot.command_arena) {
         RuntimeDomainAck ack;
         ack.transaction_id = static_cast<uint64_t>(transaction_id);
         ack.target_handle = command.target_handle;

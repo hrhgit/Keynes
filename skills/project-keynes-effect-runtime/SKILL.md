@@ -47,7 +47,7 @@ PREFLIGHTED -> safe commit -> runtime COMMITTED -> ACK`. Cross-domain
 transactions remain pending until every required domain bit is acknowledged.
 整图授权时，`NativeSimulationHost::stage_effect_adapter` 在日尾安装已提交的
 Effect 结果，保留 Economy 加入的殖民、运河事务和 Country、Economy 的回执关联。
-前台的 Effect 报告读取该阶段随日发布的视图。
+前台的 Effect 报告读取该阶段随日发布的视图。同日续算只补发已经到期的首次事务，保留未来实例原定日期。每条新命令随这一天的事件发布一次，待收回执的命令沿用首次发送的事务号、序号、程序、来源及幅值倍率。重送只交给尚未确认的接收方。
 Known Modifier commands should use the native batch bridge first:
 `EffectRuntime::dispatch_native_modifier()` -> `ModifierRuntime` POD enqueue ->
 `modifier_daily` -> `ack_native_modifier()`. `EffectFacade` is only the
@@ -81,10 +81,11 @@ authored key is invalid.
 ## Scheduling and persistence
 
 Register `effect_runtime` after `trigger_runtime` and before `modifier_daily`.
-Use `effect_should_run(day)` and a cooperative `done=false` cursor. Persist
-instances, metric snapshots/revisions, program hash, fire sequence, managed lifecycle and
-stack state, pending transactions, the in-progress candidate list, and last consumed input revision
-in `PKEF v11`; reject every older schema, catalog mismatch, or truncation. Store a native-bound
+Use `effect_should_run(day)` and a cooperative `done=false` cursor.
+
+PKEF v14 保存实例、指标快照和版本、程序哈希、触发序号、生命周期与叠层、待收回执的事务、正在计算的候选及上次消费的输入版本。读档校验格式版本、目录哈希及数据完整性。后台 EFP1 v5 同时保存首次发射时的程序、来源与倍率。旧 v4 待收的修正确能还原时沿原事务重送，缺失必要参数时拒绝该档。
+
+Store a native-bound
 `PREFLIGHTED` transaction as `PLANNED`: native Modifier request IDs are not
 valid after restart, while the command idempotency key is. A strictly newer metric
 revision may re-evaluate once in the same day; unchanged input obeys cadence.
@@ -119,6 +120,6 @@ overflow, cursor slicing,
 atomic PKEF round-trip/truncation rejection, native-bound restore replay,
 instance-slot reuse, and Trigger handoff. Run
 `scripts/verify_effect_runtime.ps1`, `git diff --check`, the native build, and
-the headless `tests/effect_runtime_test.gd` and
-`tests/effect_domain_integration_test.gd` fixtures. Do not claim a performance
+the headless `tests/effect/effect_runtime_test.gd` and
+`tests/effect/effect_domain_integration_test.gd` fixtures. Do not claim a performance
 regression target without same-machine baseline and after measurements.

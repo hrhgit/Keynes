@@ -100,6 +100,10 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
         return false;
     }
+    // An executor that owns Events must maintain the journal on every start,
+    // including a same-world resume with diagnostics disabled.
+    if ((wanted & runtime_domain_mask(RuntimeDomainId::EVENTS)) != 0u)
+        _events_probe_enabled.store(true, std::memory_order_release);
     if (!_has_pending_restore && has_started_once() &&
         mode == RuntimeSimulationMode::ACTIVE &&
         _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
@@ -222,13 +226,6 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     // The request is recorded now; the grant is published only after a barrier
     // proves the worker actually ran those domains (see publish_day).
     _requested_authority_mask.store(wanted, std::memory_order_release);
-    // I8: an ACTIVE EVENTS request owns the Events stage bit, so the POD store
-    // must run whether or not the caller also asked for the diagnostic probe.
-    // Leaving it off would make the stage soft-complete forever without ever
-    // producing a snapshot.
-    if ((wanted & runtime_domain_mask(RuntimeDomainId::EVENTS)) != 0u) {
-        _events_probe_enabled.store(true, std::memory_order_release);
-    }
     _mode.store(mode, std::memory_order_release);
     _committed_day.store(start_day, std::memory_order_release);
     publish_narrative_boundary(start_day);

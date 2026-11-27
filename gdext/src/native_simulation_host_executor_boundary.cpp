@@ -118,7 +118,7 @@ bool NativeSimulationHost::service_save_request(
         std::vector<RuntimeCommandPacket> &pending_commands) {
     if (!_save_requested.load(std::memory_order_acquire)) return false;
     // Pending environment frames describe future days and are regenerated on
-    // restore. The caller must first finish any day that already consumed one.
+    // restore. The executor finishes the current day before serving the request.
     // Dropping them moves the publish watermark back to the committed day, so
     // the bundle and the live publisher both continue from D+1.
     if (has_pending_climate_input() && _environment_ring.pop_while_day_at_most(

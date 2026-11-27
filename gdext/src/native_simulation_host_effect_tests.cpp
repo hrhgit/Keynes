@@ -669,7 +669,9 @@ bool NativeSimulationHost::modifier_effect_adapter_self_test(
             *out_error = error.empty() ? "modifier_adapter_commit_failed" : error;
         return false;
     }
-    return true;
+    return modifier_effect_redelivery_self_test(modifier_catalog, out_error);
 }
+
+#include "native_simulation_host_effect_redelivery_test.inc"
 
 } // namespace pk

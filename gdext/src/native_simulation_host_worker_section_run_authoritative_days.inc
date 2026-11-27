@@ -462,16 +462,9 @@
                     const bool waits_for_main = (day_stall_reason_mask() & peer_waits) != 0u ||
                         (!climate_driven && (missing & runtime_domain_mask(RuntimeDomainId::CLIMATE)) != 0u);
                     _control_cv.wait_for(lock, kDayWaitSlice, [&] {
-                        // Match the save admission condition above. A pending
-                        // save cannot consume an unfinished environment day;
-                        // waking on the request alone spins and starves the
-                        // main-thread input capture needed to finish that day.
-                        const bool save_can_run =
-                            _save_requested.load(std::memory_order_acquire) &&
-                            !has_pending_climate_input() &&
-                            !(active_environment && active_environment->day == day);
+                        // A save cannot run until this attempt's day commits.
                         const bool ready = _stop_requested.load(std::memory_order_acquire) ||
-                            save_can_run || player_requests_pending_locked() ||
+                            player_requests_pending_locked() ||
                             (!climate_driven && _paused.load(std::memory_order_acquire)) ||
                             stale_input_consumed ||
                             _climate_trace_signal.load(std::memory_order_acquire) !=

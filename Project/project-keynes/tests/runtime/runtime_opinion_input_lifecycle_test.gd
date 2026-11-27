@@ -27,7 +27,7 @@ func _run() -> int:
 			source_opinion.get("commit_day", -1) == 0 and source_opinion.get("revision", 0) > 0)
 		_expect("source world starts with a committed initial opinion", source.start_runtime_worker(
 			_opinion_config(inline_mode)).get("ok", false))
-		var saved := await _opinion_save(source)
+		var saved := await _opinion_save(source, inline_mode)
 		await _stop(source)
 
 		var target: Object = _opinion_world(catalog, false)
@@ -221,16 +221,29 @@ func _opinion_day(ext: Object, inline_mode: bool, day: int) -> bool:
 	_expect("opinion lifecycle day %d commits" % day, committed)
 	return committed
 
-func _opinion_save(ext: Object) -> Dictionary:
-	_expect("opinion source save is accepted", ext.request_runtime_save(20261110).get("ok", false))
+func _opinion_save(ext: Object, inline_mode: bool) -> Dictionary:
 	var deadline := Time.get_ticks_msec() + 5000
+	if not inline_mode:
+		# Let the worker consume the opening D0 frame before asking for its D0 save.
+		# No D1 frame has been sent, so this must still be an idle boundary.
+		var report: Dictionary = ext.get_runtime_thread_report()
+		while (report.get("environment_ring_pending", -1) != 0 or report.get("environment_consumed_days", 0) < 1) \
+				and Time.get_ticks_msec() < deadline:
+			await process_frame
+			report = ext.get_runtime_thread_report()
+		_expect("retiring the D0 input does not start D1", report.get("environment_ring_pending") == 0
+			and not report.get("inline_day_pending", true))
+		_expect("the opening Climate input is acknowledged once", report.get("environment_consumed_days") == 1
+			and report.get("climate_consumed_generation", -1) == report.get("simulation_environment_generation", -2))
+	_expect("opinion source save is accepted", ext.request_runtime_save(20261110).get("ok", false))
 	var result := {}
 	while Time.get_ticks_msec() < deadline:
 		result = ext.poll_runtime_save(20261110)
 		if result.get("ready", false) or not result.get("ok", true):
 			break
 		await process_frame
-	_expect("opinion source reaches its committed save boundary", result.get("ready", false))
+	_expect("opinion source reaches its committed save boundary",
+		result.get("ready", false) and result.get("committed_day", -1) == 0)
 	var economy: PackedByteArray = result.get("economy_ecp2", PackedByteArray())
 	_expect("the boundary captured the Economy checkpoint", not economy.is_empty())
 	if not result.get("ready", false): print("[opinion-save] ", result)

@@ -315,6 +315,9 @@ void NativeSimulationHost::worker_main() {
     };
     publish_pending_count();
     auto &active_environment = _executor_day_environment;
+    const auto save_ready = [this] {
+        return _save_requested.load(std::memory_order_acquire) && !inline_day_pending();
+    };
     try {
         while (!_stop_requested.load(std::memory_order_acquire) &&
                _state.load(std::memory_order_acquire) != RuntimeWorkerState::FAULTED) {
@@ -327,7 +330,7 @@ void NativeSimulationHost::worker_main() {
 
             const bool retained_day_pending = active_environment != nullptr &&
                 active_environment->day == _committed_day.load(std::memory_order_acquire) + 1;
-            if (_save_requested.load(std::memory_order_acquire) && !retained_day_pending) {
+            if (save_ready()) {
                 compact_pending_commands(true);
                 if (service_save_request(pending_commands)) {
                     pending_commands_dirty = true;
@@ -365,7 +368,18 @@ void NativeSimulationHost::worker_main() {
                         (!_calendar_suspended.load(std::memory_order_acquire) &&
                          _clock_requested_day.load(std::memory_order_acquire) > committed_day_value());
                 }
-                return has_pending_climate_input() || retained_day_pending;
+                if (retained_day_pending) return true;
+                if (!climate_driven) return false;
+                if (inline_day_pending()) return has_pending_climate_input();
+                // A bare Climate worker is driven by dated inputs. Retire
+                // opening frames at the idle boundary before starting a day.
+                const int64_t committed = committed_day_value();
+                auto next = _environment_ring.peek_oldest();
+                while (next && next->day <= committed) {
+                    consume_climate_input(next->generation);
+                    next = _environment_ring.peek_oldest();
+                }
+                return next && next->day == committed + 1;
             };
             const bool climate_pending = daily_work_ready();
             const bool awaiting_player = player_confirmation_block() != nullptr;
@@ -381,9 +395,9 @@ void NativeSimulationHost::worker_main() {
                 _control_cv.wait(lock, [&] {
                     const bool blocked = awaiting_player;
                     const bool ready = _stop_requested.load(std::memory_order_acquire) ||
-                        _save_requested.load(std::memory_order_acquire) ||
+                        save_ready() ||
                         player_requests_pending_locked() ||
-                        (_economy_read_view_requested && !retained_day_pending) ||
+                        (_economy_read_view_requested && !inline_day_pending()) ||
                         (!blocked && (climate_driven ?
                             daily_work_ready() :
                             (!_paused.load(std::memory_order_acquire) &&
@@ -426,8 +440,8 @@ void NativeSimulationHost::worker_main() {
                     std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double>(seconds_until_day)), [&] {
                     return _stop_requested.load(std::memory_order_acquire) ||
-                        player_requests_pending_locked() || _save_requested.load(std::memory_order_acquire) ||
-                        (_economy_read_view_requested && !retained_day_pending) ||
+                        player_requests_pending_locked() || save_ready() ||
+                        (_economy_read_view_requested && !inline_day_pending()) ||
                         _paused.load(std::memory_order_acquire) ||
                         _speed_days_per_second.load(std::memory_order_acquire) != speed;
                 });

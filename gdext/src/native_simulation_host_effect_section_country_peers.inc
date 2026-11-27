@@ -107,12 +107,7 @@ bool NativeSimulationHost::ensure_effect_pod_technology_instance(
     input.target_handle = target_handle;
     input.target_generation = target_generation;
     input.level = 0;
-    // Effect often soft-skips the same calendar day Country seals. Schedule
-    // the first fire for the next sequential Effect day (committed+1), never
-    // the already-closed committed day — otherwise plan_day cannot see the
-    // instance until a never-fired cadence retry (technology cadence is 3650).
-    const int64_t effect_day = _effect_pod_authority.snapshot().committed_day;
-    input.next_due_day = effect_day >= 0 ? effect_day + 1 : day;
+    input.next_due_day = day;
     input.active = true;
     // Queue only. The main-thread Country peer adapter must never mutate the
     // Effect POD authority: worker plan_day/commit/ack run concurrently and a

@@ -29,7 +29,9 @@ namespace pk {
 // `applied_input_revision`) in EFP1 and the snapshot wire. Without those fields
 // an authority flip either re-applies a live Modifier row or forgets to retire
 // one, so older payloads must fail closed rather than infer the state.
-constexpr uint32_t RUNTIME_EFFECT_POD_ABI_VERSION = 4u;
+// 5: transactions preserve their original program, source and scale across redelivery.
+constexpr uint32_t RUNTIME_EFFECT_POD_ABI_VERSION = 5u;
+constexpr uint32_t RUNTIME_EFFECT_POD_CATALOG_ABI_VERSION = 4u;
 constexpr uint32_t RUNTIME_EFFECT_POD_CATALOG_VERSION = 1u;
 constexpr uint32_t RUNTIME_EFFECT_POD_MAX_DEFINITIONS = 65536u;
 constexpr uint32_t RUNTIME_EFFECT_POD_MAX_METRICS = 65536u;
@@ -255,7 +257,7 @@ enum RuntimeEffectModifierAdapter : int32_t {
 };
 
 struct RuntimeEffectPodCatalog {
-    uint32_t abi_version = RUNTIME_EFFECT_POD_ABI_VERSION;
+    uint32_t abi_version = RUNTIME_EFFECT_POD_CATALOG_ABI_VERSION;
     uint32_t catalog_version = RUNTIME_EFFECT_POD_CATALOG_VERSION;
     uint64_t catalog_hash = 0;
     uint32_t max_instances = 4096;
@@ -344,6 +346,11 @@ struct RuntimeEffectPodInstance {
     // of "must re-cross the upper threshold".
     uint8_t latched = 0;
     uint8_t reserved = 0;
+
+    bool first_fire_due(int64_t day) const noexcept {
+        return active != 0 && fire_sequence == 0 && pending_transaction_id == 0 &&
+            next_due_day >= 0 && next_due_day <= day;
+    }
 };
 
 struct RuntimeEffectPodCommand {
@@ -383,6 +390,12 @@ struct RuntimeEffectPodTransaction {
     uint64_t fire_sequence = 0;
     int64_t input_revision = 0;
     int32_t transition_stack_count = 0;
+    // Snapshot the emitter at fire time. A later ENSURE can replace this
+    // instance's program, provenance and weight before the peer accepts it.
+    int32_t delivery_program_id = -1;
+    int32_t delivery_source_type = 0;
+    int64_t delivery_source_id = 0;
+    int32_t delivery_magnitude_scale_q16 = 65536;
 };
 
 struct RuntimeEffectPodSnapshot {
@@ -468,21 +481,10 @@ public:
                          std::string &error);
     bool set_metric(int64_t instance_id, uint32_t generation, int32_t metric_id,
                     int64_t revision, int64_t value, std::string &error);
-    // Soft-skip / late ENSURE recovery: never-fired instances (fire_sequence==0)
-    // are forced onto committed_day+1 whether they still sit on the closed day
-    // or were parked far ahead by a cadence-days failure backoff.
-    uint32_t reschedule_unfired_due_instances(int64_t committed_day);
-    // Soft-skip catch-up: after drain installs a never-fired technology instance
-    // onto committed+1, fire it into intents WITHOUT advancing committed_day so
-    // the same-day Modifier stage can ACK before the next Effect plan lane.
-    // Returns how many instances emitted at least one intent (or empty-fire ACK).
-    uint32_t catchup_fire_never_fired_instances(
-            int64_t fire_day, std::vector<RuntimeDomainIntent> &out_intents,
-            std::string &error);
-
     bool plan_day(int64_t day, uint64_t input_generation,
-                  RuntimeEffectPodPlan &plan, std::string &error);
+                  RuntimeEffectPodPlan &plan, std::string &error, bool first_fires_only = false);
     bool commit_day(RuntimeEffectPodPlan &plan, std::string &error);
+    void append_committed_pending_intents(int64_t day, std::vector<RuntimeDomainIntent> &out) const;
     void discard_plan();
 
     // ACKs are accepted only from the typed downstream protocol.  No method
@@ -557,6 +559,7 @@ private:
     };
 
     struct State {
+        int64_t next_transaction_id = 1;
         uint64_t generation = 0;
         uint64_t deterministic_state_hash = 1469598103934665603ull;
         int64_t committed_day = -1;
@@ -630,11 +633,9 @@ private:
         RuntimeEffectPodTransaction &transaction, std::string &error,
         bool retire_instance = false);
     void append_transaction_intents(
-        const State &state, const RuntimeEffectPodDefinition &definition,
-        const RuntimeEffectPodInstance &instance,
-        const RuntimeEffectPodTransaction &transaction,
-        std::vector<RuntimeDomainIntent> &out_intents,
-        uint64_t *plan_hash = nullptr) const;
+        const State &state, const RuntimeEffectPodTransaction &transaction,
+        std::vector<RuntimeDomainIntent> &out_intents, uint64_t *plan_hash,
+        bool redelivery = false) const;
     bool schedule_application(
         State &state, const RuntimeEffectPodDefinition &definition,
         RuntimeEffectPodInstance &instance, int64_t day,
@@ -649,7 +650,6 @@ private:
     uint32_t _instance_capacity = 4096u;
     uint32_t _transaction_capacity = RUNTIME_EFFECT_POD_MAX_TRANSACTIONS;
     uint32_t _command_capacity = RUNTIME_EFFECT_POD_MAX_COMMAND_ARENA;
-    int64_t _next_transaction_id = 1;
     State _current;
     State _next;
     RuntimeEffectPodSnapshot _snapshot;

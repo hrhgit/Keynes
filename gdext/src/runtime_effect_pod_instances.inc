@@ -62,8 +62,12 @@ bool RuntimeEffectPodAuthority::upsert_instance(
     // forces the next evaluation through needs_resync, which re-fires the new
     // tier without leaving an effect_applied=1 / applied_stack_count=0 wire
     // pair that restore() would reject.
+    // An unmanaged fire can have bookkeeping stacks without an applied row.
+    // Those stacks cannot become a managed application when the program changes.
+    const bool binding_to_managed = same_identity && input.program_id != instance.program_id &&
+        definition.managed != 0 && !keep_effect_applied;
     const int32_t keep_applied_stack_count =
-        carry_lifecycle ? instance.applied_stack_count : 0;
+        carry_lifecycle && !binding_to_managed ? instance.applied_stack_count : 0;
     const bool level_changed = same_identity && instance.level != input.level;
     const uint8_t keep_needs_resync = (managed_replacement ||
         (level_changed && definition.managed != 0 && instance.effect_applied != 0))
@@ -188,144 +192,4 @@ bool RuntimeEffectPodAuthority::set_metric(int64_t instance_id, uint32_t generat
     build_snapshot(_current, _snapshot);
     rebuild_report();
     return true;
-}
-
-uint32_t RuntimeEffectPodAuthority::reschedule_unfired_due_instances(
-        int64_t committed_day) {
-    if (!_configured || committed_day < 0 || _plan_ready) return 0;
-    const int64_t next_day = committed_day + 1;
-    uint32_t nudged = 0;
-    for (auto &instance : _current.instances) {
-        if (instance.active == 0 || instance.fire_sequence != 0) continue;
-        if (instance.next_due_day < 0) continue;
-        // Never-fired instances must land on the next sequential plan day.
-        // They may sit on the already-closed committed day (late ENSURE) or
-        // far in the future after a cadence-days failure backoff (technology
-        // programs author cadence_days=3650).
-        if (instance.next_due_day == next_day) continue;
-        instance.next_due_day = next_day;
-        ++nudged;
-    }
-    if (nudged == 0) return 0;
-    _current.deterministic_state_hash = state_hash(_current);
-    build_snapshot(_current, _snapshot);
-    rebuild_report();
-    return nudged;
-}
-
-uint32_t RuntimeEffectPodAuthority::catchup_fire_never_fired_instances(
-        int64_t fire_day, std::vector<RuntimeDomainIntent> &out_intents,
-        std::string &error) {
-    error.clear();
-    if (!_configured || fire_day < 0 || _plan_ready) return 0;
-    // Only catch up the immediate next Effect day. Firing further ahead would
-    // desync committed_day sequencing for the real plan_day lane.
-    if (_current.committed_day < 0 || fire_day != _current.committed_day + 1)
-        return 0;
-    uint32_t fired = 0;
-    std::vector<RuntimeEffectPodCommand> emitted;
-    emitted.reserve(16);
-    for (size_t instance_index_value = 0;
-         instance_index_value < _current.instances.size(); ++instance_index_value) {
-        RuntimeEffectPodInstance &instance =
-            _current.instances[instance_index_value];
-        if (instance.active == 0 || instance.fire_sequence != 0) continue;
-        if (instance.pending_transaction_id != 0) continue;
-        if (instance.next_due_day < 0 || instance.next_due_day > fire_day)
-            continue;
-        if (instance.program_id < 0 ||
-            instance.program_id >= static_cast<int32_t>(_catalog.definitions.size())) {
-            error = "effect_pod_program_invalid";
-            return fired;
-        }
-        const auto &definition =
-            _catalog.definitions[static_cast<size_t>(instance.program_id)];
-        if (definition.enabled == 0) {
-            instance.next_due_day = fire_day + 1;
-            continue;
-        }
-        if (instance.retire_requested != 0) {
-            if (definition.managed == 0) {
-                instance.active = 0;
-                instance.retire_requested = 0;
-                continue;
-            }
-            // A never-applied instance has no downstream row to remove, even
-            // though its reference object may carry an unresolved command.
-            // Retire the row now so a later ENSURE cannot resurrect it.
-            if (instance.effect_applied == 0) {
-                instance.active = 0;
-                instance.retire_requested = 0;
-                instance.next_due_day = fire_day + 1;
-                continue;
-            }
-            RuntimeEffectPodTransaction transaction;
-            if (!append_retirement_transaction(
-                    _current, definition, instance, fire_day, emitted,
-                    transaction, error)) {
-                return fired;
-            }
-            _current.transactions.back().status =
-                RuntimeEffectPodTransactionStatus::COMMITTED;
-            append_transaction_intents(_current, definition, instance,
-                                       transaction, out_intents);
-            ++fired;
-            continue;
-        }
-        const ManagedLifecycleDecision decision = evaluate_managed_lifecycle(
-            definition, instance, _current, fire_day);
-        if (decision == ManagedLifecycleDecision::RETIRE) {
-            RuntimeEffectPodTransaction transaction;
-            if (!append_retirement_transaction(
-                    _current, definition, instance, fire_day, emitted,
-                    transaction, error)) {
-                return fired;
-            }
-            _current.transactions.back().status =
-                RuntimeEffectPodTransactionStatus::COMMITTED;
-            append_transaction_intents(_current, definition, instance,
-                                       transaction, out_intents);
-            ++fired;
-            continue;
-        }
-        if (decision == ManagedLifecycleDecision::IDLE) {
-            instance.last_evaluated_input_revision = instance.input_revision;
-            instance.next_due_day = fire_day + 1;
-            continue;
-        }
-        emitted.clear();
-        if (!execute_program(definition, instance, _current, fire_day, emitted,
-                             error)) {
-            return fired;
-        }
-        if (emitted.empty()) {
-            instance.last_evaluated_input_revision = instance.input_revision;
-            if (definition.command_count > 0) {
-                instance.next_due_day = fire_day + 1;
-                continue;
-            }
-            instance.fire_sequence += 1u;
-            instance.next_due_day =
-                fire_day + std::max<int32_t>(1, definition.cadence_days);
-            ++fired;
-            continue;
-        }
-        RuntimeEffectPodTransaction transaction;
-        if (!schedule_application(_current, definition, instance, fire_day,
-                                  emitted, transaction, error)) {
-            return fired;
-        }
-        // Mirror commit_day: catch-up emits are already live on _current.
-        _current.transactions.back().status =
-            RuntimeEffectPodTransactionStatus::COMMITTED;
-        append_transaction_intents(_current, definition, instance,
-                                   transaction, out_intents);
-        ++fired;
-    }
-    if (fired == 0) return 0;
-    _current.generation += 1u;
-    _current.deterministic_state_hash = state_hash(_current);
-    build_snapshot(_current, _snapshot);
-    rebuild_report();
-    return fired;
 }

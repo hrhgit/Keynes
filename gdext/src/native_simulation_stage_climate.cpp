@@ -126,28 +126,8 @@ void NativeSimulationHost::prepare_climate_day(DayExecution &day) {
         }
         // B8 P0：消费游标只在真正处理完该代输入时前进。提前弹出未来日会让
         // 主线程以为已送达，worker 却永远对不上 pinned 的 plan.day。
-        if (environment != nullptr && consume_environment) {
-            _climate_consumed_generation.store(environment->generation,
-                                               std::memory_order_release);
-            // B8 P3：FIFO 弹出已评估的最旧输入，给主线程腾出 ring 空位。
-            _environment_ring.pop_generation(environment->generation);
-            // 只有"第一次看到这一代"才算消费了一天；失败/挂起天的重试会反复评估
-            // 同一份环境，把它们计数会把 delivered 指标变成重试计数器。
-            uint64_t last_counted =
-                _climate_last_counted_generation.load(std::memory_order_relaxed);
-            while (environment->generation > last_counted &&
-                   !_climate_last_counted_generation.compare_exchange_weak(
-                       last_counted, environment->generation,
-                       std::memory_order_relaxed)) {
-            }
-            if (environment->generation > last_counted) {
-                _environment_consumed_days.fetch_add(1,
-                                                     std::memory_order_relaxed);
-            }
-            // 等待方在 _climate_wait_cv 上等这个游标，必须显式唤醒。用专用 CV：
-            // _control_cv 上还挂着 worker 自己的 preflight 重试等待。
-            _climate_wait_cv.notify_all();
-        }
+        if (environment != nullptr && consume_environment)
+            consume_climate_input(environment->generation);
         if (climate_day_computed) {
             if (!active_climate_ok) {
                 set_fault(climate_report.error[0] != '\0'
@@ -201,6 +181,29 @@ void NativeSimulationHost::prepare_climate_day(DayExecution &day) {
             }
         }
     }
+}
+
+void NativeSimulationHost::consume_climate_input(uint64_t generation) {
+    _climate_consumed_generation.store(generation,
+                                       std::memory_order_release);
+    // B8 P3：FIFO 弹出已评估的最旧输入，给主线程腾出 ring 空位。
+    _environment_ring.pop_generation(generation);
+    // 只有"第一次看到这一代"才算消费了一天；失败/挂起天的重试会反复评估
+    // 同一份环境，把它们计数会把 delivered 指标变成重试计数器。
+    uint64_t last_counted =
+        _climate_last_counted_generation.load(std::memory_order_relaxed);
+    while (generation > last_counted &&
+           !_climate_last_counted_generation.compare_exchange_weak(
+               last_counted, generation,
+               std::memory_order_relaxed)) {
+    }
+    if (generation > last_counted) {
+        _environment_consumed_days.fetch_add(1,
+                                             std::memory_order_relaxed);
+    }
+    // 等待方在 _climate_wait_cv 上等这个游标，必须显式唤醒。用专用 CV：
+    // _control_cv 上还挂着 worker 自己的 preflight 重试等待。
+    _climate_wait_cv.notify_all();
 }
 
 bool NativeSimulationHost::stage_climate(DayExecution &day, RuntimeDomainPlan &stage) {

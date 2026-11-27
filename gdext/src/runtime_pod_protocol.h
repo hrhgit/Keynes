@@ -235,6 +235,8 @@ struct RuntimeEconomyDayInput {
 #include "runtime_pod_protocol_environment.inc"
 #include "runtime_pod_protocol_daily_barrier.inc"
 constexpr uint32_t RUNTIME_DOMAIN_INTENT_HAS_EFFECT_VALUE = 1u << 0;
+constexpr uint32_t RUNTIME_DOMAIN_INTENT_HAS_EFFECT_SOURCE = 1u << 1;
+constexpr uint32_t RUNTIME_DOMAIN_INTENT_EFFECT_REDELIVERY = 1u << 2;
 constexpr uint32_t RUNTIME_EFFECT_INTENT_PROGRAM_REPORT_CAPACITY = 64u;
 
 #include "runtime_pod_protocol_asset_transport.inc"

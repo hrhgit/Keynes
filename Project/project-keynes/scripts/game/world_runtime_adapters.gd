@@ -96,8 +96,7 @@ var test_economy_population_scale: int = 0
 ## Diagnostic worlds can prepare their data without starting a runtime.
 var start_executor_on_generate: bool = true
 var runtime_parity_forcing: bool = false
-## Events POD remains an opt-in probe in Stage I. It mirrors the legacy journal
-## and never becomes part of the ACTIVE authority mask.
+## 执行器拥有 Events 时始终写正式日志。其他模式可用此开关运行事件诊断。
 var runtime_events_probe_enabled: bool = false
 ## Economy can promote its committed mirror after the initial complete day.
 var runtime_economy_auto_pod_active: bool = true

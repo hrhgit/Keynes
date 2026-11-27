@@ -1,3 +1,55 @@
+namespace {
+constexpr uint32_t EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT = 4u;
+
+// V4 did not record the issuing program. Recover its observable behavior from
+// the archived command definitions, even when the instance was already rebound.
+int32_t legacy_delivery_program(const RuntimeEffectPodCatalog &catalog,
+        const std::vector<RuntimeEffectPodCommand> &arena,
+        const RuntimeEffectPodTransaction &tx, int32_t bound_program, std::string &error) {
+    const auto first = arena.begin() + tx.command_begin;
+    const auto last = first + tx.command_count;
+    const bool needs_modifier = (tx.received_ack_mask &
+        RuntimeEffectPodAuthority::adapter_ack_bit(RuntimeEffectPodAction::MODIFIER_COMMAND)) == 0;
+    bool needs_scope = false;
+    for (auto it = first; needs_modifier && it != last; ++it) {
+        if (it->action != RuntimeEffectPodAction::MODIFIER_COMMAND) continue;
+        const uint32_t id = it->command_definition_id;
+        const int32_t adapter = id < catalog.command_native_adapters.size() ?
+            catalog.command_native_adapters[id] : EFFECT_MODIFIER_GENERIC;
+        if (adapter == EFFECT_MODIFIER_GENERIC || (adapter != EFFECT_MODIFIER_TECHNOLOGY &&
+                it->opcode != 2 && it->value != 0)) {
+            error = "effect_pod_legacy_modifier_context_missing";
+            return -1;
+        }
+        if (adapter == EFFECT_MODIFIER_IDEOLOGY || adapter == EFFECT_MODIFIER_FAMILY_EFFECT)
+            needs_scope = true;
+    }
+    int32_t original = -1;
+    for (size_t i = 0; i < catalog.definitions.size(); ++i) {
+        const auto &candidate = catalog.definitions[i];
+        if (tx.transition_stack_count == 0 && !candidate.managed) continue;
+        const auto zero = instance_zero_policy(candidate.target_domain);
+        const bool owns_all = std::all_of(first, last, [&](const auto &command) {
+            if ((!zero.handle_allowed && command.target_handle == 0) ||
+                (!zero.generation_allowed && command.target_generation == 0)) return false;
+            if (command.command_key_hash == 0) return candidate.behavior_id_hash != 0;
+            const uint32_t id = command.command_definition_id;
+            return id >= candidate.command_begin && id - candidate.command_begin < candidate.command_count;
+        });
+        if (!owns_all) continue;
+        if (original >= 0 && (candidate.managed != catalog.definitions[original].managed ||
+            (needs_scope && candidate.target_domain != catalog.definitions[original].target_domain))) {
+            error = "effect_pod_legacy_transaction_program_ambiguous";
+            return -1;
+        }
+        if (original < 0 || static_cast<int32_t>(i) == bound_program)
+            original = static_cast<int32_t>(i);
+    }
+    if (original < 0) error = "effect_pod_legacy_transaction_program_missing";
+    return original;
+}
+}
+
 void RuntimeEffectPodAuthority::serialize(std::vector<uint8_t> &out) const {
     // Adapter request IDs are intentionally not persisted. Any transaction
     // that was in flight at the save barrier must be replayable after restart,
@@ -14,13 +66,13 @@ void RuntimeEffectPodAuthority::serialize(std::vector<uint8_t> &out) const {
     out.clear();
     out.reserve(256 + persisted.instances.size() * 128u +
                 persisted.command_arena.size() * 192u +
-                persisted.transactions.size() * 96u);
+                persisted.transactions.size() * 120u);
     append_le<uint32_t>(out, SAVE_MAGIC);
     append_le<uint32_t>(out, RUNTIME_EFFECT_POD_ABI_VERSION);
     append_le<uint32_t>(out, RUNTIME_EFFECT_POD_CATALOG_VERSION);
     append_le<uint64_t>(out, _catalog.catalog_hash);
     append_le<uint64_t>(out, _catalog_revision);
-    append_le<int64_t>(out, _next_transaction_id);
+    append_le<int64_t>(out, _current.next_transaction_id);
     append_le<uint64_t>(out, persisted.generation);
     append_le<uint64_t>(out, persisted.deterministic_state_hash);
     append_le<int64_t>(out, persisted.committed_day);
@@ -101,6 +153,10 @@ void RuntimeEffectPodAuthority::serialize(std::vector<uint8_t> &out) const {
         append_le<uint64_t>(out, transaction.fire_sequence);
         append_le<int64_t>(out, transaction.input_revision);
         append_le<int32_t>(out, transaction.transition_stack_count);
+        append_le<int32_t>(out, transaction.delivery_program_id);
+        append_le<int32_t>(out, transaction.delivery_source_type);
+        append_le<int64_t>(out, transaction.delivery_source_id);
+        append_le<int32_t>(out, transaction.delivery_magnitude_scale_q16);
     }
     append_le<uint32_t>(out, SAVE_END);
     const uint64_t checksum = mix_bytes(FNV_OFFSET, out.data(), out.size());
@@ -140,7 +196,8 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
         !read_le(data, payload_end, cursor, generation) ||
         !read_le(data, payload_end, cursor, saved_state_hash) ||
         !read_le(data, payload_end, cursor, committed_day) ||
-        magic != SAVE_MAGIC || abi != RUNTIME_EFFECT_POD_ABI_VERSION ||
+        magic != SAVE_MAGIC ||
+        (abi != RUNTIME_EFFECT_POD_ABI_VERSION && abi != EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT) ||
         catalog_version != RUNTIME_EFFECT_POD_CATALOG_VERSION ||
         catalog_hash_value != _catalog.catalog_hash || next_transaction_id <= 0) {
         error = "effect_pod_save_header_invalid";
@@ -235,29 +292,6 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
         error = "effect_pod_command_count_invalid"; return false;
     }
     restored.command_arena.resize(count);
-    // A command emitted for a cell-0 instance carries a zero in one of its two
-    // target fields (which one depends on the program's domain -- see
-    // instance_zero_policy). The instance table is already parsed, so the domain
-    // is readable through source_instance_id. An unknown source instance keeps
-    // the strict reading, and a STATIC 0 can never be saved in the first place
-    // because compile_command refuses to emit it.
-    const auto command_zero_fields_allowed =
-            [this, &restored](const RuntimeEffectPodCommand &command) {
-        InstanceZeroPolicy policy;
-        for (const auto &instance : restored.instances) {
-            if (static_cast<uint64_t>(instance.instance_id) !=
-                command.source_instance_id) continue;
-            const int32_t program = instance.program_id;
-            if (program >= 0 &&
-                program < static_cast<int32_t>(_catalog.definitions.size())) {
-                policy = instance_zero_policy(_catalog.definitions[
-                    static_cast<size_t>(program)].target_domain);
-            }
-            break;
-        }
-        return (command.target_handle != 0 || policy.handle_allowed) &&
-            (command.target_generation != 0 || policy.generation_allowed);
-    };
     for (auto &command : restored.command_arena) {
         if (!read_le(data,payload_end,cursor,command.action) ||
             !read_le(data,payload_end,cursor,command.domain) ||
@@ -280,7 +314,6 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             !read_le(data,payload_end,cursor,command.payload[2]) ||
             !read_le(data,payload_end,cursor,command.payload[3]) ||
             !is_action_valid(command.action) ||
-            !command_zero_fields_allowed(command) ||
             command.idempotency_key == 0 ||
             command.command_definition_id >= _catalog.commands.size()) {
             error = "effect_pod_command_truncated_or_invalid"; return false;
@@ -314,6 +347,19 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             (transaction.received_ack_mask & ~transaction.required_ack_mask) != 0u) {
             error = "effect_pod_transaction_truncated_or_invalid"; return false;
         }
+        if (abi != EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT) {
+            if (!read_le(data, payload_end, cursor, transaction.delivery_program_id) ||
+                !read_le(data, payload_end, cursor, transaction.delivery_source_type) ||
+                !read_le(data, payload_end, cursor, transaction.delivery_source_id) ||
+                !read_le(data, payload_end, cursor, transaction.delivery_magnitude_scale_q16) ||
+                transaction.delivery_program_id < 0 ||
+                static_cast<size_t>(transaction.delivery_program_id) >= _catalog.definitions.size() ||
+                transaction.delivery_magnitude_scale_q16 <
+                    _catalog.definitions[transaction.delivery_program_id].min_magnitude_scale_q16 ||
+                transaction.delivery_magnitude_scale_q16 > EFFECT_MAX_MAGNITUDE_Q16) {
+                error = "effect_pod_delivery_context_invalid"; return false;
+            }
+        }
         if (transaction.status == RuntimeEffectPodTransactionStatus::ACKED &&
             transaction.received_ack_mask != transaction.required_ack_mask) {
             error = "effect_pod_transaction_ack_mask_invalid"; return false;
@@ -343,7 +389,8 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             latest_acked[transaction.source_instance_id] = &transaction;
         }
     }
-    for (const auto &transaction : restored.transactions) {
+    std::vector<bool> owned_commands(restored.command_arena.size(), false);
+    for (auto &transaction : restored.transactions) {
         const int32_t index = [&]() {
             for (size_t i = 0; i < restored.instances.size(); ++i)
                 if (restored.instances[i].instance_id == transaction.source_instance_id &&
@@ -353,14 +400,43 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
         }();
         if (index < 0) { error = "effect_pod_transaction_instance_missing"; return false; }
         const auto &instance = restored.instances[static_cast<size_t>(index)];
+        const bool legacy = abi == EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT;
+        int32_t program = legacy ? instance.program_id : transaction.delivery_program_id;
+        if (legacy && (transaction.status == RuntimeEffectPodTransactionStatus::PLANNED ||
+                       transaction.status == RuntimeEffectPodTransactionStatus::PREFLIGHTED ||
+                       transaction.status == RuntimeEffectPodTransactionStatus::COMMITTED)) {
+            program = legacy_delivery_program(_catalog, restored.command_arena, transaction, program, error);
+            if (program < 0) return false;
+        }
+        const auto zero = instance_zero_policy(_catalog.definitions[program].target_domain);
+        for (size_t ordinal = 0; ordinal < transaction.command_count; ++ordinal) {
+            const size_t offset = transaction.command_begin + ordinal;
+            const auto &command = restored.command_arena[offset];
+            if (owned_commands[offset] ||
+                command.source_instance_id != static_cast<uint64_t>(transaction.source_instance_id) ||
+                command.source_generation != transaction.source_generation ||
+                (!zero.handle_allowed && command.target_handle == 0) ||
+                (!zero.generation_allowed && command.target_generation == 0)) {
+                error = "effect_pod_transaction_command_invalid"; return false;
+            }
+            owned_commands[offset] = true;
+        }
+        if (legacy) {
+            // No missing Modifier will consume uncertain fields. Preserve the
+            // remaining V4 intent fields exactly as its cold reader emitted them.
+            transaction.delivery_program_id = program;
+            transaction.delivery_source_type = instance.source_type;
+            transaction.delivery_source_id = instance.source_id;
+            transaction.delivery_magnitude_scale_q16 = std::max(instance.magnitude_scale_q16,
+                _catalog.definitions[program].min_magnitude_scale_q16);
+        }
         const auto latest = latest_acked.find(instance.instance_id);
         if (transaction.status == RuntimeEffectPodTransactionStatus::ACKED &&
             latest != latest_acked.end() &&
             latest->second != &transaction) {
             continue;
         }
-        const auto &definition = _catalog.definitions[
-            static_cast<size_t>(instance.program_id)];
+        const auto &definition = _catalog.definitions[transaction.delivery_program_id];
         if (definition.managed != 0 &&
             transaction.status == RuntimeEffectPodTransactionStatus::ACKED &&
             ((transaction.transition_stack_count == 0 &&
@@ -371,9 +447,14 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             return false;
         }
     }
+    if (std::find(owned_commands.begin(), owned_commands.end(), false) != owned_commands.end()) {
+        error = "effect_pod_transaction_command_invalid"; return false;
+    }
+    if (abi == EFFECT_SAVE_WITHOUT_DELIVERY_CONTEXT)
+        restored.deterministic_state_hash = state_hash(restored);
     // Install only after the complete candidate has passed every check.
     _catalog_revision = catalog_revision;
-    _next_transaction_id = next_transaction_id;
+    restored.next_transaction_id = next_transaction_id;
     _current = std::move(restored);
     _next = _current;
     build_snapshot(_current, _snapshot);

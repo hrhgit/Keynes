@@ -24,7 +24,7 @@
 | MODIFIER | Modifier POD；部分授权时仍可内嵌 Effect | 不走 SHADOW 管线 |
 | GAMEPLAY_EFFECT | Host 解码、去重，排入 Events/Ideology 命令 | 无双算 |
 | ECONOMY | StageOps 调度 `NativeEconomyRuntime` 的真实计算；POD_ACTIVE 时绑定 OwnedState | 默认 ACTIVE_ONLY；显式 ACTIVE_WITH_PARITY 才跑影子 |
-| EVENTS | RuntimeEventsAuthority 写事件日志与消费者游标 | 沿用 `events_probe_enabled`，名称含 probe 但用于生产 |
+| EVENTS | RuntimeEventsAuthority 写事件日志与消费者游标 | ACTIVE 取得 Events 授权时，首启和同世界重启均开启事件日志 |
 | VISUAL | Host 产生刷新意图，`publish_day` 排序去重；实际显示归 Godot | 无双算 |
 | COMMIT | 记完成位，检查请求域全部完成，由外层发布 | 无双算 |
 
@@ -127,7 +127,7 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 
 PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`world_runtime_daily_adapter_part3.gd:118` 经 `world_runtime_daily_adapter_part2.gd:80` 调用 `world_runtime_modifier_writeback.gd:15`。适配器检查 Modifier 授权位 `0x040`，经 `map_generator.gd:79` 和 `map_rules_initializer.gd:99` 调用原生 `apply_runtime_modifier_snapshot`。
 
-整图会话的全国、地块和综合面板从 Economy 冻结的税表读取税率和计税方式。已占地块即使当天无人纳税，也显示适用的税策。综合面板的国库、国家修订号和已完成科技来自已领取当天的 Country 日尾。
+整图会话的全国、地块和综合面板从 Economy 冻结的税表读取税率和计税方式。地方默认税额按国家、税种、计税方式和完整有符号税额共用行。已占地块即使当天无人纳税，也显示适用的税策。综合面板的国库、国家修订号和已完成科技来自已领取当天的 Country 日尾。
 
 开局及读档首帧用同帧 Country 和 `ModifierReadView` 计算起始显示值。开局税率帧在执行器启动前校验。日常领取时先安装，再发 `map_fields_received`。税率帧被拒时，领取结果用 `modifier_display_error` 和 `modifier_display_retained_day` 报告错误及保留的税率日期，当天记录、地图和通知照常发布。帧末仍可查询已领取的税率。公开的修正求值、解释和列表等查询仍使用主线程镜像。
 
@@ -173,7 +173,7 @@ PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`worl
 | --- | --- |
 | Ideology 首个意见/国家快照未发布、未配置 | 保留首次装配兼容；不发伪 ACK，ready=false |
 | Trigger ACK barrier / retry / stale / rejected、未配置/未启动 | 保留列出的原策略，不制造新 ACK |
-| Effect 同日已提交重访 | 幂等重访；遇 drain/catchup 错误停车，不再宣布完成 |
+| Effect 同日已提交重访 | 继续处理本日到期的首次发射与待收回执；每条新命令的事件只发布一次 |
 | Country/Economy peer 等待 | stall、continuation_pending 与超时故障保留；部分旧注释仍称 soft，实际已不完成 |
 | Modifier 上游未授权、SHADOW/OFF、Web 回退 | 按原授权策略保留 |
 
