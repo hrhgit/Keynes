@@ -371,6 +371,7 @@ NativeEconomyRuntime::advance_household_market_chunk(
     for (int32_t relative = 0; relative < market_count; ++relative) {
         const int32_t market = _epoch_market_ids[begin + relative];
         MarketResult &market_result = _market_results_scratch[relative];
+        merge_cohort_lookup_counts(market_result.cohort_lookups);
         // Merchant retail pool of the most recently settled day, market-keyed
         // because the settlement distribution is per market. Overwritten, not
         // accumulated: the projection wants today's pool at today's prices,

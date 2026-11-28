@@ -554,6 +554,15 @@ bool DCWorldExt::apply_mobilization_result(
                                               success);
 }
 
+int32_t DCWorldExt::clear_cell_mobilization_independence(int cell_idx) {
+    // Synchronous fixture entry. The running executor clears its own rows at
+    // the next narrative prepare boundary.
+    if (_economy_runtime == nullptr ||
+        (_runtime_host && _runtime_host->economy_worker_owns_execution())) return 0;
+    NativeEconomyRuntime *runtime = runtime_from(_economy_runtime);
+    return runtime->clear_cell_mobilization_independence(cell_idx);
+}
+
 Dictionary DCWorldExt::resolve_player_mobilization(const Dictionary &choice) {
     if (_economy_runtime == nullptr) return unavailable();
     auto *runtime = runtime_from(_economy_runtime);
@@ -692,6 +701,7 @@ Dictionary DCWorldExt::run_economy_stage_ops_day(int64_t day_index) {
     // before epoch open, or prelude parks as pending_input forever.
     const Dictionary cap =
         begin_or_reuse_economy_input_epoch(day_index, Dictionary());
+    if (!bool(cap.get("ok", false)) && !bool(cap.get("fatal", false))) return cap;
     if (bool(cap.get("fatal", false))) {
         out["ok"] = false;
         out["done"] = true;

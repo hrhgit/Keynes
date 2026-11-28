@@ -16,7 +16,7 @@ static func append(catalog) -> void:
 	catalog.events.append(NarrativeEventDefinitionScript.from_dict({
 		"event_id": "evt.climate.severe_drought",
 		"title": "{settlement_name}·旱灾",
-		"body_text": "一个多月没下透雨，田里的土裂成一块一块，脚踩上去发脆。村口的水塘见了底，塘底的泥上留着几道鱼印。里正蹲在田埂上，把一棵旱死的苗连根拔起来，根上没带土。",
+		"body_text": "持续逾月的酷热与少雨令{settlement_name}周边土地龟裂，蓄水设施见底，当季农作物面临大面积减产。地方呈报的灾情日益紧迫：若不及时介入赈济与调水，粮食短缺将迅速演变为人口流失与社会动荡。",
 		"min_era_index": 1,
 		"image_key": "climate.sun",
 		"ai_visual_prompt": "Parched cracked farmland under a scorching sun in an ancient agrarian settlement, villagers digging irrigation ditches",
@@ -131,7 +131,7 @@ static func append(catalog) -> void:
 	catalog.events.append(NarrativeEventDefinitionScript.from_dict({
 		"event_id": "evt.climate.bitter_frost",
 		"title": "{settlement_name}·寒潮",
-		"body_text": "夜里起了北风，天亮时草叶上全是白霜。井台结了一层薄冰，打水的人先用石头把冰砸开。街上卖炭的车还没进城，柴铺门口已经排了人，有人把身上的旧袄又裹紧一层。",
+		"body_text": "骤降的强寒潮席卷{settlement_name}，霜冻封锁了水源与交通，燃料与御寒物资的供应骤然紧张。地方官员警告，若不尽快动用储备保障越冬，严寒不仅会令户外生产停摆，更将直接威胁底层民众的生存。",
 		"min_era_index": 0,
 		"image_key": "climate.weather",
 		"ai_visual_prompt": "Snowstorm hitting a settlement in winter, warm bonfires burning in the town square",
@@ -193,7 +193,7 @@ static func append(catalog) -> void:
 	catalog.events.append(NarrativeEventDefinitionScript.from_dict({
 		"event_id": "evt.ocean.upwelling_bonanza",
 		"title": "{settlement_name}·大渔汛",
-		"body_text": "海面上起了一层细密的泡，水色比往常深。老渔人把船撑到外海的浅滩，看见水里黑压压一片，鱼群挤着往上游。他回头朝岸上喊了一声，声音被风刮散，岸上的人只看见他挥手。",
+		"body_text": "冷暖洋流在{settlement_name}近海交汇，带来了罕见的特大渔汛，外海浅滩鱼群密布。地方商贾与渔业团体呼吁立刻组织大规模船队抢捕并扩建加工设施，而海务官员则建议划定轮捕区域，以防竭泽而渔。",
 		"min_era_index": 0,
 		"image_key": "hydrology.water",
 		"ai_visual_prompt": "Abundant coastal fishing fleet hauling overflowing nets in a vibrant bay with ocean currents",
@@ -271,7 +271,7 @@ static func append(catalog) -> void:
 	catalog.events.append(NarrativeEventDefinitionScript.from_dict({
 		"event_id": "evt.geography.river_flood",
 		"title": "{settlement_name}·春汛",
-		"body_text": "上游的雪化了，河水一天涨一尺。渡口的木桩先被淹了，接着是低处的田。水退下去以后，田里盖了一层黄泥，踩上去陷到脚踝。老农蹲下去抓了一把泥，说这泥肥，可今年的苗没了。",
+		"body_text": "上游融雪引发的春汛正猛烈冲击{settlement_name}沿河地带，低洼农田与渡口设施已遭漫灌。水利官员提出可趁势筑堰导流、引洪淤灌以肥沃来年土壤，但此举伴随堤坝溃决的风险；保守派则主张立刻组织民众撤往高地避险。",
 		"min_era_index": 1,
 		"image_key": "hydrology.water",
 		"ai_visual_prompt": "Swollen river flooding fertile alluvial plains near a settlement, workers building embankments",

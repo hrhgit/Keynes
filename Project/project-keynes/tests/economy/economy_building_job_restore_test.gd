@@ -50,7 +50,6 @@ const PAGE_RECORD_BYTES := PAGE_RECORD_HEADER + COHORT_PAGE_SIZE * LANE_STRIDE
 const BUILDING_RECORD_COUNT_AT := 12
 const BUILDING_RECORD_FILLED_OWNER_AT := 20
 const BUILDING_RECORD_ROLES_AT := 327
-const BUILDING_RECORD_ROLE_DATA_AT := 331
 const BUILDING_RECORD_ROLE_STRIDE := 72
 const BUILDING_SCHEMA_VERSION := 57
 
@@ -153,9 +152,9 @@ func _run() -> void:
 		SHRUNK_LOT_COUNT)
 	shrunk.encode_s64(int(target_record.at) + BUILDING_RECORD_FILLED_OWNER_AT, 1)
 	for role in range(int(target_record.roles)):
-		shrunk.encode_s64(int(target_record.at) + BUILDING_RECORD_ROLE_DATA_AT
+		shrunk.encode_s64(int(target_record.role_data)
 			+ role * BUILDING_RECORD_ROLE_STRIDE, 0)
-	shrunk.encode_s64(int(target_record.at) + BUILDING_RECORD_ROLE_DATA_AT,
+	shrunk.encode_s64(int(target_record.role_data),
 		over_capacity_fills)
 	accepted_chunks[buildings_chunk] = shrunk
 	var lane: Dictionary = _ensure_employed_lane(
@@ -195,7 +194,7 @@ func _run() -> void:
 	# than everything the persisted cohorts could have employed there.
 	var rejected_chunks := _duplicate_chunks(accepted_chunks)
 	var inflated: PackedByteArray = rejected_chunks[buildings_chunk].duplicate()
-	inflated.encode_s64(int(target_record.at) + BUILDING_RECORD_ROLE_DATA_AT,
+	inflated.encode_s64(int(target_record.role_data),
 		over_capacity_fills + UNSATISFIABLE_FILL_MARGIN)
 	rejected_chunks[buildings_chunk] = inflated
 	var rejected: Dictionary = _restore_economy_fixture(
@@ -421,17 +420,24 @@ func _decode_building_records(chunk: PackedByteArray) -> Array:
 	var record_count := int(chunk.decode_u32(8))
 	var at := ECP2_CHUNK_HEADER
 	for _record in range(record_count):
-		if at + BUILDING_RECORD_ROLE_DATA_AT > chunk.size():
+		var roles_at := at + BUILDING_RECORD_ROLES_AT
+		if chunk.decode_u16(4) >= 66:
+			roles_at += 10
+		if chunk.decode_u16(4) >= 67:
+			if roles_at + 4 > chunk.size():
+				return []
+			roles_at += 4 + chunk.decode_u32(roles_at) * 12
+		if roles_at + 4 > chunk.size():
 			return []
-		var roles := int(chunk.decode_s32(at + BUILDING_RECORD_ROLES_AT))
-		var record_end := at + BUILDING_RECORD_ROLE_DATA_AT \
-			+ roles * BUILDING_RECORD_ROLE_STRIDE
+		var roles := chunk.decode_s32(roles_at)
+		var role_data := roles_at + 4
+		var record_end := role_data + roles * BUILDING_RECORD_ROLE_STRIDE
 		if roles < 0 or record_end > chunk.size():
 			return []
 		var fills := PackedInt64Array()
 		for role in range(roles):
 			fills.append(chunk.decode_s64(
-				at + BUILDING_RECORD_ROLE_DATA_AT + role * BUILDING_RECORD_ROLE_STRIDE))
+				role_data + role * BUILDING_RECORD_ROLE_STRIDE))
 		records.append({
 			"at": at,
 			"cell": chunk.decode_s32(at),
@@ -440,6 +446,7 @@ func _decode_building_records(chunk: PackedByteArray) -> Array:
 			"count": chunk.decode_s64(at + BUILDING_RECORD_COUNT_AT),
 			"filled_owner": chunk.decode_s64(at + BUILDING_RECORD_FILLED_OWNER_AT),
 			"roles": roles,
+			"role_data": role_data,
 			"fills": fills,
 		})
 		at = record_end

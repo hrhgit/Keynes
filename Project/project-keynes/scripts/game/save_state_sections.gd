@@ -8,6 +8,15 @@ const WorldStateModules = preload("res://scripts/game/world_state_modules.gd")
 ## Builds and registers the save section providers and their context.
 
 
+static func freeze_sections(sections: Dictionary) -> Dictionary:
+	var frozen := {}
+	for section_id in sections:
+		var section = sections[section_id]
+		frozen[section_id] = section if section is PackedByteArray else var_to_bytes(section)
+	sections.clear()
+	return frozen
+
+
 static func _collect_sections(owner, saved_paused: bool, saved_speed: float,
 		native_bundle: Dictionary, defer_provider_hashes: bool = false) -> Dictionary:
 	var generator: MapGenerator = owner._runtime_host.generator()

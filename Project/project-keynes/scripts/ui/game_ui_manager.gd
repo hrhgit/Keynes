@@ -169,6 +169,8 @@ func _bind_ui() -> void:
 	_right_panel.object_details_requested.connect(_on_object_details_requested)
 	_right_panel.detail_visibility_changed.connect(
 		_on_inspector_detail_visibility_changed)
+	_right_panel.list_wing_visibility_changed.connect(
+		_on_inspector_list_wing_visibility_changed)
 	_right_panel.family_colonization_requested.connect(
 		_on_family_colonization_requested)
 	_right_panel.construction_page_requested.connect(_on_construction_page_requested)

@@ -632,6 +632,7 @@ bool military_army_lane_split_supported(const NativeEconomyRuntime &economy);
 bool military_army_lane_pay_supported(const NativeEconomyRuntime &economy);
 int32_t profession_count(const NativeEconomyRuntime &economy);
 int64_t last_committed_day(const NativeEconomyRuntime &economy);
+int64_t newest_settlement_day(const NativeEconomyRuntime &economy) noexcept;
 bool epoch_active(const NativeEconomyRuntime &economy);
 godot::Dictionary detail_report(const NativeEconomyRuntime &economy);
 void serve_read_view(NativeEconomyRuntime &economy, bool requested);
@@ -681,6 +682,7 @@ std::vector<NarrativeEconomyNotice> narrative_economy_notices(
 bool narrative_unrest_rows(const NativeEconomyRuntime &, int32_t cell, std::vector<NarrativeUnrestRow> &);
 NarrativeUnrestOdds narrative_unrest_odds(const NativeEconomyRuntime &, int32_t cell, int32_t profession, int32_t action);
 bool settle_narrative_unrest(NativeEconomyRuntime &, int32_t cell, int32_t profession, int32_t action, bool success);
+int32_t clear_cell_independence(NativeEconomyRuntime &, int32_t cell);
 const std::vector<std::string> &narrative_professions(const NativeEconomyRuntime &);
 godot::Dictionary era_advancement_economy_summary(const NativeEconomyRuntime &economy, int64_t country);
 godot::Dictionary set_era_procurement_target(NativeEconomyRuntime &economy,

@@ -182,10 +182,14 @@ bool NativeEconomyRuntime::commit_ready_construction(
         for (size_t pk_row = 0; pk_row < building_count(); ++pk_row) {
             const auto group = building_view(pk_row);
             if (group.count > 0) continue;
-            if (_modifier_runtime != nullptr)
-                modifier_api::retire_building_identity(*_modifier_runtime,
-                    group.cell, group.type_id, group.owner_signature_id,
-                    _current_day.get());
+            // Role-storage compaction removes the zero-count row. Neutral
+            // buildings can have no Modifier identity and still need removal
+            // from Economy's cell and role indexes.
+            if (_modifier_runtime != nullptr) {
+                modifier_api::retire_building_identity(
+                    *_modifier_runtime, group.cell, group.type_id,
+                    group.owner_signature_id, _current_day.get());
+            }
             changed_cells.push_back(group.cell);
             topology_changed = true;
             changed = true;

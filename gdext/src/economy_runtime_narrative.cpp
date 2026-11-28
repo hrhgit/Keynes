@@ -72,6 +72,10 @@ void NativeEconomyRuntime::sample_narrative_cell(NarrativeCellView &out, bool de
     }
     const auto &market = market_store();
     const int32_t local_market = market.cell_to_market[cell];
+    out.market_id = local_market;
+    out.has_local_merchant = local_market >= 0 &&
+        size_t(local_market) < _merchant_primary_slot.size() &&
+        _merchant_primary_slot[local_market] >= 0;
     if (local_market >= 0 && local_market < market.market_count.get()) {
         for (size_t good = 0; good < _good_ids.size(); ++good) {
             const auto lane = market.index(local_market, good);
@@ -204,6 +208,9 @@ NarrativeUnrestOdds narrative_unrest_odds(const NativeEconomyRuntime &economy,
 bool settle_narrative_unrest(NativeEconomyRuntime &economy, int32_t cell,
         int32_t profession, int32_t action, bool success) {
     return economy.apply_mobilization_result(cell, profession, action, success);
+}
+int32_t clear_cell_independence(NativeEconomyRuntime &economy, int32_t cell) {
+    return economy.clear_cell_mobilization_independence(cell);
 }
 const std::vector<std::string> &narrative_professions(const NativeEconomyRuntime &economy) {
     return economy.profession_ids();

@@ -4,12 +4,29 @@ namespace pk {
 
 using namespace godot;
 
+int64_t NativeEconomyRuntime::construction_material_required(
+        int64_t quantity, int32_t cost_factor_q16,
+                                        int64_t &saturation) {
+    return std::max<int64_t>(1, mul_div_sat(
+        quantity, std::max(1, cost_factor_q16), Q16_ONE, saturation));
+}
+
+int64_t NativeEconomyRuntime::construction_material_physical(
+        int64_t required, int32_t efficiency_q16,
+                                        int64_t &saturation) {
+    const int32_t efficiency = std::max(1, efficiency_q16);
+    int64_t physical = mul_div_sat(required, Q16_ONE, efficiency, saturation);
+    if (mul_div_sat(physical, efficiency, Q16_ONE, saturation) < required)
+        physical = saturating_add(physical, 1, saturation);
+    return physical;
+}
+
 bool NativeEconomyRuntime::plan_construction_materials(
         int32_t cell, int32_t type_id, int64_t count, int32_t cost_factor_q16,
         ConstructionMaterialPlan &plan,
         const std::vector<int64_t> *additional_stock,
         std::vector<int64_t> *stock_inout,
-        bool split_candidates, bool forecast_missing) const {
+        bool split_candidates, bool forecast_missing, uint64_t *unit_quotes) const {
     plan = ConstructionMaterialPlan{};
     if (cell < 0 || cell >= _cell_count.get() || type_id < 0 ||
         type_id >= static_cast<int32_t>(_building_types.size()) || count <= 0 ||
@@ -44,6 +61,11 @@ bool NativeEconomyRuntime::plan_construction_materials(
     } else if (virtual_stock->size() < _good_ids.size()) {
         virtual_stock->resize(_good_ids.size(), 0);
     }
+    if (!split_candidates) {
+        quote_construction_lots(market, type_id, cost_factor_q16, *virtual_stock, count,
+            std::numeric_limits<int64_t>::max(), plan, unit_quotes);
+        return plan.feasible;
+    }
     // A construction plan is allowed to consume goods that are already on
     // the source market (or are carried in additional/reserved stock).  The
     // previous gate only consulted good_market_available(), which describes
@@ -69,8 +91,8 @@ bool NativeEconomyRuntime::plan_construction_materials(
         plan.quantities.push_back(quantity);
     };
     GoodsBill construction_bill;
-    const int32_t cost_factor = std::max<int32_t>(1, cost_factor_q16);
     for (int64_t unit = 0; unit < count; ++unit) {
+        if (unit_quotes) ++*unit_quotes;
         for (int32_t group_index = 0; group_index < type.construction_count;
              ++group_index) {
             const int32_t group = type.construction_begin + group_index;
@@ -79,128 +101,76 @@ bool NativeEconomyRuntime::plan_construction_materials(
                 _building_construction_candidate_offsets[group];
             const int32_t candidate_end =
                 _building_construction_candidate_offsets[group + 1];
-            const int64_t required = std::max<int64_t>(1, mul_div_sat(
-                preferred.quantity, cost_factor, Q16_ONE, sat));
-            if (split_candidates) {
-                int64_t remaining = required;
-                for (int32_t pass = 0; pass < 2 && remaining > 0; ++pass) {
-                    for (int32_t candidate_index = candidate_begin;
-                         candidate_index < candidate_end && remaining > 0;
-                         ++candidate_index) {
-                        const ConstructionCandidate &candidate =
-                            _building_construction_candidates[candidate_index];
-                        const bool preferred_candidate = candidate.good_id ==
-                            preferred.good_id;
-                        if ((pass == 0) != preferred_candidate ||
-                            candidate.good_id < 0 || candidate.good_id >=
-                                static_cast<int32_t>(virtual_stock->size()) ||
-                            !construction_candidate_available(candidate.good_id)) {
-                            continue;
-                        }
-                        const int32_t efficiency = std::max<int32_t>(
-                            1, candidate.efficiency_q16);
-                        int64_t physical_needed = mul_div_sat(
-                            remaining, Q16_ONE, efficiency, sat);
-                        if (mul_div_sat(physical_needed, efficiency,
-                                Q16_ONE, sat) < remaining) {
-                            physical_needed = saturating_add(
-                                physical_needed, 1, sat);
-                        }
-                        const int64_t available = std::max<int64_t>(0,
-                            (*virtual_stock)[static_cast<size_t>(candidate.good_id)]);
-                        const int64_t physical = std::min(
-                            available, physical_needed);
-                        if (physical <= 0) continue;
-                        (*virtual_stock)[static_cast<size_t>(candidate.good_id)] -=
-                            physical;
-                        add_selection(candidate.good_id, physical);
-                        const int64_t price = market_store().price[market_store().index(
-                            market, candidate.good_id)];
-                        plan.total_cost = saturating_add(plan.total_cost,
-                            construction_bill.add(physical, price, sat), sat);
-                        const int64_t credited = mul_div_sat(
-                            physical, efficiency, Q16_ONE, sat);
-                        remaining = std::max<int64_t>(0,
-                            remaining - std::min(remaining, credited));
+            const int64_t required = construction_material_required(
+                preferred.quantity, cost_factor_q16, sat);
+            int64_t remaining = required;
+            for (int32_t pass = 0; pass < 2 && remaining > 0; ++pass) {
+                for (int32_t candidate_index = candidate_begin;
+                     candidate_index < candidate_end && remaining > 0;
+                     ++candidate_index) {
+                    const ConstructionCandidate &candidate =
+                        _building_construction_candidates[candidate_index];
+                    const bool preferred_candidate = candidate.good_id ==
+                        preferred.good_id;
+                    if ((pass == 0) != preferred_candidate ||
+                        candidate.good_id < 0 || candidate.good_id >=
+                            static_cast<int32_t>(virtual_stock->size()) ||
+                        !construction_candidate_available(candidate.good_id)) {
+                        continue;
                     }
-                }
-                if (remaining > 0) {
-                    if (forecast_missing) {
-                        // Choose one reachable substitute for the residual,
-                        // after spending the real stock of every candidate.
-                        // This is a read-only target bill, never a BUILD.
-                        for (int32_t pass = 0; pass < 2 && remaining > 0; ++pass) {
-                            for (int32_t c = candidate_begin; c < candidate_end; ++c) {
-                                const ConstructionCandidate &candidate =
-                                    _building_construction_candidates[c];
-                                if ((pass == 0) != (candidate.good_id == preferred.good_id) ||
-                                    !construction_candidate_available(candidate.good_id)) continue;
-                                const int32_t efficiency = std::max(1, candidate.efficiency_q16);
-                                int64_t physical = mul_div_sat(remaining, Q16_ONE, efficiency, sat);
-                                if (mul_div_sat(physical, efficiency, Q16_ONE, sat) < remaining)
-                                    physical = saturating_add(physical, 1, sat);
-                                add_selection(candidate.good_id, physical);
-                                remaining = 0;
-                                break;
-                            }
-                        }
+                    const int32_t efficiency = std::max<int32_t>(
+                        1, candidate.efficiency_q16);
+                    int64_t physical_needed = mul_div_sat(
+                        remaining, Q16_ONE, efficiency, sat);
+                    if (mul_div_sat(physical_needed, efficiency,
+                            Q16_ONE, sat) < remaining) {
+                        physical_needed = saturating_add(
+                            physical_needed, 1, sat);
                     }
-                }
-                if (remaining > 0) {
-                    plan.failed_group = group_index;
-                    return false;
-                }
-                continue;
-            }
-            int32_t selected_good = -1;
-            int64_t selected_quantity = 0;
-            int64_t selected_cost = std::numeric_limits<int64_t>::max();
-            for (int32_t candidate_index = candidate_begin;
-                 candidate_index < candidate_end; ++candidate_index) {
-                const ConstructionCandidate &candidate =
-                    _building_construction_candidates[candidate_index];
-                if (!construction_candidate_available(candidate.good_id)) continue;
-                int64_t physical = mul_div_sat(required, Q16_ONE,
-                    std::max<int32_t>(1, candidate.efficiency_q16),
-                    sat);
-                if (mul_div_sat(physical,
-                        std::max<int32_t>(1, candidate.efficiency_q16),
-                        Q16_ONE, sat) < required) {
-                    physical = saturating_add(physical, 1,
-                        sat);
-                }
-                if (candidate.good_id < 0 || candidate.good_id >=
-                        static_cast<int32_t>(virtual_stock->size()) ||
-                    (*virtual_stock)[static_cast<size_t>(candidate.good_id)] <
-                        physical) {
-                    continue;
-                }
-                const int64_t price = market_store().price[market_store().index(
-                    market, candidate.good_id)];
-                const int64_t effective_cost = goods_cost(physical, price, sat);
-                const bool preferred_candidate = candidate.good_id ==
-                    preferred.good_id;
-                const bool selected_preferred = selected_good == preferred.good_id;
-                if (selected_good < 0 || effective_cost < selected_cost ||
-                    (effective_cost == selected_cost &&
-                     (preferred_candidate != selected_preferred
-                          ? preferred_candidate
-                          : candidate.good_id < selected_good))) {
-                    selected_good = candidate.good_id;
-                    selected_quantity = physical;
-                    selected_cost = effective_cost;
+                    const int64_t available = std::max<int64_t>(0,
+                        (*virtual_stock)[static_cast<size_t>(candidate.good_id)]);
+                    const int64_t physical = std::min(
+                        available, physical_needed);
+                    if (physical <= 0) continue;
+                    (*virtual_stock)[static_cast<size_t>(candidate.good_id)] -=
+                        physical;
+                    add_selection(candidate.good_id, physical);
+                    const int64_t price = market_store().price[market_store().index(
+                        market, candidate.good_id)];
+                    plan.total_cost = saturating_add(plan.total_cost,
+                        construction_bill.add(physical, price, sat), sat);
+                    const int64_t credited = mul_div_sat(
+                        physical, efficiency, Q16_ONE, sat);
+                    remaining = std::max<int64_t>(0,
+                        remaining - std::min(remaining, credited));
                 }
             }
-            if (selected_good < 0) {
+            if (remaining > 0) {
+                if (forecast_missing) {
+                    // Choose one reachable substitute for the residual,
+                    // after spending the real stock of every candidate.
+                    // This is a read-only target bill, never a BUILD.
+                    for (int32_t pass = 0; pass < 2 && remaining > 0; ++pass) {
+                        for (int32_t c = candidate_begin; c < candidate_end; ++c) {
+                            const ConstructionCandidate &candidate =
+                                _building_construction_candidates[c];
+                            if ((pass == 0) != (candidate.good_id == preferred.good_id) ||
+                                !construction_candidate_available(candidate.good_id)) continue;
+                            const int32_t efficiency = std::max(1, candidate.efficiency_q16);
+                            int64_t physical = mul_div_sat(remaining, Q16_ONE, efficiency, sat);
+                            if (mul_div_sat(physical, efficiency, Q16_ONE, sat) < remaining)
+                                physical = saturating_add(physical, 1, sat);
+                            add_selection(candidate.good_id, physical);
+                            remaining = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (remaining > 0) {
                 plan.failed_group = group_index;
                 return false;
             }
-            (*virtual_stock)[static_cast<size_t>(selected_good)] -=
-                selected_quantity;
-            add_selection(selected_good, selected_quantity);
-            plan.total_cost = saturating_add(plan.total_cost,
-                construction_bill.add(selected_quantity,
-                    market_store().price[market_store().index(market, selected_good)], sat), sat);
         }
     }
     plan.feasible = true;
@@ -578,7 +548,7 @@ bool NativeEconomyRuntime::apply_demolish_command(const Command &cmd, int32_t ow
     }
     const int64_t before = buildings_store().group_units[group_id];
     record_annual_event(cell, AnnualMetric::REMOVED, count);
-    buildings_store().group_units.write_scalar(group_id, buildings_store().group_units[group_id] - (count));
+    buildings_store().remove_units(group_id, count);
     _building_handle_index_clean = false;
     std::vector<EventLeg> event_legs;
     if (trace_detail_for_cell(cell)) {

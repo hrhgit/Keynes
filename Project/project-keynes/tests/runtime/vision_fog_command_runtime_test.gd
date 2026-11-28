@@ -71,6 +71,7 @@ func _sample_military_world(host: WorldRuntimeHost, clock: WorldClock) -> Dictio
 	var original_frame: Dictionary
 	var target := -1
 	var quote := {}
+	var route_to_explore := PackedInt32Array()
 	for day in range(1, 9):
 		_publish_day(host, clock, day)
 		var settled := await _wait_golden_read_boundary(host, economy, day)
@@ -133,6 +134,11 @@ func _sample_military_world(host: WorldRuntimeHost, clock: WorldClock) -> Dictio
 						ext.get_family_colonization_quote_detail.bind(token, 1))
 					_expect("the executor publishes the valid route at the same boundary",
 						bool(detail.get("ok", false)) and detail.get("read_view_day") == day)
+					for cell: int in detail.get("route_cells", PackedInt32Array()):
+						if frame.explored_arr[cell] == 0:
+							route_to_explore.append(cell)
+					_expect("fog off found an unexplored destination",
+						route_to_explore.has(target))
 					var sent: Dictionary = economy.start_family_colonization(player,
 						int(quote.family_handles[0]), int(quote.source_cells[0]), target, 1, token, 5, 950002)
 					_expect("starting that expedition is queued for day five",
@@ -144,10 +150,20 @@ func _sample_military_world(host: WorldRuntimeHost, clock: WorldClock) -> Dictio
 						and int(receipt.effective_day) == 5 and int(receipt.settled_day) == 5
 						and int(receipt.expedition_handle) != 0)
 				_expect("the expedition settles on day five", exact_day)
+				# Give the route real vision sources for one committed day. A
+				# fog-off quote by itself does not reveal any territory.
+				if target >= 0:
+					var is_neutral_land := func(cell: int) -> bool:
+						return map.is_water_arr[cell] == 0 and map.country_slot_arr[cell] < 0
+					_expect("the unexplored route is neutral land", Array(route_to_explore).all(is_neutral_land))
+					_transfer_route_land(country, route_to_explore, player, 6, 950100)
 				var on := host.set_fog_of_war_enabled(true)
 				_expect("fog on sealed for day six", bool(on.ok) and int(on.effective_day) == 6)
 			6:
 				if target >= 0:
+					_expect("the temporary claims reveal the entire route",
+						Array(route_to_explore).all(func(cell: int): return frame.explored_arr[cell] != 0))
+					_transfer_route_land(country, route_to_explore, 0, 7, 950200)
 					var pending: Dictionary = economy.start_family_colonization(player,
 						int(quote.family_handles[0]), int(quote.source_cells[0]), target, 1,
 						int(quote.quote_tokens[0]), 8, 950003)
@@ -155,15 +171,32 @@ func _sample_military_world(host: WorldRuntimeHost, clock: WorldClock) -> Dictio
 						and pending.get("effective_day") == 8)
 				_expect("fog display is restored from the authoritative physical frame",
 					map.visible_arr == frame.physical_visible and map.fog_k_arr == frame.fog_k_arr)
+			7:
+				if target >= 0:
+					_expect("the released destination is explored but no longer visible",
+						frame.explored_arr[target] != 0 and frame.physical_visible[target] == 0
+						and int(country.cell_summary(target).get("country_handle", -1)) == 0)
 			8:
 				var refused := false
+				var route_accepted := false
 				for row: Dictionary in host._runtime_last_commit.get("colonization_receipts", []):
-					if row.sequence == 950003:
-						refused = row.effective_day == 8 and row.settled_day == 8 \
-							and row.code == "colonization_route_not_visible"
-				_expect("re-enabled fog rejects the old quote on its effective day", refused)
+					if row.sequence == 950003 and row.effective_day == 8 and row.settled_day == 8:
+						refused = row.code == "colonization_route_not_visible"
+						# Duplicate-target detection runs after validating the
+						# complete route and its quote identity.
+						route_accepted = row.expedition_handle != 0 or row.code == "colonization_duplicate_target"
+				_expect("the executor revalidates the route on the requested day", route_accepted)
+				_expect("re-enabled fog keeps the explored destination eligible", not refused)
 	print("FOG_VISIBILITY_COMMANDS off_day=2 on_day=6 hidden_route=", target)
 	return {}
+
+
+func _transfer_route_land(country, cells: PackedInt32Array, target: int, day: int, sequence: int) -> void:
+	var admitted := not cells.is_empty()
+	for index in cells.size():
+		var result: Dictionary = country.transfer_territory(cells[index], target, day, sequence + index, true)
+		admitted = admitted and bool(result.ok) and int(result.effective_day) == day
+	_expect("the route territory changes are sealed for day %d" % day, admitted)
 
 
 func _published_quote(host: WorldRuntimeHost, request: Callable) -> Dictionary:

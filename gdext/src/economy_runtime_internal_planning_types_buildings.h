@@ -34,6 +34,12 @@
         int32_t need_count = 0;
     };
 
+    static constexpr size_t HOUSEHOLD_WEALTH_ANCHOR_COUNT = 15;
+    static constexpr std::array<int32_t, HOUSEHOLD_WEALTH_ANCHOR_COUNT>
+        HOUSEHOLD_WEALTH_ANCHORS_Q16 = {
+            4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288,
+            1048576, 2097152, 4194304, 8388608, 16777216, 33554432, 67108864};
+
     struct Need {
         int32_t stable_id = -1;
         int32_t priority = 0;
@@ -51,7 +57,7 @@
         // rather than from need id strings.
         int32_t satisfaction_tier = SAT_DIM_BASIC;
         int32_t satisfaction_weight_q16 = Q16_ONE;
-        std::array<int32_t, 9> wealth_lut_q16{};
+        std::array<int32_t, HOUSEHOLD_WEALTH_ANCHOR_COUNT> wealth_lut_q16{};
     };
 
     struct VariantChoice {
@@ -63,7 +69,7 @@
         int64_t reference_unit_price = MONEY_SCALE;
         int32_t wealth_elasticity_q16 = 0;
         int32_t savings_threshold_months_q16 = 0;
-        std::array<int32_t, 9> wealth_lut_q16{};
+        std::array<int32_t, HOUSEHOLD_WEALTH_ANCHOR_COUNT> wealth_lut_q16{};
         // 目录证明：任意 i32 价格/消费系数下，预估价格不产生饱和事件。
         bool preview_price_saturation_free = false;
         int32_t price_basis_source = -1;
@@ -184,6 +190,7 @@
         std::vector<int32_t> good_ids;
         std::vector<int64_t> quantities;
         int64_t total_cost = 0;
+        int64_t quoted_count = 0;
         int32_t failed_group = -1;
         bool feasible = false;
     };
@@ -281,6 +288,8 @@
         int64_t purchase_intent_capacity_q16 = 0;
         int32_t realized_profit_margin_q16 = 0;
         uint16_t severe_loss_cycles = 0;
+        uint16_t owner_vacancy_cycles = 0;
+        int64_t vacant_buildings = 0;
         uint16_t recovery_cycles = 0;
         uint16_t recovery_failed_reviews = 0;
         uint16_t merchant_debt_term_cycles_left = 0;
@@ -346,6 +355,8 @@
     X(int64_t, purchase_intent_capacity_q16, purchase_intent_capacity_q16)     \
     X(int32_t, realized_profit_margin_q16, realized_profit_margin_q16)         \
     X(uint16_t, severe_loss_cycles, severe_loss_cycles)                        \
+    X(uint16_t, owner_vacancy_cycles, owner_vacancy_cycles)                    \
+    X(int64_t, vacant_buildings, vacant_buildings)                             \
     X(uint16_t, recovery_cycles, recovery_cycles)                              \
     X(uint16_t, recovery_failed_reviews, recovery_failed_reviews)              \
     X(uint16_t, merchant_debt_term_cycles_left,                                \

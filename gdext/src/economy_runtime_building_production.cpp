@@ -562,6 +562,7 @@ bool NativeEconomyRuntime::run_building_production_cell(
 
 #include "economy_runtime_building_production_compensation.inc"
 #include "economy_runtime_building_production_maintenance_and_tax.inc"
+    finish_building_reopenings(begin, end, result);
 #include "economy_runtime_building_production_market_signals.inc"
     EconomyCostProbe::record("production.sec_rest", _current_day.get(),
                              elapsed_ms(production_rest_started));
@@ -569,6 +570,9 @@ bool NativeEconomyRuntime::run_building_production_cell(
     return true;
 }
 void NativeEconomyRuntime::merge_building_production_result(ProductionResult &result) {
+    merge_cohort_lookup_counts(result.cohort_lookups);
+    if (result.ok && result.released_reopening_jobs)
+        _structural_touched_cells.push_back(result.cell);
     if (result.ok) record_annual_production(result.cell);
     for (const size_t lane : result.audit_population_lanes)
         audit_touch_population_lane(static_cast<int32_t>(lane));
@@ -581,6 +585,7 @@ void NativeEconomyRuntime::merge_building_production_result(ProductionResult &re
         target = saturating_add(target, value, _saturation_count);
     };
     merge(_processed_building_groups, result.processed_building_groups);
+    merge(_loss_suspended_building_groups, result.reopening_suspensions);
     merge(_climate_profiled_building_groups,
           result.climate_profiled_building_groups);
     merge(_climate_limited_building_groups,

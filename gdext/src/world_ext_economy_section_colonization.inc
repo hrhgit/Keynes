@@ -11,8 +11,9 @@ Dictionary DCWorldExt::diagnose_colonization_target(
     }
     const auto *economy = runtime_from(_economy_runtime);
 
-    // Gate 1: the visibility plane the quotes path consumes.
-    const Variant visible_variant = _map_data->get(StringName("visible_arr"));
+    // Gate 1: the explored plane the quotes path consumes. Keep the diagnostic
+    // result field names stable for existing callers.
+    const Variant visible_variant = _map_data->get(StringName("explored_arr"));
     const bool visible_is_byte_array =
         visible_variant.get_type() == Variant::PACKED_BYTE_ARRAY;
     out["visible_is_byte_array"] = visible_is_byte_array;
@@ -84,26 +85,26 @@ Dictionary DCWorldExt::get_family_colonization_quotes(
         out["nonbinding"] = false;
         return out;
     }
-    const Variant visible_variant = _map_data->get(StringName("visible_arr"));
-    if (visible_variant.get_type() != Variant::PACKED_BYTE_ARRAY) {
+    const Variant explored_variant = _map_data->get(StringName("explored_arr"));
+    if (explored_variant.get_type() != Variant::PACKED_BYTE_ARRAY) {
         Dictionary out;
         out["ok"] = false;
         out["code"] = "colonization_visibility_unavailable";
         runtime_from(_economy_runtime)->fill_colonization_query_flags(out);
         return out;
     }
-    const PackedByteArray visible = visible_variant;
+    const PackedByteArray explored = explored_variant;
     const uint64_t revision = static_cast<uint64_t>(static_cast<int64_t>(
         _map_data->get(StringName("vision_revision"))));
     NativeEconomyRuntime *runtime = runtime_from(_economy_runtime);
     ReadKey key = read_key(ReadQuery::FAMILY_COLONIZATION_QUOTES,
         {country_handle, target_cell, family_filter, source_filter, offset, limit,
          static_cast<int64_t>(revision)});
-    key.bytes = visible;
+    key.bytes = explored;
     return committed_read(_runtime_host.get(), runtime, key, [&] {
         return runtime->family_colonization_quotes(
             country_handle, target_cell, family_filter, source_filter, offset,
-            limit, visible.ptr(), visible.size(), revision);
+            limit, explored.ptr(), explored.size(), revision);
     });
 }
 
@@ -141,12 +142,12 @@ Dictionary DCWorldExt::start_family_colonization(
         return forward_economy_boundary_request(*_runtime_host, std::move(request));
     }
     if (_economy_runtime == nullptr || _map_data == nullptr) return unavailable();
-    const Variant visible_variant = _map_data->get(StringName("visible_arr"));
-    if (visible_variant.get_type() != Variant::PACKED_BYTE_ARRAY) {
+    const Variant explored_variant = _map_data->get(StringName("explored_arr"));
+    if (explored_variant.get_type() != Variant::PACKED_BYTE_ARRAY) {
         Dictionary out; out["ok"] = false;
         out["code"] = "colonization_visibility_unavailable"; return out;
     }
-    const PackedByteArray visible = visible_variant;
+    const PackedByteArray explored = explored_variant;
     const uint64_t revision = static_cast<uint64_t>(static_cast<int64_t>(
         _map_data->get(StringName("vision_revision"))));
     // A running worker rarely yields the economy boundary to this thread, so
@@ -155,7 +156,7 @@ Dictionary DCWorldExt::start_family_colonization(
         _runtime_host->economy_worker_owns_execution();
     return runtime_from(_economy_runtime)->submit_family_colonization_start(
         country_handle, family_handle, source_cell, target_cell, population,
-        quote_token, effective_day, sequence, visible.ptr(), visible.size(),
+        quote_token, effective_day, sequence, explored.ptr(), explored.size(),
         revision, worker_owned);
 }
 

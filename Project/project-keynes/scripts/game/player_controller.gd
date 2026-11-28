@@ -315,6 +315,10 @@ func _on_simulation_ui_updated(_from_day: int, _to_day: int, _generation: int) -
 	CommittedPresentation._on_simulation_ui_updated(self, _from_day, _to_day, _generation)
 
 
+func refresh_calendar_display() -> void:
+	ClockPresentation._sync_time_ui(self)
+
+
 func _on_simulation_day_records(_records: Array) -> void:
 	CommittedPresentation._on_simulation_day_records(self, _records)
 

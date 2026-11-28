@@ -108,8 +108,11 @@ func _check_local(local: Dictionary, item: int, base: int, effective: int, mode:
 func _check_synchronous_tax_owner() -> bool:
 	var ext := DCWorldExt.new()
 	ext.create_entities(2)
+	var modifiers := Modifier.new()
+	if not modifiers.configure(ext, 2).get("ok", false):
+		return false
 	var country := preload("res://scripts/country/country_facade.gd").new()
-	if not country.configure(ext, 2, 7321).get("ok", false):
+	if not country.configure(ext, 2, 7321, null, {}, null, modifiers.compiled_catalog()).get("ok", false):
 		return false
 	if not country.bootstrap(PackedByteArray([0, 0])).get("ok", false):
 		return false

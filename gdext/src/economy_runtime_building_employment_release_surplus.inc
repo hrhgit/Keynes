@@ -24,44 +24,11 @@
             const auto group = building_view(static_cast<size_t>(g));
             if (group.cell != cell || group.count <= 0) continue;
             if (group.filled_owner > group_owner_target[g - first]) {
-                building_at(static_cast<size_t>(g)).filled_owner =
-                    group_owner_target[g - first];
+                limit_building_owner_fill(g, group_owner_target[g - first]);
             }
         }
-        // A building's canonical owner signature describes its occupation, not an
-        // ethnicity admission rule. Clamp aggregate owner fills by profession so
-        // owners hired from another local ethnicity remain valid in the next pass.
-        thread_local std::vector<int64_t> owner_remaining_by_profession;
-        owner_remaining_by_profession.assign(professions, 0);
-        population_store().for_each_in_cell(cell, [&](int32_t slot) {
-            const uint32_t sig = population_store().signature_id[slot];
-            if (sig >= _signatures.size()) return;
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) return;
-            owner_remaining_by_profession[profession] = saturating_add(
-                owner_remaining_by_profession[profession],
-                std::max<int64_t>(0, population_store().population[slot]),
-                _saturation_count);
-        });
-        for (int32_t g : hire_order) {
-            auto group = building_at(static_cast<size_t>(g));
-            if (group.owner_signature_id < 0 ||
-                group.owner_signature_id >= static_cast<int32_t>(_signatures.size())) {
-                group.filled_owner = 0;
-                continue;
-            }
-            const int32_t profession =
-                _signatures[group.owner_signature_id].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) {
-                group.filled_owner = 0;
-                continue;
-            }
-            int64_t &remaining = owner_remaining_by_profession[profession];
-            group.filled_owner = std::min(std::max<int64_t>(0, group.filled_owner), remaining);
-            remaining -= group.filled_owner;
-        }
+        thread_local std::vector<int64_t> sig_owner_retained;
+        retain_building_owners(cell, hire_order, sig_owner_retained);
         if (trace_employment) {
             for (int32_t g = first; g < last; ++g)
                 trace_filled_after_profession[g - first] =
@@ -133,88 +100,11 @@
         //     retained = owner_retained + employee_retained锛圓1: <= population锛夈€?
         //     surplus = population - retained 鈫?杩佸線 unemployed|eth銆?
         //
-        // First aggregate filled owner jobs by profession, then distribute them
-        // over local profession|ethnicity cohorts in stable signature order. A
-        // BuildingGroup has no per-owner identity, so retaining by its canonical
-        // signature would recreate an ethnicity partition after every pass.
-        thread_local std::vector<int64_t> sig_owner_retained;
-        thread_local std::vector<int64_t> sig_owner_population;
-        thread_local std::vector<int64_t> owner_filled_by_profession;
-        thread_local std::vector<int64_t> owner_population_by_profession;
-        thread_local std::vector<int64_t> owner_prefix_by_profession;
-        thread_local std::vector<int64_t> owner_distributed_by_profession;
-        thread_local std::vector<int32_t> owner_active_signatures;
         thread_local std::vector<int64_t> sig_owner_distributed;
-        // 杩欎笁鏉?signature 閫氶亾鍘熸潵鍦ㄦ瘡鏍煎紑澶村悇 assign 涓€閬嶆暣寮?_signatures 琛ㄣ€傝〃闅?
-        // 瀛樻。鍗曡皟澧為暱涓旀案涓嶆敹缂╋紝鑰屾瘡鏍煎疄闄呰Е纰扮殑 signature 鍙湁鏈湴鍑犱釜銆俫eneration
-        // stamp 璁╂棫鍊艰嚜鍔ㄥけ鏁堬細stamp 鏈懡涓殑妲戒綅涓€寰嬭涓?0锛屼笌娓呰〃鍚庣殑璇绘硶涓€鑷淬€?
-        thread_local std::vector<uint32_t> sig_owner_stamp;
-        thread_local uint32_t sig_owner_generation = 0;
-        ++sig_owner_generation;
-        if (sig_owner_stamp.size() < _signatures.size()) {
-            sig_owner_retained.resize(_signatures.size(), 0);
-            sig_owner_population.resize(_signatures.size(), 0);
-            sig_owner_distributed.resize(_signatures.size(), 0);
-            sig_owner_stamp.resize(_signatures.size(), 0);
-        }
-        if (sig_owner_generation == 0) {
-            std::fill(sig_owner_stamp.begin(), sig_owner_stamp.end(), 0);
-            sig_owner_generation = 1;
-        }
-        owner_filled_by_profession.assign(professions, 0);
-        owner_population_by_profession.assign(professions, 0);
-        owner_prefix_by_profession.assign(professions, 0);
-        owner_distributed_by_profession.assign(professions, 0);
-        owner_active_signatures.clear();
-        for (int32_t g = first; g < last; ++g) {
-            auto group = building_view(static_cast<size_t>(g));
-            if (group.cell != cell || group.count <= 0) continue;
-            if (group.owner_signature_id < 0 ||
-                group.owner_signature_id >= static_cast<int32_t>(_signatures.size())) continue;
-            const int32_t profession =
-                _signatures[group.owner_signature_id].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) continue;
-            owner_filled_by_profession[profession] = saturating_add(
-                owner_filled_by_profession[profession],
-                std::max<int64_t>(0, group.filled_owner), _saturation_count);
-        }
+        sig_owner_distributed.resize(_signatures.size());
         population_store().for_each_in_cell(cell, [&](int32_t slot) {
-            const int32_t sig = static_cast<int32_t>(population_store().signature_id[slot]);
-            if (sig < 0 || sig >= static_cast<int32_t>(_signatures.size())) return;
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) return;
-            if (sig_owner_stamp[sig] != sig_owner_generation) {
-                sig_owner_stamp[sig] = sig_owner_generation;
-                sig_owner_population[sig] = 0;
-                sig_owner_retained[sig] = 0;
-                sig_owner_distributed[sig] = 0;
-            }
-            if (sig_owner_population[sig] == 0) owner_active_signatures.push_back(sig);
-            const int64_t population = std::max<int64_t>(0,
-                population_store().population[slot]);
-            sig_owner_population[sig] = saturating_add(sig_owner_population[sig],
-                population, _saturation_count);
-            owner_population_by_profession[profession] = saturating_add(
-                owner_population_by_profession[profession], population,
-                _saturation_count);
+            sig_owner_distributed[population_store().signature_id[slot]] = 0;
         });
-        std::sort(owner_active_signatures.begin(), owner_active_signatures.end());
-        for (const int32_t sig : owner_active_signatures) {
-            const int32_t profession = _signatures[sig].profession_id;
-            owner_prefix_by_profession[profession] = saturating_add(
-                owner_prefix_by_profession[profession], sig_owner_population[sig],
-                _saturation_count);
-            const int64_t next = owner_population_by_profession[profession] > 0
-                ? mul_div_sat(owner_filled_by_profession[profession],
-                    owner_prefix_by_profession[profession],
-                    owner_population_by_profession[profession], _saturation_count)
-                : 0;
-            sig_owner_retained[sig] = std::max<int64_t>(0,
-                next - owner_distributed_by_profession[profession]);
-            owner_distributed_by_profession[profession] = next;
-        }
         // employee 鍦ㄥ矖鎸?profession 绋冲畾搴忔憡娲惧埌鍚?slot锛堝悓 profession 鐨勫 eth
         // slot 鎸?signature_id 鍗囧簭锛岀敤 cohort 鍙绾抽噺姣斾緥鎽婃淳锛屽墠缂€鍜屼繚纭畾锛夈€?
         thread_local std::vector<int64_t> emp_prefix;
@@ -229,8 +119,7 @@
             const int32_t sig = static_cast<int32_t>(population_store().signature_id[slot]);
             const int32_t p = _signatures[sig].profession_id;
             if (p == _unemployed_profession_id) return;
-            const int64_t retained_here = sig_owner_stamp[sig] == sig_owner_generation
-                ? sig_owner_retained[sig] : 0;
+            const int64_t retained_here = sig_owner_retained[sig];
             const int64_t owner_here = std::min(retained_here,
                 std::max<int64_t>(0, population_store().population[slot]));
             const int64_t cap = std::max<int64_t>(0, population_store().population[slot] - owner_here);
@@ -266,13 +155,11 @@
             const bool state_service_here =
                 profession_is_state_service_only(p);
             // owner 鍦ㄦ湰 slot 鐨勪唤棰濓紙鍚?signature 澶?slot 鏃剁ǔ瀹氬簭鎽婃淳锛夈€?
-            const bool sig_active = sig_owner_stamp[sig] == sig_owner_generation;
-            const int64_t retained_here = sig_active ? sig_owner_retained[sig] : 0;
-            const int64_t distributed_here = sig_active ? sig_owner_distributed[sig] : 0;
+            const int64_t retained_here = sig_owner_retained[sig];
+            const int64_t distributed_here = sig_owner_distributed[sig];
             const int64_t owner_here = std::min(
                 std::max<int64_t>(0, retained_here - distributed_here), pop);
-            if (sig_active)
-                sig_owner_distributed[sig] = saturating_add(distributed_here,
+            sig_owner_distributed[sig] = saturating_add(distributed_here,
                                                             owner_here, _saturation_count);
             if (merchant_here) {
                 // 鍟嗕汉 slot 涓嶅仛 employee锛堜粎 owner 宀楋級锛涗繚搴?1 涓仛甯傚晢涓嶈銆?

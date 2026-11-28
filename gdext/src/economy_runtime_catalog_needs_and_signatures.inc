@@ -217,7 +217,7 @@
                 std::clamp<int64_t>(pow_q16(
                     HOUSEHOLD_WEALTH_ANCHORS_Q16[anchor],
                     _variants[v].wealth_elasticity_q16, _saturation_count),
-                    0, std::numeric_limits<int32_t>::max()));
+                    Q16_ONE / 16, Q16_ONE * 64));
         }
     }
     _components.resize(component_goods.size());
@@ -423,9 +423,8 @@
             break;
         }
     }
-    // Build the dense (profession, ethnicity) -> signature lookup. Deterministic:
-    // signatures are the profession x ethnicity cartesian product, so at most one
-    // entry per (profession, ethnicity). Any unfilled cell stays -1.
+    // A profession change uses the first catalog signature for the pair.
+    // Existing cohorts can have another plan with the same profession and ethnicity.
     {
         const size_t n_prof = _profession_ids.size();
         const size_t n_eth = _ethnicity_ids.size();

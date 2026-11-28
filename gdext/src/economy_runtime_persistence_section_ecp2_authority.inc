@@ -329,8 +329,12 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
                                              end_chunks);
         if (end_chunks.empty()) {
             std::vector<uint8_t> payload;
+            uint16_t schema = SCHEMA_VERSION;
+            size_t schema_offset = sizeof(uint32_t);
+            if (!ordered_chunks.empty())
+                binary_codec::read_le(ordered_chunks.front(), schema_offset, schema);
             const godot::PackedByteArray end_chunk =
-                make_save_chunk(SAVE_SECTION_END, 0, payload);
+                make_save_chunk(SAVE_SECTION_END, 0, payload, schema);
             ordered_chunks.emplace_back(
                 static_cast<size_t>(end_chunk.size()));
             std::memcpy(ordered_chunks.back().data(), end_chunk.ptr(),
@@ -346,7 +350,7 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
         chunk.resize(static_cast<int64_t>(bytes.size()));
         if (!bytes.empty())
             std::memcpy(chunk.ptrw(), bytes.data(), bytes.size());
-        const Dictionary fed = feed_restore_chunk(chunk);
+        const Dictionary fed = feed_restore_candidate(chunk);
         if (!static_cast<bool>(fed.get("ok", false))) {
             error = String(fed.get("reason", "ecp2_restore_chunk_failed"))
                         .utf8()
@@ -356,7 +360,10 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
         }
     }
 
-    if (!end_restore_internal(error)) {
+    // Owner cooldown endpoints are offsets into the decoded building table.
+    // Bind them before end_restore compacts any legacy zero-count rows.
+    if (!EconomyAuthorityTransfer::restore_owner_mobility_continuation(*this, in, error) ||
+        !end_restore_internal(error)) {
         _restore = {};
         return false;
     }
@@ -429,6 +436,10 @@ bool NativeEconomyRuntime::apply_ecp2_authority(
         const RuntimeEconomyEcp2State &in, std::string &error) {
     error.clear();
 
+    if (_restore.stream) {
+        error = "save_restore_already_active";
+        return false;
+    }
     if (_epoch_active) {
         error = "restore_requires_committed_boundary";
         return false;

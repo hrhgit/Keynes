@@ -51,6 +51,7 @@
     int64_t trace_memory_bytes() const;
     static uint64_t trace_hash_mix(uint64_t hash, uint64_t value);
     static thread_local ProductionResult *_production_result_sink;
+    static thread_local BuildingPlanResult *_building_plan_result_sink;
     static thread_local MarketResult *_market_result_sink;
     // Non-null only while a market worker task is running; stage_cell_summary
     // appends here instead of the shared list. Null on every scalar path.

@@ -74,7 +74,8 @@
     };
     auto select_input_candidate = [&](const ProductionInput &input,
                                       bool require_stock,
-                                      int64_t effective_required) -> int32_t {
+                                      int64_t effective_required,
+                                      int32_t output_factor_q16 = Q16_ONE) -> int32_t {
         int32_t best = -1;
         int64_t best_capacity_q16 = -1;
         int64_t best_cold_cover = -1;
@@ -94,7 +95,7 @@
                 const int64_t physical_required = effective_production_input_quantity(
                     cell, candidate.good_id,
                     physical_input_quantity(effective_required, candidate),
-                    _saturation_count);
+                    _saturation_count, output_factor_q16);
                 capacity_q16 = physical_required > 0 ? std::min<int64_t>(
                     Q16_ONE, mul_div_sat(
                         stock, Q16_ONE, physical_required, _saturation_count)) : Q16_ONE;
@@ -102,7 +103,7 @@
             const int64_t unit_physical = effective_production_input_quantity(
                 cell, candidate.good_id,
                 physical_input_quantity(GOODS_SCALE, candidate),
-                _saturation_count);
+                _saturation_count, output_factor_q16);
             const int64_t effective_price = goods_cost(market_store().price[market_store().index(market, candidate.good_id)], unit_physical, _saturation_count);
             // Empty-shelf substitutes must not rank by ghost ceiling prices
             // alone. Prefer the good whose preferred producer can already
@@ -151,7 +152,8 @@
         const int64_t effective = saturating_mul(
             building_days, std::max<int64_t>(0, input.quantity),
             _saturation_count);
-        const int32_t selected = select_input_candidate(input, false, effective);
+        const int32_t selected = select_input_candidate(
+            input, false, effective, group.output_factor_q16);
         if (selected < 0) {
             soft_input_policy.emplace(cache_key, 0);
             return false;
@@ -159,7 +161,8 @@
         const InputCandidate &candidate = _building_input_candidates[selected];
         const int64_t physical_input = effective_production_input_quantity(
             group.cell, candidate.good_id,
-            physical_input_quantity(effective, candidate), _saturation_count);
+            physical_input_quantity(effective, candidate),
+            _saturation_count, group.output_factor_q16);
         const int64_t input_base_cost = goods_cost(
             physical_input,
             market_store().price[market_store().index(market, candidate.good_id)],
@@ -169,6 +172,8 @@
             _saturation_count, physical_input);
         const int64_t input_cost = std::max<int64_t>(
             0, input_quote.buyer_outlay);
+        const int64_t marginal_bonus_q16 =
+            soft_input_marginal_bonus_q16(type, required);
         int64_t marginal_output_value = 0;
         for (int32_t output_index = 0; output_index < type.output_count;
              ++output_index) {
@@ -178,7 +183,7 @@
                 group, output.good_id, output.quantity, Q16_ONE,
                 building_days, _saturation_count);
             const int64_t incremental_output = mul_div_sat(
-                full_output, required, Q16_ONE, _saturation_count);
+                full_output, marginal_bonus_q16, Q16_ONE, _saturation_count);
             if (incremental_output <= 0) continue;
             const size_t output_market_index = market_store().index(
                 market, output.good_id);
@@ -188,7 +193,7 @@
             // Owner retention is a current-period demand signal and is settled
             // before the remaining output enters merchant procurement.
             int64_t retained_increment = 0;
-            const int32_t owner_signature = group.owner_signature_id;
+            const int32_t owner_signature = settlement_owner_signatures[group.index - begin];
             if (owner_signature >= 0 && owner_signature <
                     static_cast<int32_t>(_signatures.size()) &&
                 retention_signature_stamp[owner_signature] ==
@@ -343,7 +348,8 @@
             if (purchase_scale_q16 <= 0) continue;
             const int64_t effective = saturating_mul(
                 building_days, item.quantity, _saturation_count);
-            const int32_t selected = select_input_candidate(item, require_stock, effective);
+            const int32_t selected = select_input_candidate(
+                item, require_stock, effective, group.output_factor_q16);
             if (selected < 0) {
                 // Soft tools are optional: missing stock skips the buy and
                 // leaves throughput to soft_efficiency. Hard inputs abort.
@@ -357,7 +363,7 @@
             int64_t qty = scaled_input_quantity(
                 effective_production_input_quantity(cell, candidate.good_id,
                     physical_input_quantity(effective, candidate),
-                    _saturation_count), purchase_scale_q16);
+                    _saturation_count, group.output_factor_q16), purchase_scale_q16);
             if (selected_out != nullptr) (*selected_out)[input_index] = selected;
             if (quantities_out != nullptr) (*quantities_out)[input_index] = qty;
             if (require_stock && qty > 0) {

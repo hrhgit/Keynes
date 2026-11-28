@@ -687,6 +687,8 @@ Dictionary NativeEconomyRuntime::reset(const String &reason) {
     _environment_hash = 0;
     _save = {};
     _restore = {};
+    _restore_catalog = {};
+    _restore_profile = {};
     Dictionary out;
     out["ok"] = true;
     out["reason"] = reason;

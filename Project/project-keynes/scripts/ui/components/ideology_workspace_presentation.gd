@@ -596,6 +596,10 @@ func _detail_data(host, ideology_id: int, offer := false) -> Dictionary:
 	return CardData._detail_data(host, ideology_id, offer)
 
 
+func _support_details(host, live: Dictionary, location: int) -> Array[Dictionary]:
+	return IdeologySupport._support_details(host, live, location)
+
+
 static func _id_set(host, ids: PackedInt32Array) -> Dictionary:
 	return CardData._id_set(host, ids)
 

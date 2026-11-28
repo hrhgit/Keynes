@@ -2,6 +2,7 @@
     EconomyWorkerChanges *market_mutation_sink() const {
         if (_production_result_sink) return &_production_result_sink->market_changes;
         if (_market_result_sink) return &_market_result_sink->market_changes;
+        if (_building_plan_result_sink) return &_building_plan_result_sink->changes;
         return nullptr;
     }
     ChangeRegistry &worker_change_registry(EconomyFieldId field) {

@@ -54,11 +54,12 @@ struct RuntimeNarrativeRequest {
 class RuntimeNarrative {
 public:
     void sample_country(const RuntimeCountryPodSnapshot &, NarrativeCountryView &) const;
-    bool configure(const godot::Dictionary &packet, const godot::Dictionary &archive);
+    bool configure(const godot::Dictionary &packet, const godot::Dictionary &archive,
+                   int32_t world_cell_count);
     int64_t step(const NarrativeDay &input, const std::vector<RuntimeEventsRecord> &facts,
                  int64_t acknowledged);
     godot::Dictionary capture() const;
-    static godot::String checkpoint_error(const godot::Dictionary &);
+    static godot::String checkpoint_error(const godot::Dictionary &, int32_t world_cell_count);
     std::shared_ptr<const RuntimeNarrativeView> view(int64_t committed_day) const;
     godot::Dictionary queue_choice(int64_t day, const godot::Dictionary &args, bool automatic = false);
     static godot::Dictionary validate_offer(const godot::Dictionary &offer, uint64_t country,
@@ -74,6 +75,10 @@ public:
     godot::Dictionary complete_choice(godot::Dictionary result, bool apply_local = true);
     void settle_economy_effects(const std::function<bool(int64_t, std::string &)> &receipt);
     std::vector<NarrativeIndependenceAction> take_independence_actions();
+    // Cancel a pending independence on the cell because the
+    // owner has only one territory left. The host applies them at the next day's
+    // prepare boundary, including when that day follows a cold restore.
+    std::vector<int32_t> take_independence_clears();
     int64_t allocate_modifier_source() { return _next_modifier_source++; }
     godot::Dictionary queue_ai_reply(const godot::Dictionary &result);
     void set_ai_enabled(int64_t day, bool enabled);
@@ -81,11 +86,13 @@ public:
     uint64_t player() const { return _country; }
     const RuntimeNarrativeCatalog &catalog() const { return _catalog; }
     bool placing_choice() const { return !_choice_record.is_empty(); }
-    void finish_unrest_choice(bool applied, int64_t day);
+    void finish_unrest_choice(bool applied, bool independence_pending, int64_t day);
     const godot::Dictionary &choice_record() const { return _choice_record; }
     int64_t allocate_unrest_sequence() { return ++_unrest_sequence; }
 
 private:
+    static constexpr int64_t UNREST_CHECKPOINT_VERSION = 2;
+
     struct Flag { int64_t set, expires, value; };
     struct Bias {
         int64_t id, add, factor, expires;
@@ -148,6 +155,7 @@ private:
     std::vector<UnrestPending> _unrest_checks;
     std::vector<Independence> _independence;
     std::vector<NarrativeIndependenceAction> _independence_actions;
+    std::vector<int32_t> _independence_clears;
     struct PendingAi { godot::Dictionary request, reply; };
     std::vector<PendingAi> _pending_ai;
     // Offers and records keep the established pknr/presentation shape. No

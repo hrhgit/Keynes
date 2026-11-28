@@ -48,14 +48,21 @@ double elapsed_ms(const Clock::time_point &start) {
 }
 } // namespace
 
-bool NativeEconomyRuntime::evaluate_building_plan_range(
-        int32_t active_begin, int32_t end, std::string &error) {
-    error.clear();
-    if (active_begin >= end) return true;
+bool NativeEconomyRuntime::building_plan_uses_worker_pool(
+        int32_t cell_count, int64_t estimated_work) const {
     static const bool force_serial = [] {
         const char *value = pk::runtime_switch_value(pk::RuntimeSwitch::PK_ECONOMY_STAGE_PLAN_SERIAL);
         return value && std::strcmp(value, "1") == 0;
     }();
+    return !force_serial && _worker_enabled && _worker_task_cap > 1 &&
+        _worker_tasks_hint != 1 && cell_count >= 2 && estimated_work >= 128 &&
+        parallel_has_real_worker_threads();
+}
+
+bool NativeEconomyRuntime::evaluate_building_plan_range(
+        int32_t active_begin, int32_t end, std::string &error) {
+    error.clear();
+    if (active_begin >= end) return true;
     const int32_t cell_count = end - active_begin;
     int64_t estimated_work = 0;
     _production_cell_weights_scratch.resize(
@@ -87,9 +94,7 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
         : static_cast<int32_t>(std::clamp<int64_t>(
             (estimated_work + 1023) / 1024, 2,
             _worker_task_cap));
-    const int32_t task_count = !force_serial && _worker_enabled &&
-            cell_count >= 2 && estimated_work >= 128 &&
-            parallel_has_real_worker_threads()
+    const int32_t task_count = building_plan_uses_worker_pool(cell_count, estimated_work)
         ? std::min({cell_count, _worker_task_cap,
             _worker_tasks_hint > 0
             ? _worker_tasks_hint : default_tasks})
@@ -153,6 +158,8 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
     for (int32_t task = 0; task < task_count; ++task) {
         const BuildingPlanResult &task_result =
             _building_plan_results_scratch[task];
+        merge_economy_worker_changes(task_result.changes);
+        merge_cohort_lookup_counts(task_result.cohort_lookups);
         _building_plan_worker_cpu_ms += task_result.worker_ms;
         _saturation_count += task_result.saturation_count;
         _merchant_credit_budget = saturating_add(
@@ -169,6 +176,11 @@ bool NativeEconomyRuntime::evaluate_building_plan_range(
             _saturation_count);
         _recovery_approved = saturating_add(
             _recovery_approved,
+            task_result.recovery_approved,
+            _saturation_count);
+        // Keep the legacy restart diagnostic as the count of offers opened.
+        _recovery_restarted = saturating_add(
+            _recovery_restarted,
             task_result.recovery_approved,
             _saturation_count);
         _loss_suspended_building_groups = saturating_add(

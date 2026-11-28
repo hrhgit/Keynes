@@ -157,7 +157,6 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
     // Legacy probe planner storage is retained only so old object files and
     // save diagnostics stay ABI-compatible. The planner branch below is
     // permanently disabled; suspended buildings never purchase or produce.
-    thread_local std::vector<std::pair<int32_t, int64_t>> recovery_probe_goods;
     ++owner_seen_generation;
     owner_seen_key.resize(_signatures.size(), 0);
     owner_output_flags.resize(_signatures.size());
@@ -280,23 +279,9 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
                     !building_available(cell, group.type_id, true)) continue;
                 const BuildingType &type = _building_types[group.type_id];
                 int64_t group_floor_q16 = 0;
-                // The owner floor is expressed in full-recipe output.  When a
-                // soft input is absent, production deliberately keeps only the
-                // bare efficiency (1 - required), so the planned activity must
-                // be lifted to preserve the same survival quantity.  Without
-                // this conversion a missing tool silently halves food output
-                // and can turn a temporary shortage into starvation.
-                int64_t bare_efficiency_q16 = Q16_ONE;
-                for (int32_t i = 0; i < type.input_count; ++i) {
-                    const ProductionInput &input = _building_inputs[
-                        type.input_begin + i];
-                    const int64_t required = std::clamp<int64_t>(
-                        input.required_q16, 0, Q16_ONE);
-                    if (required > 0 && required < Q16_ONE)
-                        bare_efficiency_q16 = std::min<int64_t>(
-                            bare_efficiency_q16, Q16_ONE - required);
-                }
-                if (bare_efficiency_q16 <= 0) bare_efficiency_q16 = 1;
+                // Soft inputs are capped productivity bonuses on top of 100%
+                // bare output, so missing soft tools never cut below full-recipe
+                // survival output.
                 for (int32_t i = 0; i < type.output_count; ++i) {
                     const int32_t good = _building_outputs[type.output_begin + i].good_id;
                     if (_survival_food_good_mask[good] != 0) {
@@ -307,14 +292,6 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
                         group_floor_q16 = std::max(
                             group_floor_q16, owner_clothing_floor_q16[owner]);
                 }
-                if (group_floor_q16 > 0 && bare_efficiency_q16 < Q16_ONE)
-                    group_floor_q16 = std::clamp<int64_t>(
-                        saturating_add(
-                            saturating_mul(group_floor_q16, Q16_ONE,
-                                _saturation_count),
-                            bare_efficiency_q16 - 1, _saturation_count) /
-                            bare_efficiency_q16,
-                        0, Q16_ONE);
                 _building_survival_utilization_floor_q16[g] = group_floor_q16;
             }
         }
@@ -537,6 +514,8 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             // captured a service in a suspended state.
             group.operating_state = 0;
             group.severe_loss_cycles = 0;
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
             group.recovery_cycles = 0;
             group.recovery_failed_reviews = 0;
             group.pending_operating_state = 255;
@@ -550,6 +529,8 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             // private operating cost so the payroll and rail paths behave.
             group.operating_state = 0;
             group.severe_loss_cycles = 0;
+            group.owner_vacancy_cycles = 0;
+            group.vacant_buildings = 0;
             group.recovery_cycles = 0;
             group.recovery_failed_reviews = 0;
             group.pending_operating_state = 255;
@@ -611,6 +592,10 @@ bool NativeEconomyRuntime::prepare_building_economic_plan_body(
             if (group.operating_state != 0) ++_loss_suspended_building_groups;
             continue;
         }
+        if (type.kind != 2 && type.owner_slots_per_building > 0 &&
+                group.operating_state == 0)
+            _building_lifecycle[group_index].employment =
+                BuildingLifecycleReview::Employment::Observe;
 #include "economy_runtime_building_plan_body_operating_quote.inc"
 #include "economy_runtime_building_plan_body_restart.inc"
 #include "economy_runtime_building_plan_body_utilization.inc"

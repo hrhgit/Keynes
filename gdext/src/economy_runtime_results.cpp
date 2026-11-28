@@ -6,15 +6,34 @@ namespace pk {
 
 thread_local NativeEconomyRuntime::ProductionResult *
     NativeEconomyRuntime::_production_result_sink = nullptr;
+thread_local NativeEconomyRuntime::BuildingPlanResult *
+    NativeEconomyRuntime::_building_plan_result_sink = nullptr;
 thread_local NativeEconomyRuntime::MarketResult *
     NativeEconomyRuntime::_market_result_sink = nullptr;
 thread_local std::vector<int32_t> *
     NativeEconomyRuntime::_staging_touched_sink = nullptr;
 
+void NativeEconomyRuntime::BuildingPlanResult::reset() {
+    ok = true;
+    error.clear();
+    changes.clear();
+    cohort_lookups = {};
+    saturation_count = 0;
+    merchant_credit_budget = 0;
+    merchant_credit_committed = 0;
+    recovery_candidates = 0;
+    recovery_approved = 0;
+    loss_suspended_building_groups = 0;
+    unprofitable_building_groups = 0;
+    utilization_sum_q16 = 0;
+    worker_ms = 0.0;
+}
+
 void NativeEconomyRuntime::MarketResult::reset() {
     ok = true;
     market = -1;
     error.clear();
+    cohort_lookups = {};
     processed_cohorts = 0;
     processed_rules = 0;
     processed_needs = 0;
@@ -118,9 +137,12 @@ int64_t NativeEconomyRuntime::MarketResult::capacity_bytes() const {
 }
 
 void NativeEconomyRuntime::ProductionResult::reset() {
+    released_reopening_jobs = false;
+    reopening_suspensions = 0;
     ok = true;
     cell = -1;
     error.clear();
+    cohort_lookups = {};
     saturation_count = 0;
     processed_building_groups = 0;
     climate_profiled_building_groups = 0;

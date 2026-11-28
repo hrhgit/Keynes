@@ -244,7 +244,7 @@
                 !building_available(cell, group.type_id, true)) continue;
             const BuildingType &type = _building_types[group.type_id];
             if (type.input_count <= 0 || group.sample_unit_input_cost <= 0) continue;
-            const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
+            const int32_t owner_slot = building_settlement_owner_slot(group);
             if (owner_slot < 0 ||
                 owner_slot >= static_cast<int32_t>(local_by_slot_stamp.size()) ||
                 local_by_slot_stamp[owner_slot] != local_lookup_generation) continue;

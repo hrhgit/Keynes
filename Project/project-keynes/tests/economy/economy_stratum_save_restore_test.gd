@@ -50,11 +50,14 @@ func _execute() -> void:
 	if country.is_empty() or original.is_empty():
 		return
 	var schema := original[0].decode_u16(4)
-	if not _check("fixture uses current PKEC65", schema == 65):
+	if not _check("fixture uses current PKEC67", schema == 67):
 		return
-	# PKEC65 adds fields to expedition rows. This fixture has no expeditions,
-	# so its PKEC62 variant only needs the signal-layout conversion below.
+	# PKEC65 extends expedition rows, and PKEC66 extends building rows.
+	# With neither present, conversion to PKEC62 only changes the signal layout.
 	for chunk in original:
+		if chunk.decode_u16(6) == 5:
+			if not _check("legacy fixture has no building rows", chunk.decode_u32(8) == 0):
+				return
 		if chunk.decode_u16(6) == 23:
 			if not _check("legacy fixture has no expedition rows", chunk.decode_u32(8) == 0):
 				return

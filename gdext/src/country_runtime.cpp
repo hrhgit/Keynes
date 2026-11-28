@@ -95,8 +95,6 @@ Dictionary NativeCountryRuntime::bootstrap(const Dictionary &packet,
                                             const PackedByteArray &is_water) {
     if (!_configured) return fail("country_not_configured");
     if (is_water.size() != _cell_count) return fail("country_water_mask_size_mismatch");
-    _is_water.resize(static_cast<size_t>(_cell_count));
-    if (_cell_count > 0) std::memcpy(_is_water.data(), is_water.ptr(), static_cast<size_t>(_cell_count));
 
     const std::vector<std::string> ids = packed_strings(packet, "country_ids");
     const std::vector<std::string> names = packed_strings(packet, "country_names");
@@ -129,7 +127,26 @@ Dictionary NativeCountryRuntime::bootstrap(const Dictionary &packet,
         packed_i32(packet, "research_weights_bp");
     const std::vector<uint8_t> research_auto_purchase =
         packed_u8(packet, "research_auto_purchase");
+    const StringName tax_defaults_key("tax_defaults_bp");
+    if (packet.has(tax_defaults_key) &&
+        packet[tax_defaults_key].get_type() != Variant::PACKED_INT32_ARRAY)
+        return fail("country_bootstrap_tax_policy_invalid");
+    const std::vector<int32_t> tax_defaults_bp =
+        packed_i32(packet, "tax_defaults_bp");
+    constexpr size_t tax_kind_count = TAX_KIND_COUNT;
+    const size_t country_count = std::max<size_t>(1, ids.size());
+    if (!tax_defaults_bp.empty()) {
+        if (tax_defaults_bp.size() != tax_kind_count &&
+            tax_defaults_bp.size() != country_count * tax_kind_count)
+            return fail("country_bootstrap_tax_policy_invalid");
+        for (const int32_t rate : tax_defaults_bp) {
+            if (!tax_value_valid(TAX_MODE_PERCENT_BP, rate))
+                return fail("country_bootstrap_tax_policy_invalid");
+        }
+    }
 
+    _is_water.resize(static_cast<size_t>(_cell_count));
+    if (_cell_count > 0) std::memcpy(_is_water.data(), is_water.ptr(), static_cast<size_t>(_cell_count));
     _countries = {};
     _starting_country_slot = -1;
     std::fill(_cell_country_slot.begin(), _cell_country_slot.end(), NEUTRAL_SLOT);
@@ -373,6 +390,15 @@ Dictionary NativeCountryRuntime::bootstrap(const Dictionary &packet,
         _starting_country_slot = 0;
     }
 
+    if (!tax_defaults_bp.empty()) {
+        const bool shared_defaults = tax_defaults_bp.size() == tax_kind_count;
+        for (size_t slot = 0; slot < country_count; ++slot) {
+            const size_t offset = slot * tax_kind_count;
+            const size_t source = shared_defaults ? 0 : offset;
+            std::copy_n(tax_defaults_bp.begin() + source, tax_kind_count,
+                        _country_tax_defaults.begin() + offset);
+        }
+    }
     for (int32_t slot = 0; slot < static_cast<int32_t>(_countries.active.size()); ++slot) {
         for (int32_t tech = 0; tech < static_cast<int32_t>(_technology_ids.size()); ++tech) {
             if (has_technology(slot, tech))

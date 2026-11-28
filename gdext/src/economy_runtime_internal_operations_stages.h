@@ -43,11 +43,18 @@
     void initialize_building_role_span(BuildingGroupRef group);
     void release_building_role_span(BuildingGroupConstRef group);
     void rebuild_building_role_storage();
+    void rebuild_building_group_storage();
     void rebuild_building_cell_offsets();
     void rebuild_building_visual_snapshot();
     void publish_building_visual_changes(
         const std::vector<int32_t> &changed_cells);
     void rebuild_building_review_buckets();
+    bool building_liquidation_due() const;
+    int64_t building_mobility_days(int32_t cell) const;
+    void review_expired_building_vacancy(int32_t group_index);
+    void observe_building_employment(int32_t begin, int32_t end, bool mobility_due,
+                                     const std::vector<int64_t> &owner_targets);
+    void finish_building_reopenings(int32_t begin, int32_t end, ProductionResult &result);
     void review_recovery_building_group(int32_t group_index);
     void finalize_household_building_cell(int32_t cell, int64_t &saturation,
                                           int64_t &restarted,
@@ -82,6 +89,11 @@
     int32_t labor_signal_index(int32_t cell, int32_t profession) const;
     int64_t living_cost_for_signature(int32_t cell, int32_t signature_id,
                                       int32_t plan_override, int64_t &sat) const;
+    int64_t essential_living_cost_for_signature(int32_t cell, int32_t signature_id,
+                                                int32_t plan_override, int64_t &sat) const;
+    int64_t living_cost_for_signature_impl(int32_t cell, int32_t signature_id,
+                                           int32_t plan_override, bool essentials_only,
+                                           int64_t &sat) const;
     void compute_cell_living_costs_from_basis(
         int32_t cell, const std::vector<int64_t> &variant_scores,
         const std::vector<int64_t> &variant_prices,
@@ -100,6 +112,7 @@
     void publish_shadow_graph_stage_reference(RuntimeEconomyGraphStage stage);
     // Shared BUILDING_PLAN entry: routes through economy_kernel_prepare_building_plan
     // so sync and future worker probe worlds share one boundary (no second formula).
+    bool building_plan_uses_worker_pool(int32_t cell_count, int64_t estimated_work) const;
     bool evaluate_building_plan_range(int32_t active_begin, int32_t active_end, std::string &error);
     bool prepare_building_economic_plan(int32_t active_begin, int32_t active_end,
                                         const std::vector<int32_t> *cells_override,
@@ -171,6 +184,14 @@
     int32_t find_building_group(int32_t cell, int32_t type_id,
                                 int32_t owner_signature_id) const;
     int32_t find_cohort_slot(int32_t cell, int32_t signature_id) const;
+    int64_t building_owner_seats(BuildingGroupConstRef group, int32_t signature) const;
+    void change_visiting_owner(size_t row, int32_t signature, int64_t change);
+    void limit_building_owner_fill(size_t row, int64_t limit);
+    void retain_building_owners(int32_t cell, const std::vector<int32_t> &order,
+        std::vector<int64_t> &retained);
+    void migrate_building_owner_seats();
+    int32_t building_settlement_owner_slot(BuildingGroupConstRef group) const;
+    void merge_cohort_lookup_counts(const CohortLookupCounts &counts) const;
     int64_t credit_local_merchants(int32_t cell, int64_t amount,
                                    int32_t cashflow_source = CASHFLOW_MERCHANT_BUSINESS,
                                    int64_t *saturation_override = nullptr);
@@ -328,6 +349,8 @@
     bool run_building_employment_drain(int64_t &work_done, std::string &error);
     bool run_building_production_drain(int64_t &work_done, std::string &error);
     struct BuildingInvestmentCellContext;
+    bool quote_investment_portfolio(BuildingInvestmentCellContext &ctx,
+                                    int32_t *rejected_invoice = nullptr) const;
     enum class InvestmentPreflightResult : uint8_t {
         Skip = 0,
         Ready = 1,

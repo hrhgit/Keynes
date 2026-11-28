@@ -67,7 +67,7 @@ RuntimeEconomyPopulationStore &RuntimeEconomyPopulationStore::operator=(const Ru
     demography_residual.assign(other.demography_residual.values());
     owner_employed.assign(other.owner_employed.values());
     employee_employed.assign(other.employee_employed.values());
-    active_count = other.active_count; high_water_slots = other.high_water_slots; scan_steps = other.scan_steps;
+    active_count = other.active_count; high_water_slots = other.high_water_slots;
     return *this;
 }
 
@@ -102,8 +102,8 @@ RuntimeEconomyPopulationStore &RuntimeEconomyPopulationStore::operator=(RuntimeE
     demography_residual.move_from(other.demography_residual);
     owner_employed.move_from(other.owner_employed);
     employee_employed.move_from(other.employee_employed);
-    active_count = other.active_count; high_water_slots = other.high_water_slots; scan_steps = other.scan_steps;
-    other.active_count = other.high_water_slots = other.scan_steps = 0;
+    active_count = other.active_count; high_water_slots = other.high_water_slots;
+    other.active_count = other.high_water_slots = 0;
     return *this;
 }
 
@@ -246,13 +246,15 @@ bool RuntimeEconomyPopulationStore::restore_page_at(int32_t page,
     return true;
 }
 
-int32_t RuntimeEconomyPopulationStore::find_signature(int32_t cell,
-                                                               uint32_t signature) const {
+int32_t RuntimeEconomyPopulationStore::find_signature(
+        int32_t cell, uint32_t signature, int64_t *steps) const {
     int32_t result = -1;
+    int64_t visited = 0;
     for_each_in_cell(cell, [&](int32_t slot) {
-        ++scan_steps;
+        ++visited;
         if (result < 0 && signature_id[slot] == signature) result = slot;
     });
+    if (steps != nullptr) *steps = visited;
     return result;
 }
 

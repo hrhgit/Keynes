@@ -25,8 +25,7 @@
             const int32_t g = owner_groups[static_cast<size_t>(gi)];
             {
                 const auto group_view = building_view(static_cast<size_t>(g));
-                if (group_view.owner_signature_id != owner_signature ||
-                    group_view.count <= 0 || group_view.operating_state == 1 ||
+                if (group_view.count <= 0 || group_view.operating_state == 1 ||
                     !building_available(cell, group_view.type_id, true)) continue;
             }
             auto group = building_at(static_cast<size_t>(g));

@@ -1,5 +1,7 @@
 #include "runtime_narrative.h"
 
+#include <godot_cpp/variant/packed_int32_array.hpp>
+
 #include <algorithm>
 
 namespace pk {
@@ -173,7 +175,7 @@ Dictionary RuntimeNarrative::capture() const {
 
     Dictionary unrest;
     unrest["schema"] = "PKStratumUnrest";
-    unrest["version"] = 1;
+    unrest["version"] = UNREST_CHECKPOINT_VERSION;
     unrest["last_fact_id"] = _last_unrest_fact;
     unrest["last_day"] = _last_unrest_day;
     unrest["sequence"] = _unrest_sequence;
@@ -189,6 +191,9 @@ Dictionary RuntimeNarrative::capture() const {
         independence.push_back(row);
     }
     unrest["pending_independence"] = independence;
+    PackedInt32Array independence_clears;
+    for (const int32_t cell : _independence_clears) independence_clears.push_back(cell);
+    unrest["pending_independence_clears"] = independence_clears;
     Array checks;
     for (const auto &item : _unrest_checks) {
         Dictionary row;
@@ -303,6 +308,10 @@ void RuntimeNarrative::decode_checkpoint(const Dictionary &state) {
             row.get("queued_day", 0), narrative_key(row.get("stable_id", "")),
             row.get("submitted", false)});
     });
+    const PackedInt32Array independence_clears = unrest.get("pending_independence_clears", PackedInt32Array());
+    if (!independence_clears.is_empty())
+        _independence_clears.assign(independence_clears.ptr(),
+                                    independence_clears.ptr() + independence_clears.size());
     decode_records(unrest.get("pending_stage_checks", Array()), [&](const Dictionary &row) {
         _unrest_checks.push_back({row.get("cell", -1), row.get("profession", -1),
             row.get("stage", 0), uint64_t(int64_t(row.get("owner_handle", 0)))});

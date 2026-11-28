@@ -173,9 +173,12 @@
     };
 
     struct ProductionResult {
+        bool released_reopening_jobs = false;
+        int64_t reopening_suspensions = 0;
         bool ok = true;
         int32_t cell = -1;
         std::string error;
+        CohortLookupCounts cohort_lookups;
         int64_t saturation_count = 0;
         int64_t processed_building_groups = 0;
         int64_t climate_profiled_building_groups = 0;
@@ -260,9 +263,19 @@
         int64_t capacity_bytes() const;
     };
 
+    struct BuildingLifecycleReview {
+        enum class Employment : uint8_t { None, Observe, Reopen };
+        enum class Retirement : uint8_t { None, Vacancy, Unprofitable, Retired };
+        Employment employment = Employment::None;
+        Retirement retirement = Retirement::None;
+        int64_t vacant_buildings = 0;
+    };
+
     struct BuildingPlanResult {
         bool ok = true;
         std::string error;
+        EconomyWorkerChanges changes;
+        CohortLookupCounts cohort_lookups;
         int64_t saturation_count = 0;
         int64_t merchant_credit_budget = 0;
         int64_t merchant_credit_committed = 0;
@@ -273,9 +286,7 @@
         int64_t utilization_sum_q16 = 0;
         double worker_ms = 0.0;
 
-        void reset() {
-            *this = {};
-        }
+        void reset();
     };
 
     struct CompletedEpochPerf {

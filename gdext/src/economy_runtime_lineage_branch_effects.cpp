@@ -431,22 +431,21 @@ NativeEconomyRuntime::owner_opportunity_quote_uncached(
         result.natural_max_output = 0;
         if (quote_trace) add_quote_section(quote_sections.fin_pre_ms, fin_pre_started);
         const auto fin_natural_started = Clock::now();
-        const int64_t natural_throughput_q16 = mul_div_sat(
-            quote.natural_capacity_q16, soft_eff, Q16_ONE, sat);
         for (int32_t ni = 0; ni < type.output_count; ++ni) {
             const GoodAmount &natural_output = _building_outputs[
                 type.output_begin + ni];
+            const int64_t natural_base = effective_building_output_quantity(
+                group, natural_output.good_id, natural_output.quantity,
+                quote.natural_capacity_q16, std::max<int64_t>(1, group.count), sat);
             result.natural_max_output = saturating_add(
                 result.natural_max_output,
-                effective_building_output_quantity(
-                    group, natural_output.good_id, natural_output.quantity,
-                    natural_throughput_q16, std::max<int64_t>(1, group.count), sat),
+                mul_div_sat(natural_base, soft_eff, Q16_ONE, sat),
                 sat);
         }
         if (quote_trace) add_quote_section(quote_sections.fin_natural_ms, fin_natural_started);
-        result.wages = mul_div_sat(wages_at_full_scale, throughput_scale, Q16_ONE, sat);
+        result.wages = mul_div_sat(wages_at_full_scale, activity_scale, Q16_ONE, sat);
         result.maintenance = mul_div_sat(
-            maintenance_at_full_scale, throughput_scale, Q16_ONE, sat);
+            maintenance_at_full_scale, activity_scale, Q16_ONE, sat);
         const auto fin_input_cost_started = Clock::now();
         result.input_cost = purchase_input_cost_at_scale(activity_scale, buy_soft);
         if (quote_trace) add_quote_section(quote_sections.fin_input_cost_ms, fin_input_cost_started);
@@ -465,10 +464,12 @@ NativeEconomyRuntime::owner_opportunity_quote_uncached(
         const auto fin_outputs_started = Clock::now();
         for (int32_t i = 0; i < type.output_count; ++i) {
             const GoodAmount &output = _building_outputs[type.output_begin + i];
-            // Group-level daily quote: per-building recipe × installed count.
-            const int64_t quantity = effective_building_output_quantity(
-                group, output.good_id, output.quantity, throughput_scale,
+            // Group-level daily quote: per-building recipe × installed count × soft bonus.
+            const int64_t base_quantity = effective_building_output_quantity(
+                group, output.good_id, output.quantity, activity_scale,
                 std::max<int64_t>(1, group.count), sat);
+            const int64_t quantity = mul_div_sat(
+                base_quantity, soft_eff, Q16_ONE, sat);
             if (i < static_cast<int32_t>(quoted_output_quantities.size()))
                 quoted_output_quantities[static_cast<size_t>(i)] = quantity;
             if (quantity <= 0) continue;

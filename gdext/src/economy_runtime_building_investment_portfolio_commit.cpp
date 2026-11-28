@@ -14,6 +14,38 @@
 
 namespace pk {
 
+bool NativeEconomyRuntime::quote_investment_portfolio(
+        BuildingInvestmentCellContext &ctx, int32_t *rejected_invoice) const {
+    // Price each proposal in commit order against one private stock balance.
+    // Funding replay uses those exact invoices, with no live population or
+    // money writes and no change to the selected quantities.
+    auto &invoices = ctx.commit_material_plans;
+    std::vector<int64_t> stock(_good_ids.size(), 0);
+    for (int32_t good = 0; good < market_store().good_count.get(); ++good)
+        stock[good] = std::max<int64_t>(0,
+            market_store().stock[market_store().index(ctx.market, good)]);
+    std::array<const InvestmentCandidatePlan *, 4> plans{};
+    int64_t saturation = 0;
+    for (int32_t i = 0; i < ctx.portfolio_size; ++i) {
+        const auto &plan = ctx.portfolio[i].plan;
+        plans[i] = &plan;
+        if (plan.allocated_count <= 0) {
+            invoices[i] = {};
+            continue;
+        }
+        const int64_t funding = saturating_add(
+            plan.funding_capital, plan.merchant_credit, saturation);
+        if (!plan_construction_materials(ctx.cell, plan.type_id, plan.allocated_count,
+                ctx.commit_cost_factor, invoices[i], nullptr, &stock, false, false, &ctx.material_quotes) ||
+            invoices[i].total_cost > saturating_mul(plan.allocated_count, funding, saturation)) {
+            if (rejected_invoice) *rejected_invoice = i;
+            return false;
+        }
+    }
+    return saturation == 0 && investment_portfolio_funds_feasible(
+        ctx.cell, plans.data(), invoices.data(), ctx.portfolio_size);
+}
+
 NativeEconomyRuntime::InvestmentPreflightResult
 NativeEconomyRuntime::investment_preflight_portfolio(
         BuildingInvestmentCellContext &ctx, std::string &error) {
@@ -25,42 +57,16 @@ NativeEconomyRuntime::investment_preflight_portfolio(
     auto &total_buildings = ctx.total_buildings;
     auto &total_owner_population = ctx.total_owner_population;
     auto &max_type_owner_population = ctx.max_type_owner_population;
-    auto &commit_material_plans = ctx.commit_material_plans;
-    auto &commit_cost_factor = ctx.commit_cost_factor;
     auto &commit_time_factor = ctx.commit_time_factor;
     auto &country = ctx.country;
-    auto &market = ctx.market;
     using Candidate = BuildingInvestmentCellContext::Candidate;
 
-    // Freeze the exact aggregate invoices for the whole portfolio before
-    // moving population or money. The generic BUILD entry point reports a
-    // business rejection by returning true without appending construction;
-    // calling it after those mutations made any quote/commit mismatch fatal
-    // and left the three conservation ledgers dirty. Planning against one
-    // shared virtual stock vector also makes substitute selection identical
-    // to the later stable portfolio commit order.
-    commit_material_plans = {};
-    std::vector<int64_t> commit_virtual_stock(_good_ids.size(), 0);
-    for (int32_t good = 0; good < market_store().good_count.get(); ++good) {
-        commit_virtual_stock[static_cast<size_t>(good)] =
-            std::max<int64_t>(0, market_store().stock[market_store().index(market, good)]);
-    }
-    std::vector<int64_t> trial_virtual_stock;
-    commit_cost_factor = country >= 0 &&
-            country < static_cast<int32_t>(
-                _epoch_country_construction_cost_factor_q16.size())
-        ? _epoch_country_construction_cost_factor_q16[country] : Q16_ONE;
     commit_time_factor = country >= 0 &&
             country < static_cast<int32_t>(
                 _epoch_country_construction_time_factor_q16.size())
         ? _epoch_country_construction_time_factor_q16[country] : Q16_ONE;
-    // 分配阶段逐类型看到的库存，和这里四种类型排队共用同一份库存之后
-    // 剩下的材料并不相同：便宜的首选材料被前面的类型占走后，后面只能
-    // 买更贵的替代品。用与下单完全一致的顺序和库存重算发票，超出资金
-    // 包络就把批量收窄（可以收到零，视作这次不投），把矛盾解决在改动
-    // 人口和资金之前，而不是留给下面的兜底断言。
     for (int32_t i = 0; i < portfolio_size; ++i) {
-        Candidate &candidate = portfolio[i];
+        const Candidate &candidate = portfolio[i];
         if (candidate.plan.allocated_count <= 0) continue;
         if (!building_available(cell, candidate.plan.type_id, true) ||
             !evaluate_building_conditions(candidate.plan.type_id, cell) ||
@@ -72,82 +78,16 @@ NativeEconomyRuntime::investment_preflight_portfolio(
             error = "building_investment_catalog_preflight_drift";
             return InvestmentPreflightResult::Fatal;
         }
-        const int64_t funded_per_building = saturating_add(
-            candidate.plan.funding_capital, candidate.plan.merchant_credit,
-            _saturation_count);
-        ConstructionMaterialPlan &plan = commit_material_plans[i];
-        // 整批撑得住是常态，先按完整批量试一次并直接接管扣减后的库存，
-        // 稳态下不额外增加一次 plan 调用。
-        trial_virtual_stock = commit_virtual_stock;
-        const bool full_batch_affordable = plan_construction_materials(
-                cell, candidate.plan.type_id, candidate.plan.allocated_count,
-                commit_cost_factor, plan, nullptr,
-                &trial_virtual_stock) &&
-            plan.total_cost <= saturating_mul(candidate.plan.allocated_count,
-                funded_per_building, _saturation_count);
-        if (full_batch_affordable) {
-            commit_virtual_stock.swap(trial_virtual_stock);
-        } else {
-            // 单位造价随批量单调不减（每栋都在剩余库存里挑当时最便宜的
-            // 材料），所以「撑得住」是单调谓词，可以二分。
-            int64_t affordable_lo = 0;
-            int64_t affordable_hi = candidate.plan.allocated_count - 1;
-            while (affordable_lo < affordable_hi) {
-                const int64_t mid = affordable_lo +
-                    (affordable_hi - affordable_lo + 1) / 2;
-                trial_virtual_stock = commit_virtual_stock;
-                ConstructionMaterialPlan trial_plan;
-                if (plan_construction_materials(cell, candidate.plan.type_id, mid,
-                        commit_cost_factor, trial_plan, nullptr,
-                        &trial_virtual_stock) &&
-                    trial_plan.total_cost <= saturating_mul(
-                        mid, funded_per_building, _saturation_count)) {
-                    affordable_lo = mid;
-                } else {
-                    affordable_hi = mid - 1;
-                }
-            }
-            _building_investment_cost_envelope_trimmed = saturating_add(
-                _building_investment_cost_envelope_trimmed,
-                candidate.plan.allocated_count - affordable_lo,
-                _saturation_count);
-            candidate.plan.allocated_count = affordable_lo;
-            if (candidate.plan.allocated_count <= 0) {
-                plan = ConstructionMaterialPlan{};
-                continue;
-            }
-            if (!plan_construction_materials(
-                    cell, candidate.plan.type_id, candidate.plan.allocated_count,
-                    commit_cost_factor, plan, nullptr,
-                    &commit_virtual_stock)) {
-                error = "building_investment_material_preflight_drift";
-                return InvestmentPreflightResult::Fatal;
-            }
-        }
-        // 收窄之后这里只是兜底断言。真的还超说明另有未知漏洞，此时停在
-        // fatal 比带着错账继续跑安全。
-        if (plan.total_cost > saturating_mul(candidate.plan.allocated_count,
-                funded_per_building, _saturation_count)) {
-            error = "building_investment_cost_preflight_drift";
-            return InvestmentPreflightResult::Fatal;
-        }
     }
 
-    std::array<const InvestmentCandidatePlan *, 4> funding_plans{};
-    for (int32_t i = 0; i < portfolio_size; ++i)
-        funding_plans[i] = &portfolio[i].plan;
-    while (!investment_portfolio_funds_feasible(cell, funding_plans.data(),
-            commit_material_plans.data(), portfolio_size)) {
-        // 保留得分较高的前缀。只移除尾部项目，前面的冻结材料发票无需重算。
-        int32_t last = portfolio_size - 1;
-        while (last >= 0 && portfolio[last].plan.allocated_count <= 0) --last;
-        if (last < 0) break;
-        portfolio[last].plan.allocated_count = 0;
-        ++_building_investment_capital_limited;
+    // The chosen capacities and invoices are already fixed together. A
+    // second, independent trim here could invalidate the documented mix.
+    if (ctx.rejected_invoice >= 0) {
+        _building_investment_cost_envelope_trimmed = saturating_add(
+            _building_investment_cost_envelope_trimmed,
+            std::max<int64_t>(0, ctx.rejected_invoice_count -
+                portfolio[ctx.rejected_invoice].plan.allocated_count), _saturation_count);
     }
-
-    // 汇总和信贷额度都必须用收窄之后的批量重算，否则会按已经作废的旧
-    // 栋数迁移人口、透支商人信贷。
     active_types = 0;
     total_buildings = 0;
     total_owner_population = 0;

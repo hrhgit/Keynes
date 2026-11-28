@@ -599,7 +599,7 @@ Dictionary DCWorldExt::get_gameplay_event_schema() const {
 #include "world_ext_events_section_publish.inc"
 
 bool DCWorldExt::configure_gameplay_narrative(Dictionary packet, Dictionary state) {
-    return _runtime_host && _runtime_host->initialize_narrative(packet, state);
+    return _runtime_host && _runtime_host->initialize_narrative(packet, state, entity_count());
 }
 
 Dictionary DCWorldExt::get_gameplay_narrative_view() const {
@@ -627,7 +627,8 @@ Dictionary DCWorldExt::capture_gameplay_narrative() const {
 
 Dictionary DCWorldExt::submit_gameplay_narrative(StringName kind, Dictionary args) {
     if (!_runtime_host) return narrative_response(false, "narrative_runtime_unavailable");
-    if (kind == StringName("restore")) return _runtime_host->restore_narrative_checkpoint(args);
+    if (kind == StringName("restore"))
+        return _runtime_host->restore_narrative_checkpoint(args, entity_count());
     auto request = std::make_shared<RuntimeNarrativeRequest>();
     using Kind = RuntimeNarrativeRequest::Kind;
     if (kind == StringName("choose")) request->kind = Kind::CHOOSE;

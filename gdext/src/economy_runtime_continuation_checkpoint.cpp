@@ -124,7 +124,6 @@ bool EconomyAuthorityTransfer::restore_continuations(
         NativeEconomyRuntime &runtime, const RuntimeEconomyEcp2State &state,
         std::string &error) {
     if (!restore_resource_continuation(runtime, state, error) ||
-        !restore_owner_mobility_continuation(runtime, state, error) ||
         !restore_cadence_continuation(runtime, state, error) ||
         !restore_population_continuation(runtime, state, error) ||
         !restore_climate_continuation(runtime, state, error)) return false;

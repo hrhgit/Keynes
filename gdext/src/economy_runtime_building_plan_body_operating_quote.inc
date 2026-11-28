@@ -76,7 +76,7 @@
                 const int64_t physical = effective_production_input_quantity(
                     group.cell, candidate.good_id,
                     physical_numerator / candidate.efficiency_q16,
-                    _saturation_count);
+                    _saturation_count, group.output_factor_q16);
                 const int64_t candidate_cost = mul_div_sat(
                     physical,
                     market_store().price[market_store().index(market, candidate.good_id)],
@@ -185,18 +185,14 @@
             group.last_quoted_market_receipt = 0;
             group.last_quoted_operating_cost = 0;
             group.last_maintenance_due = 0;
-            if (type.kind != 2 && group.operating_state == 2) {
-                group.operating_state = 1;
-                group.pending_operating_state = 255;
-                invalidate_cell_monetary_units(group.cell);
-            }
             // Missing a technologically available hard input is a recoverable
             // execution blockage, not evidence of a realized operating loss.
             // Keep the installed group active/idle so it retains a labor claim
             // and can resume as soon as the input chain supplies it.
-            if (type.kind != 2 && group.operating_state == 0)
-                group.severe_loss_cycles = 0;
-            if (group.operating_state != 0) ++_loss_suspended_building_groups;
+            if (group.operating_state == 1) {
+                review_expired_building_vacancy(group_index);
+                ++_loss_suspended_building_groups;
+            }
             continue;
         }
         for (int32_t r = 0; r < type.employee_count; ++r) {
@@ -388,6 +384,8 @@
         group.sample_unit_maintenance_cost = maintenance_cost;
         group.last_margin_gap_q16 = static_cast<int32_t>(margin_gap);
         bool suspended_now = false;
+        // A pending restart from an older save has no previous active period
+        // to assess. Recovery offers are opened after this assessment.
         if (type.kind != 2 && group.operating_state == 0) {
             // 停业沿用实际经营收支；业主生活成本属于岗位机会评价。
             // 不可把单座单日生活报价加到整组已结算的成本中。
@@ -464,29 +462,20 @@
                 !positive_self_employment &&
                 realized_after_tax_margin <= _building_severe_loss_threshold_q16.get();
             if (realized_severe_loss) {
-                // Count consecutive observed owner losses. A single settled loss
-                // must remain visible to employment and audit while the configured
-                // hysteresis threshold decides when the group is suspended.
                 const int32_t threshold = std::max(1, _building_severe_loss_cycles.get());
                 group.severe_loss_cycles = static_cast<uint16_t>(std::min<int32_t>(
                     threshold, static_cast<int32_t>(group.severe_loss_cycles) + 1));
                 if (group.severe_loss_cycles >= threshold) {
+                    _building_lifecycle[group_index].employment =
+                        BuildingLifecycleReview::Employment::None;
                     group.operating_state = 1;
                     group.recovery_cycles = 0;
                     suspended_now = true;
                     invalidate_cell_monetary_units(group.cell);
                 }
-            } else {
-                // Zero settlement covers labor, input, resource and financing
-                // blockages. None is a realized loss observation.
+            } else if (settled_production) {
                 group.severe_loss_cycles = 0;
             }
             group.pending_operating_state = 255;
             group.recovery_cooldown_cycles = 0;
-            if (!suspended_now && group.severe_loss_cycles >= _building_severe_loss_cycles.get()) {
-                group.operating_state = 1;
-                group.recovery_cycles = 0;
-                suspended_now = true;
-                invalidate_cell_monetary_units(group.cell);
-            }
         }

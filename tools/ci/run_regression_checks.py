@@ -39,6 +39,7 @@ TESTS = (
     "tests/ui/ui_scene_structure_test.gd",
     "tests/ui/cell_board_test.gd",
     "tests/ui/cell_board_toolbar_transition_test.gd",
+    "tests/game/new_game_config_test.gd",
     "tests/game/save_repository_test.gd",
     "tests/game/save_preview_codec_test.gd",
     "tests/game/save_container_validation_test.gd",
@@ -109,12 +110,20 @@ TESTS = (
     "tests/runtime/runtime_opinion_input_lifecycle_test.gd",
     "tests/ideology/ideology_social_media_worker_test.gd",
     "tests/building/building_runtime_test.gd",
+    "tests/building/building_recovery_occupancy_test.gd",
+    "tests/building/building_lifecycle_test.gd",
+    "tests/building/building_lifecycle_disjoint_test.gd",
+    "tests/building/building_tombstone_restore_test.gd",
+    "tests/building/building_v65_restore_test.gd",
+    "tests/economy/economy_building_job_restore_test.gd",
+    "tests/building/building_owner_settlement_test.gd",
     "tests/economy/economy_test_bootstrap_test.gd",
     "tests/economy/bootstrap_catalog_contract_test.gd",
     "tests/economy/goods_storage_schema_test.gd",
     "tests/economy/economy_cadence_runtime_test.gd",
     "tests/economy/economy_fiscal_reservation_continuation_test.gd",
     "tests/economy/economy_stratum_save_restore_test.gd",
+    "tests/economy/stratum_chain_pacing_test.gd",
     "tests/economy/resource_visual_layer_test.gd",
     "tests/economy/resource_ground_cover_test.gd",
     "tests/economy/resource_visual_update_test.gd",
@@ -223,6 +232,9 @@ EXPECTED_ERRORS = {
 def fixture_errors(name: str, lines: list[str]) -> list[str]:
     expected = list(EXPECTED_ERRORS.get(name, ()))
     declarations = []
+    if name == "building_lifecycle_disjoint_test":
+        if lines.count("building lifecycle disjoint calendars: 0 failures") != 1:
+            declarations.append("expected exactly one successful disjoint building calendar summary")
     if name == "economy_stratum_save_restore_test":
         success_pattern = r"=== stratum save roundtrip: [1-9][0-9]* checks, 0 failures ==="
         if sum(bool(re.fullmatch(success_pattern, line)) for line in lines) != 1:
@@ -337,8 +349,11 @@ def main() -> int:
     before_files = untracked(ROOT)
 
     def test(script: str) -> bool:
-        return run_check(args.godot, Path(script).stem, ["--script", f"res://{script}"], logs,
-                         check_artifacts=False)
+        name = Path(script).stem
+        extra_env = {"PK_ECONOMY_TRACK_B_MOBILITY_SPREAD": "4"} if (
+            name == "building_lifecycle_disjoint_test") else None
+        return run_check(args.godot, name, ["--script", f"res://{script}"], logs,
+                         extra_env=extra_env, check_artifacts=False)
 
     def tool(name: str, script: str, *arguments: str) -> bool:
         return timed_run(name, [sys.executable, str(ROOT / "tools/ci" / script), "--godot", args.godot,

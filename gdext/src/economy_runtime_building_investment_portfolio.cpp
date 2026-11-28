@@ -307,6 +307,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
             country < static_cast<int32_t>(
                 _epoch_country_construction_cost_factor_q16.size())
         ? _epoch_country_construction_cost_factor_q16[country] : Q16_ONE;
+    ctx.commit_cost_factor = investment_cost_factor;
     auto reserved_material_adjustment = [&]() {
         std::vector<int64_t> adjustment(_good_ids.size(), 0);
         for (int32_t j = 0; j < portfolio_size; ++j) {
@@ -314,7 +315,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
             ConstructionMaterialPlan reserved_plan;
             if (!plan_construction_materials(
                     cell, portfolio[j].plan.type_id, portfolio[j].plan.allocated_count,
-                    investment_cost_factor, reserved_plan, &adjustment)) {
+                    investment_cost_factor, reserved_plan, &adjustment, nullptr, false, false, &ctx.material_quotes)) {
                 adjustment.clear();
                 return adjustment;
             }
@@ -329,7 +330,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
         }
         return adjustment;
     };
-    auto additional_capacity = [&](int32_t index) {
+    auto additional_capacity = [&](int32_t index, bool for_search = false) {
         Candidate &candidate = portfolio[index];
         const BuildingType &type = _building_types[candidate.plan.type_id];
         int64_t cap = std::max<int64_t>(
@@ -391,7 +392,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
             }
             const int64_t staffing_cap = std::max<int64_t>(0,
                 cell_population - committed_owner_slots) / owner_slots;
-            if (staffing_cap < cap)
+            if (staffing_cap < cap && !for_search)
                 ++_building_investment_owner_population_limited;
             cap = std::min(cap, staffing_cap);
             if (cap <= 0) return int64_t{0};
@@ -401,7 +402,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
                 previously_allocated_owner_population(candidate.plan.sponsor,
                     candidate.plan.sponsor_family_handle));
         const int64_t owner_cap = owner_remaining / owner_slots;
-        if (owner_cap < cap) ++_building_investment_owner_population_limited;
+        if (owner_cap < cap && !for_search) ++_building_investment_owner_population_limited;
         cap = std::min(cap, owner_cap);
         const int64_t capital_remaining = std::max<int64_t>(
             0, candidate.transferable_capital -
@@ -410,57 +411,42 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
         const int64_t capital_cap = candidate.plan.funding_capital > 0
             ? capital_remaining / candidate.plan.funding_capital
             : cap;
-        if (capital_cap < cap) ++_building_investment_capital_limited;
+        if (capital_cap < cap && !for_search) ++_building_investment_capital_limited;
         cap = std::min(cap, capital_cap);
         if (candidate.plan.uses_merchant_credit &&
             candidate.plan.merchant_credit > 0) {
             const int64_t credit_cap = std::max<int64_t>(
                 0, available_credit - previously_allocated_credit()) /
                 candidate.plan.merchant_credit;
-            if (credit_cap < cap) ++_building_investment_capital_limited;
+            if (credit_cap < cap && !for_search) ++_building_investment_capital_limited;
             cap = std::min(cap, credit_cap);
         }
-        const std::vector<int64_t> adjustment =
-            reserved_material_adjustment();
-        if (adjustment.empty() && !_good_ids.empty()) {
-            ++_building_investment_material_limited;
-            return int64_t{0};
-        }
-        int64_t material_lo = 0;
-        int64_t material_hi = cap;
-        // 建材凑得齐还不够：同格其它类型先占走便宜的首选材料后，剩下的
-        // 替代品会把单价推高，重算出的这批建材总价必须仍在候选自己冻结
-        // 的资金包络（自筹 + 商人信贷）之内，否则批量在这里就要收窄。
-        const int64_t funded_per_building = saturating_add(
-            candidate.plan.funding_capital, candidate.plan.merchant_credit,
-            _saturation_count);
-        bool cost_envelope_limited = false;
-        while (material_lo < material_hi) {
-            const int64_t mid = material_lo +
-                (material_hi - material_lo + 1) / 2;
-            ConstructionMaterialPlan candidate_plan;
-            if (!plan_construction_materials(cell, candidate.plan.type_id, mid,
-                    investment_cost_factor, candidate_plan, &adjustment)) {
-                material_hi = mid - 1;
-                continue;
-            }
-            if (candidate_plan.total_cost > saturating_mul(
-                    mid, funded_per_building, _saturation_count)) {
-                cost_envelope_limited = true;
-                material_hi = mid - 1;
-                continue;
-            }
-            material_lo = mid;
-        }
-        if (material_lo < cap) {
-            if (cost_envelope_limited) ++_building_investment_capital_limited;
-            else {
+        if (!for_search && cap > 0) {
+            const std::vector<int64_t> adjustment =
+                reserved_material_adjustment();
+            if (adjustment.empty() && !_good_ids.empty()) {
                 ++_building_investment_material_limited;
-                record_investment_material_demand(cell, candidate.plan.type_id,
-                    1, investment_cost_factor);
+                return int64_t{0};
             }
+            std::vector<int64_t> stock(_good_ids.size());
+            for (int32_t good = 0; good < static_cast<int32_t>(stock.size()); ++good)
+                stock[good] = std::max<int64_t>(0, market_store().stock[
+                    market_store().index(ctx.market, good)] + adjustment[good]);
+            ConstructionMaterialPlan invoice;
+            const int64_t funding = saturating_add(candidate.plan.funding_capital,
+                candidate.plan.merchant_credit, _saturation_count);
+            const int64_t material_lo = quote_construction_lots(ctx.market, candidate.plan.type_id,
+                investment_cost_factor, stock, cap, funding, invoice, &ctx.material_quotes);
+            if (material_lo < cap) {
+                if (invoice.feasible || material_lo < invoice.quoted_count) ++_building_investment_capital_limited;
+                else {
+                    ++_building_investment_material_limited;
+                    record_investment_material_demand(cell, candidate.plan.type_id,
+                        1, investment_cost_factor);
+                }
+            }
+            cap = std::min(cap, material_lo);
         }
-        cap = std::min(cap, material_lo);
         for (int32_t edge = 0; edge < type.resource_count; ++edge) {
             const ResourceAmount &item = _building_resources[
                 type.resource_begin + edge];
@@ -517,7 +503,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
                     _saturation_count) /
                     candidate.driver_output_per_building)
                 : 0;
-            if (demand_cap < cap) ++_building_investment_demand_limited;
+            if (demand_cap < cap && !for_search) ++_building_investment_demand_limited;
             cap = std::min(cap, demand_cap);
         }
         return std::max<int64_t>(0, cap);
@@ -562,11 +548,17 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
         }
     }
 
-    active_types = 0;
+    const auto allocated = [](const Candidate &candidate) {
+        return candidate.plan.allocated_count > 0;
+    };
+    const auto end = portfolio.begin() + portfolio_size;
+    std::array<int64_t, 4> proposal{};
     for (int32_t i = 0; i < portfolio_size; ++i)
-        if (portfolio[i].plan.allocated_count > 0) ++active_types;
+        proposal[i] = portfolio[i].plan.allocated_count;
+    active_types = static_cast<int32_t>(std::count_if(portfolio.begin(), end, allocated));
+    const int64_t share = _investment_max_type_owner_share_q16.get();
     if (active_types >= 2 &&
-        _investment_max_type_owner_share_q16.get() < Q16_ONE) {
+        share < Q16_ONE) {
         for (int32_t pass = 0; pass < 4; ++pass) {
             bool changed = false;
             int64_t total_owner_slots = 0;
@@ -642,6 +634,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
         }
     }
 
+#include "economy_runtime_building_investment_search.inc"
 }
 
 } // namespace pk

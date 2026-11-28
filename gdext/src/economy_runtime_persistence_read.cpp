@@ -30,11 +30,10 @@ bool NativeEconomyRuntime::decode_restore_chunk(const std::vector<uint8_t> &byte
         error = "save_chunk_header_invalid";
         return false;
     }
-    // Historical layouts before 62 omit the pending population reward.
-    // 63 appends stratum mobilization; 64 adds producer channel history.
-    // Structural 62/63 imports use neutral histories and still require the
-    // exact current catalog. This is not historical PKSV migration support.
-    if (schema != SCHEMA_VERSION && schema != 62 && schema != 63) {
+    // Version 66 splits owner vacancy from operating losses. Version 65
+    // archives migrate both ambiguous histories to zero. Structural 62/63
+    // imports still require the current catalog and compatible record shapes.
+    if (schema != SCHEMA_VERSION && schema != 66 && schema != 65 && schema != 62 && schema != 63) {
         error = "economy_save_price_v6_requires_new_game";
         return false;
     }

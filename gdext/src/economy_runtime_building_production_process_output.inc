@@ -19,7 +19,7 @@
                     _climate_capacity_sum_q16,
                     group.last_climate_capacity_q16, _saturation_count);
             }
-            const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
+            const int32_t owner_slot = settlement_owner_slots[g - begin];
             if (owner_slot < 0) continue;
             int64_t workforce_capacity_q16 = Q16_ONE;
             const int64_t owner_slots = saturating_mul(
@@ -44,19 +44,10 @@
             const int64_t group_budget = g < static_cast<int32_t>(
                 _building_working_capital_allocated.size())
                 ? _building_working_capital_allocated[g] : 0;
-            // `_building_merchant_credit_limit` is populated by the review
-            // pass when it already reserved a restart.  For an ACTIVE group
-            // with no pre-existing reservation, derive a bounded request from
-            // the frozen input quote so a poor owner can still finance normal
-            // operating inputs.  This is deliberately input-only credit;
-            // wages and owner livelihood remain ordinary settled obligations.
-            int64_t requested_credit = g < static_cast<int32_t>(
-                _building_merchant_credit_limit.size())
-                ? std::max<int64_t>(0, _building_merchant_credit_limit[g]) : 0;
+            int64_t requested_credit = 0;
             // Military v1: an explicitly state-owned building is financed by
             // the treasury and never borrows merchant operating credit.
             const bool state_owned_group = type.kind == 3;
-            if (state_owned_group) requested_credit = 0;
             bool survival_output = false;
             bool cycle_flow_output = false;
             for (int32_t oi = 0; oi < type.output_count; ++oi) {
@@ -79,7 +70,7 @@
                 : std::clamp<int64_t>(
                     std::min<int64_t>(intent_scale_q16, industrial_probe_floor),
                     0, Q16_ONE);
-            if (requested_credit <= 0 && !state_owned_group &&
+            if (!state_owned_group &&
                 _merchant_credit_runtime_mode.get() == 2 &&
                 credit_floor_scale > 0) {
                 // Hunter/collector livelihood and bounded industrial probe
@@ -141,7 +132,8 @@
                 if (required < Q16_ONE) continue; // soft: not an objective clamp
                 const int64_t effective = saturating_mul(
                     building_days, item.quantity, _saturation_count);
-                const int32_t selected = select_input_candidate(item, true, effective);
+                const int32_t selected = select_input_candidate(
+                    item, true, effective, group.output_factor_q16);
                 if (selected < 0) {
                     scale_q16 = 0;
                     continue;
@@ -150,7 +142,7 @@
                 const int64_t physical = effective_production_input_quantity(
                     cell, candidate.good_id,
                     physical_input_quantity(effective, candidate),
-                    _saturation_count);
+                    _saturation_count, group.output_factor_q16);
                 int64_t raw_capacity_q16 = Q16_ONE;
                 if (physical > 0) {
                     raw_capacity_q16 = std::min<int64_t>(Q16_ONE, mul_div_sat(
@@ -205,11 +197,11 @@
                 scale_without_climate_q16,
                 std::clamp<int64_t>(group.last_climate_capacity_q16, 0, Q16_ONE),
                 Q16_ONE, _saturation_count);
-            // Soft inputs are productivity bonuses, not activity-capacity
+            // Soft inputs are capped productivity bonuses, not activity-capacity
             // constraints.  Keep the activity scale bounded by owners,
             // employees, hard inputs, resources, and climate; apply the
-            // potentially-over-100% productivity multiplier only to output.
-            int64_t soft_productivity_bonus_q16 = Q16_ONE;
+            // capped productivity multiplier only to output.
+            int64_t soft_bonus_sum_q16 = 0;
             for (int32_t i = 0; i < type.input_count; ++i) {
                 const ProductionInput &item = _building_inputs[type.input_begin + i];
                 const int64_t required = std::clamp<int64_t>(
@@ -220,7 +212,7 @@
                 const int64_t need_at_activity = mul_div_sat(
                     effective, scale_q16, Q16_ONE, _saturation_count);
                 const int32_t selected = select_input_candidate(
-                    item, true, effective);
+                    item, true, effective, group.output_factor_q16);
                 int64_t coverage_q16 = 0;
                 const bool soft_purchase_enabled = required >= Q16_ONE ||
                     soft_input_purchase_allowed(group, type, i);
@@ -230,7 +222,7 @@
                     const int64_t physical = effective_production_input_quantity(
                         cell, candidate.good_id,
                         physical_input_quantity(need_at_activity, candidate),
-                        _saturation_count);
+                        _saturation_count, group.output_factor_q16);
                     const int64_t stock = market_store().stock[
                         market_store().index(market, candidate.good_id)];
                     coverage_q16 = physical > 0
@@ -239,14 +231,14 @@
                             _saturation_count))
                         : Q16_ONE;
                 }
-                // `required_q16` is the maximum bonus for this soft input
-                // (for example 32768 = +50%).  Every soft input contributes
-                // independently: base 100% + bonus * satisfaction.
                 const int64_t bonus_q16 = mul_div_sat(
-                    required, coverage_q16, Q16_ONE, _saturation_count);
-                soft_productivity_bonus_q16 = saturating_add(
-                    soft_productivity_bonus_q16, bonus_q16, _saturation_count);
+                    soft_input_marginal_bonus_q16(type, required), coverage_q16,
+                    Q16_ONE, _saturation_count);
+                soft_bonus_sum_q16 = saturating_add(
+                    soft_bonus_sum_q16, bonus_q16, _saturation_count);
             }
+            const int64_t soft_productivity_bonus_q16 =
+                clamp_soft_productivity_bonus_q16(soft_bonus_sum_q16);
             const int64_t activity_scale_q16 = scale_q16;
             if (resource_limited) ++_building_resource_limited_groups;
             if (resource_capacity_limited) ++_building_resource_capacity_limited_groups;
@@ -334,13 +326,14 @@
                         // complementary input must not make stocked goods scarce.
                         const int64_t effective = saturating_mul(building_days,
                             item.quantity, _saturation_count);
-                        const int32_t available = select_input_candidate(item, true, effective);
+                        const int32_t available = select_input_candidate(
+                            item, true, effective, group.output_factor_q16);
                         int64_t available_scale = 0;
                         if (available >= 0) {
                             const auto &candidate = _building_input_candidates[available];
                             const int64_t physical = effective_production_input_quantity(cell,
                                 candidate.good_id, physical_input_quantity(effective, candidate),
-                                _saturation_count);
+                                _saturation_count, group.output_factor_q16);
                             available_scale = physical > 0 ? std::min<int64_t>(Q16_ONE,
                                 mul_div_sat(market_store().stock[market_store().index(market, candidate.good_id)],
                                     Q16_ONE, physical, _saturation_count)) : Q16_ONE;

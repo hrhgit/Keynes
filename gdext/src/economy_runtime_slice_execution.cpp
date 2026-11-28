@@ -178,10 +178,8 @@ void NativeEconomyRuntime::finalize_household_building_cell(
                 saturation);
         group.realized_profit_margin_q16 = static_cast<int32_t>(
             std::clamp<int64_t>(margin, -Q16_ONE, Q16_ONE));
-        // Suspended buildings are evaluated by the unified economic plan
-        // above. There is no reduced-capacity trial settlement here: a viable
-        // building is scheduled ACTIVE for the next frozen boundary, while a
-        // non-viable building remains fully suspended.
+        // Planning opens viable recovery offers before employment. Household
+        // settlement only records the realized margin.
         (void)restarted;
         (void)failed;
     }
@@ -203,113 +201,6 @@ int64_t NativeEconomyRuntime::production_reserve_shortfall_cell(
             saturation);
     }
     return shortfall;
-}
-
-void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
-    if (g < 0 || g >= static_cast<int32_t>(building_count())) return;
-    // Read-only prefilter: most reviewed groups are live, non-liquidatable or
-    // debt-free and only need a conditional diagnostic reset. Borrowing every
-    // mutable column for them dominated this phase.
-    {
-        const auto view = building_view(static_cast<size_t>(g));
-        if (view.count <= 0 || view.operating_state != 1 ||
-            view.cell < 0 || view.cell >= _cell_count.get() ||
-            view.type_id < 0 ||
-            view.type_id >= static_cast<int32_t>(_building_types.size())) return;
-        // Military v1: state-owned lots are never reviewed for liquidation.
-        if (_building_types[static_cast<size_t>(view.type_id)].kind == 3) return;
-    }
-    const bool liquidation_eligible = g < static_cast<int32_t>(
-            _building_recovery_liquidation_eligible.size()) &&
-        _building_recovery_liquidation_eligible[g] != 0;
-    if (!liquidation_eligible) {
-        if (building_view(static_cast<size_t>(g)).recovery_failed_reviews != 0)
-            building_at(static_cast<size_t>(g)).recovery_failed_reviews = 0;
-        return;
-    }
-    // Recovery liquidation is debt recovery. An owner-financed building with
-    // no merchant principal/premium remains addressable while suspended so
-    // owner release and a later restart can inspect the same group.
-    if (building_view(static_cast<size_t>(g)).merchant_debt_principal <= 0 &&
-        building_view(static_cast<size_t>(g)).merchant_debt_premium <= 0) {
-        if (building_view(static_cast<size_t>(g)).recovery_failed_reviews != 0)
-            building_at(static_cast<size_t>(g)).recovery_failed_reviews = 0;
-        return;
-    }
-    auto group = building_at(static_cast<size_t>(g));
-    const BuildingType &type = _building_types[group.type_id];
-    // The lifecycle decision is already expressed in monetary terms by the
-    // restart-cost and expected-profit gate. Keep one diagnostic marker for
-    // compatibility, but do not delay liquidation behind an arbitrary review
-    // count once a restart is executable and still unprofitable.
-    group.recovery_failed_reviews = 1;
-    if (type.owner_profession_id == _merchant_profession_id) return;
-    int64_t unit_period_output = 0;
-    for (int32_t output_index = 0; output_index < type.output_count; ++output_index) {
-        const GoodAmount &output = _building_outputs[type.output_begin + output_index];
-        unit_period_output = saturating_add(
-            unit_period_output, effective_building_output_quantity(
-                group, output.good_id, output.quantity, Q16_ONE,
-                std::max<int64_t>(1, _epoch_days.get()), _saturation_count),
-            _saturation_count);
-    }
-    const int64_t liquidation_capacity_q16 = std::max<int64_t>(
-        group.planned_utilization_q16,
-        g < static_cast<int32_t>(_building_recovery_probe_capacity_q16.size())
-            ? _building_recovery_probe_capacity_q16[g] : 0);
-    unit_period_output = mul_div_sat(
-        unit_period_output, std::max<int64_t>(1, liquidation_capacity_q16),
-        Q16_ONE, _saturation_count);
-    const int64_t supported_count = unit_period_output > 0
-        ? std::min<int64_t>(group.count,
-            saturating_add(std::max<int64_t>(0, group.last_sold),
-                unit_period_output - 1, _saturation_count) / unit_period_output)
-        : 0;
-    const int64_t confirmed_excess = std::max<int64_t>(
-        0, group.count - supported_count);
-    if (confirmed_excess <= 0) {
-        group.recovery_failed_reviews = 0;
-        return;
-    }
-    const int64_t max_retire = std::max<int64_t>(1,
-        saturating_add(saturating_mul(group.count,
-            _recovery_liquidation_max_share_q16.get(), _saturation_count),
-            Q16_ONE - 1, _saturation_count) / Q16_ONE);
-    const int64_t retire_count = std::min(confirmed_excess, max_retire);
-    const int64_t count_before = group.count;
-    const int64_t principal_bad = retire_count == count_before
-        ? group.merchant_debt_principal
-        : mul_div_sat(group.merchant_debt_principal,
-            retire_count, count_before, _saturation_count);
-    const int64_t premium_bad = retire_count == count_before
-        ? group.merchant_debt_premium
-        : mul_div_sat(group.merchant_debt_premium,
-            retire_count, count_before, _saturation_count);
-    const int64_t bad_debt = saturating_add(
-        principal_bad, premium_bad, _saturation_count);
-    _merchant_credit_bad_debt = saturating_add(
-        _merchant_credit_bad_debt, bad_debt, _saturation_count);
-    _recovery_liquidated_buildings = saturating_add(
-        _recovery_liquidated_buildings, retire_count, _saturation_count);
-    group.merchant_debt_principal = std::max<int64_t>(
-        0, group.merchant_debt_principal - principal_bad);
-    group.merchant_debt_premium = std::max<int64_t>(
-        0, group.merchant_debt_premium - premium_bad);
-    _investment_employment_cells.push_back(group.cell);
-    group.count -= retire_count;
-    _building_handle_index_clean = false;
-    if (group.count <= 0) {
-        group.count = 0;
-        group.merchant_debt_principal = 0;
-        group.merchant_debt_premium = 0;
-        group.merchant_debt_term_cycles_left = 0;
-        group.merchant_debt_delinquent_cycles = 0;
-        ++_recovery_fully_liquidated_groups;
-    } else {
-        _recovery_partially_liquidated_buildings = saturating_add(
-            _recovery_partially_liquidated_buildings,
-            retire_count, _saturation_count);
-    }
 }
 
 Dictionary NativeEconomyRuntime::run_slice(const Dictionary &ctx) {

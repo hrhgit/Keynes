@@ -107,6 +107,8 @@ func _test_ai_landing_balance() -> void:
 	for funded in [false, true]:
 		var config := _background_config()
 		config.research.starting_country_cash = 100
+		# Only the three dated transfers may change the fixture's landing balance.
+		config.country.starting_tax_rate_bp = 0
 		if not await _start_story({"ai_enabled": true, "last_ai_request_day": 1, "scheduled_events": [
 			{"due_day": 4, "chain_id": "cash_fixture", "ai_prompt_hint": "赈济。"},
 		]}, [&"evt.chain.ancient_foundry_legacy"], config):
@@ -214,6 +216,7 @@ func _test_story_archive() -> void:
 	_expect("a present malformed section returns a diagnostic",
 		provider._restore_narrative_provider({"pknr": []}, {}).get("code") == "narrative_archive_invalid")
 	var ext := DCWorldExt.new()
+	ext.create_entities(6)
 	ext.start_runtime_worker({"simulation_thread_mode": "OFF", "paused": true})
 	var checkpoint := {"next_offer_id": 3, "story_flags": {"cell:0:valid": {"value": 1}}}
 	_expect("an older checkpoint with absent optional fields can be staged",
@@ -233,6 +236,95 @@ func _test_story_archive() -> void:
 		rejected.get("code") == "narrative_archive_invalid"
 		and "pending_choice.effective_day" in String(rejected.get("message", ""))
 		and ext.capture_gameplay_narrative() == checkpoint)
+	var saved := {"stratum_unrest": {
+		"schema": "PKStratumUnrest", "version": 2, "last_day": 17,
+		"pending_independence_clears": PackedInt32Array([5, 2]),
+	}}
+	_expect("an archive can stage the next day's independence cancellations",
+		ext.submit_gameplay_narrative(&"restore", saved).get("ok", false))
+	for invalid_lane in [null, [5, 2], PackedInt32Array([-1]), PackedInt32Array([5, 5])]:
+		var bad := saved.duplicate(true)
+		if invalid_lane == null:
+			bad.stratum_unrest.erase("pending_independence_clears")
+		else:
+			bad.stratum_unrest.pending_independence_clears = invalid_lane
+		var result := ext.submit_gameplay_narrative(&"restore", bad)
+		_expect("invalid cancellations leave the staged checkpoint whole",
+			result.get("code") == "narrative_archive_invalid"
+			and "pending_independence_clears" in String(result.get("message", ""))
+			and ext.capture_gameplay_narrative() == saved)
+	var future := saved.duplicate(true)
+	future.stratum_unrest.version = 3
+	rejected = ext.submit_gameplay_narrative(&"restore", future)
+	_expect("an unknown unrest checkpoint version leaves the staged checkpoint whole",
+		rejected.get("code") == "narrative_archive_invalid"
+		and "stratum_unrest.version" in String(rejected.get("message", ""))
+		and ext.capture_gameplay_narrative() == saved)
+	var wrong_schema := saved.duplicate(true)
+	wrong_schema.stratum_unrest.schema = "other_schema"
+	rejected = ext.submit_gameplay_narrative(&"restore", wrong_schema)
+	_expect("an unrelated unrest schema leaves the staged checkpoint whole",
+		rejected.get("code") == "narrative_archive_invalid"
+		and "stratum_unrest.schema" in String(rejected.get("message", ""))
+		and ext.capture_gameplay_narrative() == saved)
+	var event := _story_fixture_event("evt.checkpoint.fixture", [])
+	var unrest_templates: Array = []
+	unrest_templates.resize(12)
+	unrest_templates.fill(event)
+	var packet := {"country": 1, "events": [event], "month_lengths": [31],
+		"unrest": unrest_templates, "unrest_actions": [[], [], [], []]}
+	_expect("restoring installs the cancellation queue in order",
+		ext.configure_gameplay_narrative(packet, {})
+		and ext.capture_gameplay_narrative().get("stratum_unrest", {}).get(
+			"pending_independence_clears") == PackedInt32Array([5, 2]))
+	_expect("older archives migrate to an empty cancellation queue",
+		ext.configure_gameplay_narrative(packet, {"stratum_unrest": {"version": 1}})
+		and ext.capture_gameplay_narrative().get("stratum_unrest", {}).get(
+			"pending_independence_clears") == PackedInt32Array())
+	var out_of_bounds := saved.duplicate(true)
+	out_of_bounds.stratum_unrest.pending_independence_clears = PackedInt32Array([5, 6])
+	var before := ext.capture_gameplay_narrative()
+	var print_errors := Engine.print_error_messages
+	Engine.print_error_messages = false
+	var rejected_configure := not ext.configure_gameplay_narrative(packet, out_of_bounds)
+	Engine.print_error_messages = print_errors
+	_expect("checkpoint configure rejects cell count as an index without replacing state",
+		rejected_configure and ext.capture_gameplay_narrative() == before)
+	var unpublished := DCWorldExt.new()
+	unpublished.create_entities(6)
+	unpublished.start_runtime_worker({"simulation_thread_mode": "OFF", "paused": true})
+	_expect("valid checkpoint stages before rejecting a cell at the upper bound",
+		bool(unpublished.submit_gameplay_narrative(&"restore", saved).get("ok", false)))
+	rejected = unpublished.submit_gameplay_narrative(&"restore", out_of_bounds)
+	_expect("staging refuses a clear at the cell count and preserves the valid queue",
+		rejected.get("code") == "narrative_archive_invalid"
+		and "pending_independence_clears" in String(rejected.get("message", ""))
+		and unpublished.capture_gameplay_narrative() == saved)
+	var rows := {
+		"pending_independence": {"cell": 5, "owner_handle": 1, "queued_day": 17},
+		"pending_stage_checks": {"cell": 5, "owner_handle": 1, "profession": 0, "stage": 2},
+	}
+	for queue in rows:
+		var valid := saved.duplicate(true)
+		valid.stratum_unrest[queue] = [rows[queue].duplicate()]
+		_expect("%s accepts the last cell through both restore entrances" % queue,
+			unpublished.submit_gameplay_narrative(&"restore", valid).get("ok", false)
+			and ext.configure_gameplay_narrative(packet, valid)
+			and ext.capture_gameplay_narrative().stratum_unrest[queue][0].cell == 5)
+		before = ext.capture_gameplay_narrative()
+		for cell in [-1, 6, 0x100000000]:
+			var invalid := valid.duplicate(true)
+			invalid.stratum_unrest[queue][0].cell = cell
+			rejected = unpublished.submit_gameplay_narrative(&"restore", invalid)
+			_expect("%s stages only valid cell indices (%d)" % [queue, cell],
+				rejected.get("code") == "narrative_archive_invalid"
+				and ("%s[0].cell" % queue) in String(rejected.get("message", ""))
+				and unpublished.capture_gameplay_narrative() == valid)
+			Engine.print_error_messages = false
+			rejected_configure = not ext.configure_gameplay_narrative(packet, invalid)
+			Engine.print_error_messages = print_errors
+			_expect("%s installs only valid cell indices (%d)" % [queue, cell],
+				rejected_configure and ext.capture_gameplay_narrative() == before)
 
 
 func _test_state_probe_contract() -> void:

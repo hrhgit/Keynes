@@ -21,11 +21,14 @@
                 const OutputInvestmentSignal &output_signal = output_signals[i];
                 const int64_t research_demand =
                     epoch_procurement_demand_daily(cell, output.good_id);
-                const int64_t prospective_quantity =
+                const int64_t prospective_base_quantity =
                     effective_building_output_quantity_for_target(
                         cell, type_id, target_signature,
-                        output.good_id, output.quantity, throughput_q16, 1,
+                        output.good_id, output.quantity, utilization_q16, 1,
                         _saturation_count);
+                const int64_t prospective_quantity = mul_div_sat(
+                    prospective_base_quantity, soft_efficiency_q16, Q16_ONE,
+                    _saturation_count);
                 const int64_t retail_price = market_store().price[
                     market_store().index(market, output.good_id)];
                 int64_t retained_quantity = 0;

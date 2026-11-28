@@ -152,6 +152,7 @@
 
     SaveState _save;
     RestoreState _restore;
+    godot::Dictionary _restore_catalog, _restore_profile;
 
     void register_builtin_formulas();
     bool compile_catalog(const godot::Dictionary &catalog, std::string &error);

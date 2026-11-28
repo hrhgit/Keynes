@@ -415,15 +415,13 @@ worker start 后立即同步，不受影响。
 材料后，后面只能选更贵的替代品。原实现在分配阶段只校验材料能否凑齐，把资金校验留到
 下单前，材料替代抬价即触发 `building_investment_cost_preflight_drift` 致命中止。
 
-现在 `additional_capacity` 的材料二分同时要求「该栋数的重算发票 ≤ 该栋数的资金包络」，
-并在全部分配轮次结束、迁移人口与资金之前，按与下单完全一致的顺序和共用库存再核一次：
-超包络即把 `allocated_count` 二分收窄到仍撑得住的最大栋数（可为零，视作本次不投），
-随后重算 `active_types`/总栋数/业主人口与 `portfolio_credit_required`。单位造价随批量
-单调不减，故该谓词单调、可二分。下单前的三个 `*_preflight_drift` 检查保留为兜底断言。
+`additional_capacity` 在普通分配时用材料二分核对栋数对应的本批发票和资金包络。
+组合定案时，`quote_investment_portfolio` 按下单顺序逐笔占用同一份临时库存并预演资金划转。
+初选组合若无法按整栋满足业主席位占比或共同支付，就按既有候选排序搜索合规数量。
+资金与材料使用同一张定案清单，建设阶段按该清单重算总实建数、业主席位和信贷占用。
 
-`building_investment_cost_envelope_trimmed` 报告被收窄掉的栋数；受此约束的批量沿用既有
-`building_investment_capital_limited` 计数。资金包络公式、商人信贷政策与材料替代选择算法
-均未改动，不涉及 PKEC 字节布局、state hash 或调度阶段。
+`building_investment_cost_envelope_trimmed` 记录初选发票被拒后，对应类型减少的栋数。
+资金包络、商人信贷政策、材料替代选择和 PKEC 格式沿用原有规则。
 
 ## 2026-08-31 开放获取资源与可兑现工资（PKEC v50）
 

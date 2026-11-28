@@ -278,9 +278,8 @@ void NativeEconomyRuntime::attribute_family_owner_employment_for_cell(
         const int32_t oe = _family_building_offsets[g + 1];
         const int32_t owner_slot = find_cohort_slot(cell, group.owner_signature_id);
         if (owner_slot < 0) {
-            // No local cohort can operate this group, so both the owner fill
-            // and every family's share of it are zero.
-            group.filled_owner = 0;
+            // The family share belongs to registered owners. Cross-ethnicity
+            // seats still belong to the cohorts that employment put here.
             for (int32_t p = ob; p < oe; ++p) {
                 auto ownership_write = family_ownerships().edit_row(_family_building_edge_indices[p], market_mutation_sink());
                 ownership_write[0].filled_owner = 0;
@@ -291,15 +290,9 @@ void NativeEconomyRuntime::attribute_family_owner_employment_for_cell(
         }
         const int64_t cohort_population = std::max<int64_t>(0,
             population_store().population[owner_slot]);
-        // Owner seats were already bounded by the profession clamp above, which
-        // is the only real constraint: a group cannot seat more proprietors
-        // than the profession has people. Family membership is an attribution
-        // overlay on that result, never an admission rule -- gating seats by
-        // membership made surplus members unemployable and left them shed and
-        // rehired every epoch, burning the whole cell mobility budget.
-        // A family staffs its own posts with its own members first; members
-        // already seated in another group of the same cohort are not reused.
-        const int64_t filled = std::max<int64_t>(0, group.filled_owner);
+        // A family's edge is attached to the registered cohort. Only members
+        // seated on this particular lot can occupy that family's posts.
+        const int64_t filled = building_owner_seats(group, group.owner_signature_id);
         const int32_t cb = static_cast<size_t>(owner_slot) + 1 <
                 _family_cohort_offsets.size() ? _family_cohort_offsets[owner_slot] : 0;
         const int32_t ce = static_cast<size_t>(owner_slot) + 1 <

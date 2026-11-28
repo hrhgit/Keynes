@@ -260,6 +260,7 @@
             }
             std::array<int64_t, MAX_VARIANTS_PER_NEED> cohort_variant_scores{};
             int64_t base_score_sum = 0;
+            int64_t activation_score_sum = 0;
             int64_t score_sum = 0;
             for (int32_t v = 0; v < need.variant_count; ++v) {
                 const int32_t variant_id = need.variant_begin + v;
@@ -275,22 +276,26 @@
                 }
                 base_score_sum = saturating_add(
                     base_score_sum, base_score, sat);
-                int64_t score = mul_div_sat(
+                int64_t activated = mul_div_sat(
                     base_score,
                     family_variant_preference_factor_q16(slot, variant_id, sat,
                         family_good_cache_disabled ? nullptr : household_family_good_factors.data()),
                     Q16_ONE, sat);
-                score = mul_div_sat(score, interpolate_household_wealth_lut(
-                    cohort_wealth_ratio_q16[local],
-                    _variants[variant_id].wealth_lut_q16, sat),
-                    Q16_ONE, sat);
-                score = mul_div_sat(score, household_threshold_activation_q16(
+                activated = mul_div_sat(activated, household_threshold_activation_q16(
                     cohort_savings_months_q16[local],
                     _variants[variant_id].savings_threshold_months_q16, sat),
                     Q16_ONE, sat);
-                cohort_variant_scores[v] = std::max<int64_t>(0, score);
+                activated = std::max<int64_t>(0, activated);
+                activation_score_sum = saturating_add(
+                    activation_score_sum, activated, sat);
+                const int64_t score = std::max<int64_t>(0, mul_div_sat(
+                    activated, interpolate_household_wealth_lut(
+                        cohort_wealth_ratio_q16[local],
+                        _variants[variant_id].wealth_lut_q16, sat),
+                    Q16_ONE, sat));
+                cohort_variant_scores[v] = score;
                 score_sum = saturating_add(
-                    score_sum, cohort_variant_scores[v], sat);
+                    score_sum, score, sat);
             }
             // A normative target is independent of wealth, shelf stock,
             // price elasticity and savings-gated variant preferences. Keep an
@@ -321,7 +326,7 @@
                 need_composite_cache[need_index], sat);
             if (base_score_sum > 0) {
                 ordinary_desired = mul_div_sat(
-                    ordinary_desired, score_sum, base_score_sum, sat);
+                    ordinary_desired, activation_score_sum, base_score_sum, sat);
             }
             int64_t survival_floor = survival_required;
             if (survival_food && food_substitute_cap_q16 > 0) {

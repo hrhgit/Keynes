@@ -416,7 +416,8 @@ bool EconomyRecordSource::fill_batch(
                     row.employment_take = item.take;
                     row.employment_eligible = item.eligible;
                     row.employment_rejection_reason = item.rejection_reason;
-                    row.employment_group = item.group_index;
+                    row.employment_group = item.group_index -
+                        runtime._building_cell_offsets[cell];
                     row.employment_owner_target = item.owner_target;
                     row.employment_filled_before_clamp = item.filled_before_clamp;
                     row.employment_filled_after_profession_clamp =

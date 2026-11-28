@@ -56,7 +56,6 @@ struct RuntimeEconomyPopulationStore {
     EconomyTrackedScalar<int64_t> active_count;
     EconomyTrackedScalar<int64_t> high_water_slots;
 
-
     RuntimeEconomyPopulationStore();
     RuntimeEconomyPopulationStore(const RuntimeEconomyPopulationStore &other);
     RuntimeEconomyPopulationStore(RuntimeEconomyPopulationStore &&other);
@@ -67,8 +66,8 @@ struct RuntimeEconomyPopulationStore {
     void reset_satisfaction_slot(int32_t slot);
     int32_t allocate_page(int32_t cell);
     bool restore_page_at(int32_t page, int32_t cell);
-    mutable int64_t scan_steps = 0;  // Diagnostics only.
-    int32_t find_signature(int32_t cell, uint32_t signature) const;
+    int32_t find_signature(int32_t cell, uint32_t signature,
+                           int64_t *steps = nullptr) const;
     int32_t allocate_slot(int32_t cell, uint32_t signature);
     int32_t restore_slot_at(int32_t slot, int32_t cell, uint32_t signature);
     int32_t reserve_slot(int32_t cell, uint32_t signature,

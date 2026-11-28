@@ -21,8 +21,58 @@ namespace pk {
 using namespace godot;
 
 bool EconomyInvariantProbe::run(std::string &error) {
+    std::string investment_error;
+    const bool plan_passed = run_building_plan_counter(error);
+    if (!run_building_portfolio_share(investment_error)) {
+        if (!error.empty()) error += ",";
+        error += investment_error;
+        return false;
+    }
+    if (!plan_passed || !run_building_row_references(error)) return false;
     if (!run_frozen_tax_view(error) || !run_economy_command_revisit(false, error) ||
         !run_economy_command_revisit(true, error) || !run_demand_basis_cache(error)) return false;
+    {
+        auto economy = std::make_unique<NativeEconomyRuntime>();
+        economy->_cell_count = 2;
+        economy->_building_types.resize(1);
+        economy->_building_types[0].owner_profession_id = 0;
+        economy->_building_types[0].owner_slots_per_building = 1;
+        economy->_merchant_profession_id = 1;
+        economy->_recovery_liquidation_max_share_q16 = NativeEconomyRuntime::Q16_ONE / 2;
+        for (int32_t cell : {0, 0, 1}) {
+            NativeEconomyRuntime::BuildingGroup group;
+            group.cell = cell;
+            group.type_id = 0;
+            group.count = cell == 0 ? 1 : 2;
+            group.filled_owner = group.count;
+            group.operating_state = 1;
+            economy->append_building_group(group);
+        }
+        economy->_building_lifecycle.resize(3);
+        for (auto &review : economy->_building_lifecycle)
+            review.retirement = NativeEconomyRuntime::BuildingLifecycleReview::Retirement::Unprofitable;
+        economy->_building_cell_offsets = {0, 0, 3};
+        economy->review_recovery_building_group(0);
+        if (economy->building_view(0).count != 1) {
+            error = "recovery_liquidated_group_outside_cell_range";
+            return false;
+        }
+        economy->_building_cell_offsets = {0, 2, 3};
+        economy->review_recovery_building_group(0);
+        economy->review_recovery_building_group(1);
+        economy->review_recovery_building_group(2);
+        if (economy->building_view(0).count != 0 ||
+            economy->building_view(1).count != 1 ||
+            economy->building_view(2).count != 1) {
+            error = "recovery_liquidation_exceeded_one_group_per_cell";
+            return false;
+        }
+        if (economy->building_view(0).filled_owner != 0 ||
+            economy->building_view(2).filled_owner != 1) {
+            error = "recovery_liquidation_kept_excess_owner_seats";
+            return false;
+        }
+    }
     {
         auto economy = std::make_unique<NativeEconomyRuntime>();
         RuntimeEconomyEcp2State incomplete;

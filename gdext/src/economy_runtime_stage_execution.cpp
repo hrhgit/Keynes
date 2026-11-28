@@ -50,6 +50,13 @@ double elapsed_ms(const Clock::time_point &start) {
 } // namespace
 
 Dictionary NativeEconomyRuntime::run_slice_internal(const Dictionary &ctx, bool compact) {
+    if (stream_restore_active()) {
+        Dictionary out;
+        out["ok"] = false;
+        out["done"] = true;
+        out["reason"] = "save_restore_active";
+        return out;
+    }
     const auto slice_start = Clock::now();
     _executed_stage = _stage;
     _executed_substage.clear();

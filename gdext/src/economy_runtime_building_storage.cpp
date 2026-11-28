@@ -36,6 +36,7 @@ void gather_column(EconomyTrackedColumn<T> &column, const std::vector<int32_t> &
 size_t NativeEconomyRuntime::append_building_group(const BuildingGroup &group) {
     RuntimeEconomyBuildingStore &store = buildings_store();
     const size_t row = store.cell.size();
+    store.visiting_owners.resize(row + 1);
 #define PK_BUILDING_GROUP_PUSH(TYPE, NAME, COLUMN) \
     store.COLUMN.push_back(group.NAME);
     PK_BUILDING_GROUP_COLUMNS(PK_BUILDING_GROUP_PUSH)
@@ -83,6 +84,7 @@ void NativeEconomyRuntime::clear_building_groups() {
 #define PK_BUILDING_GROUP_CLEAR(TYPE, NAME, COLUMN) store.COLUMN.clear();
     PK_BUILDING_GROUP_COLUMNS(PK_BUILDING_GROUP_CLEAR)
 #undef PK_BUILDING_GROUP_CLEAR
+    store.visiting_owners.clear();
     store.role_count.clear();
     store.role_begin.clear();
     store.role_filled.clear();
@@ -97,6 +99,18 @@ void NativeEconomyRuntime::clear_building_groups() {
     _building_investment_score_q16.clear();
     _building_investment_payback_days.clear();
     _building_investment_rejection.clear();
+    _owner_mobility_cooldowns.clear();
+    _building_survival_utilization_floor_q16.clear();
+    _building_planned_capacity_before_climate_q16.clear();
+    _building_funded_capacity_q16.clear();
+    _building_working_capital_allocated.clear();
+    _building_owner_livelihood_credit.clear();
+    _building_lifecycle.clear();
+    _employment_diagnostics.clear();
+    _family_clamp_traces.clear();
+    _person_building_offsets.clear();
+    _person_building_indices.clear();
+    _person_indices_dirty = true;
     _building_handle_index_clean = false;
 }
 
@@ -115,6 +129,79 @@ void NativeEconomyRuntime::reserve_building_groups(size_t capacity) {
 void NativeEconomyRuntime::permute_building_group_columns(
         const std::vector<int32_t> &order) {
     RuntimeEconomyBuildingStore &store = buildings_store();
+    // The compact table is reordered here for both construction and retirement.
+    // Move references while the old row numbers still identify their groups.
+    thread_local std::vector<int32_t> new_row_for_old;
+    new_row_for_old.assign(building_count(), -1);
+    for (size_t row = 0; row < order.size(); ++row)
+        new_row_for_old[order[row]] = static_cast<int32_t>(row);
+    const auto new_row = [&](int32_t old) {
+        return old >= 0 && static_cast<size_t>(old) < new_row_for_old.size()
+            ? new_row_for_old[old] : -1;
+    };
+    const auto valid_cell_row = [&](int32_t row, int32_t cell) {
+        return new_row(row) >= 0 && store.cell[row] == cell;
+    };
+    _owner_mobility_cooldowns.erase(std::remove_if(
+        _owner_mobility_cooldowns.begin(), _owner_mobility_cooldowns.end(),
+        [&](const OwnerMobilityCooldown &entry) {
+            return !valid_cell_row(entry.source_group, entry.cell) ||
+                !valid_cell_row(entry.target_group, entry.cell);
+        }), _owner_mobility_cooldowns.end());
+    for (auto &entry : _owner_mobility_cooldowns) {
+        entry.source_group = new_row(entry.source_group);
+        entry.target_group = new_row(entry.target_group);
+    }
+    auto remap_diagnostics = [&](auto &records) {
+        records.erase(std::remove_if(records.begin(), records.end(),
+            [&](const auto &entry) {
+                return new_row(entry.group_index) < 0;
+            }), records.end());
+        for (auto &entry : records) entry.group_index = new_row(entry.group_index);
+    };
+    remap_diagnostics(_employment_diagnostics);
+    remap_diagnostics(_family_clamp_traces);
+
+    // Retain live groups' person ranges for any reads before the next person
+    // stage checks job bindings against stable building handles.
+    if (!_person_building_offsets.empty()) {
+        thread_local std::vector<int32_t> person_offsets;
+        thread_local std::vector<int32_t> person_indices;
+        person_offsets.assign(1, 0);
+        person_offsets.reserve(order.size() + 1);
+        person_indices.clear();
+        for (const int32_t src : order) {
+            if (static_cast<size_t>(src) + 1 < _person_building_offsets.size()) {
+                const auto first = _person_building_indices.begin() +
+                    _person_building_offsets[src];
+                const auto last = _person_building_indices.begin() +
+                    _person_building_offsets[src + 1];
+                person_indices.insert(person_indices.end(), first, last);
+            }
+            person_offsets.push_back(static_cast<int32_t>(person_indices.size()));
+        }
+        _person_building_offsets.swap(person_offsets);
+        _person_building_indices.swap(person_indices);
+    }
+    _person_indices_dirty = true;
+
+    auto remap_lanes = [&](auto &lanes, auto fallback) {
+        if (lanes.empty()) return;
+        static thread_local std::vector<decltype(fallback)> scratch;
+        scratch.clear();
+        scratch.reserve(order.size());
+        for (const int32_t src : order)
+            scratch.push_back(static_cast<size_t>(src) < lanes.size() ? lanes[src] : fallback);
+        lanes.swap(scratch);
+    };
+    remap_lanes(_building_survival_utilization_floor_q16, int64_t{0});
+    remap_lanes(_building_planned_capacity_before_climate_q16, int64_t{Q16_ONE});
+    remap_lanes(_building_funded_capacity_q16, int64_t{0});
+    remap_lanes(_building_working_capital_allocated, int64_t{0});
+    remap_lanes(_building_owner_livelihood_credit, int64_t{0});
+    remap_lanes(_building_lifecycle, BuildingLifecycleReview{});
+    remap_lanes(store.visiting_owners, RuntimeEconomyBuildingStore::OwnerSeats{});
+
 #define PK_BUILDING_GROUP_GATHER(TYPE, NAME, COLUMN) \
     gather_column(store.COLUMN, order);
     PK_BUILDING_GROUP_COLUMNS(PK_BUILDING_GROUP_GATHER)
@@ -377,14 +464,20 @@ void NativeEconomyRuntime::release_building_role_span(
 }
 
 void NativeEconomyRuntime::rebuild_building_role_storage() {
-    const auto merge_started = Clock::now();
-    struct RoleStorageTimer {
-        NativeEconomyRuntime *self;
-        const std::chrono::steady_clock::time_point &start;
-        ~RoleStorageTimer() {
-            self->_building_role_storage_ms += elapsed_ms(start);
-        }
-    } role_storage_timer{this, merge_started};
+    const auto started = Clock::now();
+    rebuild_building_group_storage();
+    _building_structure_group_merge_ms += elapsed_ms(started);
+
+    const auto market_started = Clock::now();
+    rebuild_market_signals();
+    _building_structure_market_cache_ms += elapsed_ms(market_started);
+    const auto labor_started = Clock::now();
+    rebuild_labor_signals();
+    _building_structure_labor_cache_ms += elapsed_ms(labor_started);
+    _building_role_storage_ms += elapsed_ms(started);
+}
+
+void NativeEconomyRuntime::rebuild_building_group_storage() {
     auto key = [&](int32_t index) {
         const auto group = building_view(static_cast<size_t>(index));
         return std::tuple(group.cell, group.type_id, group.owner_signature_id);
@@ -493,14 +586,6 @@ void NativeEconomyRuntime::rebuild_building_role_storage() {
         _building_investment_rejection_rebuild_scratch);
     _building_factor_cache.swap(_building_factor_cache_rebuild_scratch);
     rebuild_building_cell_offsets();
-    _building_structure_group_merge_ms += elapsed_ms(merge_started);
-
-    const auto market_started = Clock::now();
-    rebuild_market_signals();
-    _building_structure_market_cache_ms += elapsed_ms(market_started);
-    const auto labor_started = Clock::now();
-    rebuild_labor_signals();
-    _building_structure_labor_cache_ms += elapsed_ms(labor_started);
 }
 
 void NativeEconomyRuntime::rebuild_building_cell_offsets() {

@@ -8,10 +8,16 @@ from unittest.mock import patch
 
 from check_golden_determinism import candidate_path, difference, load_comparison, read_result
 from check_intent_baselines import read_evidence
-from run_regression_checks import EXPECTED_ERRORS, fixture_errors
+from run_regression_checks import EXPECTED_ERRORS, TESTS, fixture_errors
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_disjoint_building_calendar_runs_in_the_default_suite(self):
+        self.assertIn("tests/building/building_lifecycle_disjoint_test.gd", TESTS)
+        name = "building_lifecycle_disjoint_test"
+        self.assertTrue(fixture_errors(name, []))
+        self.assertEqual(fixture_errors(name, ["building lifecycle disjoint calendars: 0 failures"]), [])
+
     def test_candidate_requires_absolute_external_path(self):
         from run_regression_checks import ROOT
         with self.assertRaises(argparse.ArgumentTypeError):

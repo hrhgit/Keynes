@@ -1,6 +1,9 @@
 #include "runtime_narrative.h"
 
+#include <godot_cpp/variant/packed_int32_array.hpp>
+
 #include <initializer_list>
+#include <unordered_set>
 
 namespace pk {
 using namespace godot;
@@ -79,7 +82,7 @@ String ai_request_error(const Dictionary &request, const Dictionary &reply, cons
 }
 } // namespace
 
-String RuntimeNarrative::checkpoint_error(const Dictionary &archive) {
+String RuntimeNarrative::checkpoint_error(const Dictionary &archive, int32_t world_cell_count) {
     auto error = fields(archive, "", Variant::INT, {
         "version", "world_seed", "player_country_handle", "next_offer_id", "next_offer_generation",
         "next_record_id", "next_bias_id", "next_mod_source_id", "last_pulse_day", "last_popup_day",
@@ -189,18 +192,49 @@ String RuntimeNarrative::checkpoint_error(const Dictionary &archive) {
         return "next_ai_request_seq";
 
     const Dictionary unrest = archive.get("stratum_unrest", Dictionary());
-    error = fields(unrest, "stratum_unrest.", Variant::INT, {"last_fact_id", "last_day", "sequence"});
+    error = fields(unrest, "stratum_unrest.", Variant::INT, {"version", "last_fact_id", "last_day", "sequence"});
     if (!error.is_empty()) return error;
+    const int64_t unrest_version = unrest.get("version", 1);
+    if (unrest_version != 1 && unrest_version != UNREST_CHECKPOINT_VERSION)
+        return "stratum_unrest.version";
+    const Variant cancellations = unrest.get("pending_independence_clears", Variant());
+    const auto valid_unrest_cell = [world_cell_count](int64_t cell) {
+        return cell >= 0 && cell < world_cell_count;
+    };
+    if (unrest_version == UNREST_CHECKPOINT_VERSION) {
+        const Variant schema = unrest.get("schema", Variant());
+        if (!has_type(schema, Variant::STRING) || String(schema) != "PKStratumUnrest")
+            return "stratum_unrest.schema";
+        if (cancellations.get_type() != Variant::PACKED_INT32_ARRAY)
+            return "stratum_unrest.pending_independence_clears";
+        const PackedInt32Array cells = cancellations;
+        std::unordered_set<int32_t> seen;
+        for (int64_t index = 0; index < cells.size(); ++index) {
+            const int32_t cell = cells[index];
+            if (!valid_unrest_cell(cell) || !seen.insert(cell).second)
+                return "stratum_unrest.pending_independence_clears";
+        }
+    } else if (unrest.has("pending_independence_clears")) {
+        return "stratum_unrest.pending_independence_clears";
+    }
     error = fields(unrest, "stratum_unrest.", Variant::BOOL, {"needs_player_recovery"});
     if (!error.is_empty()) return error;
     error = fields(unrest, "stratum_unrest.", Variant::ARRAY, {"pending_independence", "pending_stage_checks"});
     if (!error.is_empty()) return error;
-    error = records(unrest, "pending_independence", [](const Dictionary &row, const String &path) {
-        return fields(row, String("stratum_unrest.") + path, Variant::INT, {"cell", "owner_handle", "queued_day"});
+    const auto unrest_row_error = [&](const Dictionary &row, const String &path,
+            std::initializer_list<const char *> keys) -> String {
+        const String unrest_path = String("stratum_unrest.") + path;
+        const Variant cell = row.get("cell", Variant());
+        if (cell.get_type() != Variant::INT || !valid_unrest_cell(int64_t(cell)))
+            return unrest_path + String("cell");
+        return fields(row, unrest_path, Variant::INT, keys);
+    };
+    error = records(unrest, "pending_independence", [&](const Dictionary &row, const String &path) {
+        return unrest_row_error(row, path, {"owner_handle", "queued_day"});
     });
     if (!error.is_empty()) return error;
-    return records(unrest, "pending_stage_checks", [](const Dictionary &row, const String &path) {
-        return fields(row, String("stratum_unrest.") + path, Variant::INT, {"cell", "owner_handle", "profession", "stage"});
+    return records(unrest, "pending_stage_checks", [&](const Dictionary &row, const String &path) {
+        return unrest_row_error(row, path, {"owner_handle", "profession", "stage"});
     });
 }
 

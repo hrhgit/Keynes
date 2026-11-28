@@ -15,9 +15,7 @@
                                  building_available(cell, group.type_id, true);
             const BuildingType &type = _building_types[group.type_id];
             // owner 鐩爣锛氫笉鍙敤/count<=0 鈫?0锛堝叾鍦ㄥ矖浜哄彛灏嗗叏閮ㄨ繘姹狅級銆?
-            const bool suspended = group.count > 0 && group.operating_state == 1 &&
-                                   building_available(cell, group.type_id, true);
-            int64_t owner_target = (active || suspended)
+            int64_t owner_target = active
                 ? planned_owner_demand(group, _saturation_count) : 0;
             if (active && owner_target > 0) {
                 bool derived_only_output = false;
@@ -97,8 +95,9 @@
                         static_cast<int32_t>(_building_type_ids.size()) &&
                     _building_type_ids[group.type_id] == "knapping_workshop";
                 if (narrow_knapping_cold_start && !survival_output && derived_only_output &&
-                    !any_real_output_demand && !output_stock_available)
-                    owner_target = 0;
+                    !any_real_output_demand && !output_stock_available) {
+                    owner_target = std::min(owner_target, group.filled_owner);
+                }
                 const int32_t existing_owner_slot = find_cohort_slot(
                     group.cell, group.owner_signature_id);
                 const bool existing_owner_cohort = existing_owner_slot >= 0 &&
@@ -171,7 +170,7 @@
             const BuildingType &type = _building_types[group.type_id];
             int64_t score_sat = 0;
             labor_expected_owner_income[static_cast<size_t>(g - first)] =
-                owner_mobility_income(group, score_sat);
+                owner_mobility_income_per_day(group, score_sat);
             int64_t weighted_net = 0;
             int64_t weighted_slots = 0;
             for (int32_t r = 0; r < type.employee_count; ++r) {

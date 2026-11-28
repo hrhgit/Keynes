@@ -124,6 +124,8 @@ Dictionary NativeEconomyRuntime::building_cell_snapshot(int32_t cell_idx) const 
     PackedInt64Array investment_cost_advantage_q16;
     PackedInt32Array realized_profit_margin_q16;
     PackedInt32Array severe_loss_cycles;
+    PackedInt32Array owner_vacancy_cycles;
+    PackedInt64Array vacant_buildings;
     PackedInt32Array recovery_cycles;
     PackedInt32Array recovery_failed_reviews;
     PackedByteArray operating_state;
@@ -328,6 +330,8 @@ Dictionary NativeEconomyRuntime::building_cell_snapshot(int32_t cell_idx) const 
                 ? investment_diagnostic->cost_advantage_q16 : 0);
         realized_profit_margin_q16.push_back(group.realized_profit_margin_q16);
         severe_loss_cycles.push_back(group.severe_loss_cycles);
+        owner_vacancy_cycles.push_back(group.owner_vacancy_cycles);
+        vacant_buildings.push_back(group.vacant_buildings);
         recovery_cycles.push_back(group.recovery_cycles);
         recovery_failed_reviews.push_back(group.recovery_failed_reviews);
         pending_operating_state.push_back(group.pending_operating_state <= 1
@@ -697,6 +701,8 @@ Dictionary NativeEconomyRuntime::building_cell_snapshot(int32_t cell_idx) const 
         investment_candidate_monetary_expected_revenue_per_day;
     out["realized_profit_margin_q16"] = realized_profit_margin_q16;
     out["severe_loss_cycles"] = severe_loss_cycles;
+    out["owner_vacancy_cycles"] = owner_vacancy_cycles;
+    out["vacant_buildings"] = vacant_buildings;
     out["recovery_cycles"] = recovery_cycles;
     out["pending_operating_state"] = pending_operating_state;
     out["recovery_cooldown_cycles"] = recovery_cooldown_cycles;

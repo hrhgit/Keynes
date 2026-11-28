@@ -96,12 +96,11 @@
         bool end_emitted = false;
     };
 
+    struct RestoreStream;
     struct RestoreState {
         bool active = false;
-        // Live lanes stay intact until prepare_restore_candidate_scratch() runs
-        // (only from the ECP2 backup/rollback transaction). Streaming feed
-        // rejects chunks while this is false so begin_restore alone cannot
-        // wipe or partially overwrite a committed snapshot.
+        std::shared_ptr<RestoreStream> stream;
+        // Only a detached decoder or a synchronous install may write restore lanes.
         bool scratch_prepared = false;
         // BEGIN army personnel lane (contract §1.5): section 36 scratch guard.
         bool army_personnel_seen = false;

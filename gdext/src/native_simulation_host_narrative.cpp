@@ -104,19 +104,23 @@ NarrativeCellView sample_geography(const RuntimeEnvironmentSnapshot &geo, int32_
 
 } // namespace
 
-bool NativeSimulationHost::initialize_narrative(const Dictionary &packet, const Dictionary &saved) {
+bool NativeSimulationHost::initialize_narrative(const Dictionary &packet,
+                                                const Dictionary &saved,
+                                                int32_t world_cell_count) {
     if (!execution_has_stopped()) return false;
     auto narrative = std::make_shared<RuntimeNarrative>();
-    if (!narrative->configure(packet, saved.is_empty() ? _restored_narrative : saved)) return false;
+    if (!narrative->configure(packet, saved.is_empty() ? _restored_narrative : saved,
+                              world_cell_count)) return false;
     _restored_narrative = Dictionary();
     _executor_narrative = std::move(narrative);
     publish_narrative_boundary(_committed_day.load(std::memory_order_acquire));
     return true;
 }
 
-Dictionary NativeSimulationHost::restore_narrative_checkpoint(const Dictionary &saved) {
+Dictionary NativeSimulationHost::restore_narrative_checkpoint(const Dictionary &saved,
+                                                               int32_t world_cell_count) {
     if (!execution_has_stopped()) return narrative_response(false, "narrative_executor_running");
-    const String error = RuntimeNarrative::checkpoint_error(saved);
+    const String error = RuntimeNarrative::checkpoint_error(saved, world_cell_count);
     if (!error.is_empty()) {
         auto result = narrative_response(false, "narrative_archive_invalid");
         result["message"] = String("剧情存档损坏：") + error;
@@ -259,6 +263,14 @@ const char *NativeSimulationHost::stage_narrative(DayExecution &day) {
 bool NativeSimulationHost::prepare_narrative_day(int64_t day) {
     if (!_executor_narrative || !_world_environment) return false;
     auto &narrative = *_executor_narrative;
+    // A last territory cannot leave the country. The narrative detects it at the
+    // previous day's tail; clear the pending bit before this day's economy runs
+    // so the row and the published save agree.
+    const std::vector<int32_t> independence_clears = narrative.take_independence_clears();
+    if (_economy_production_runtime) {
+        for (const int32_t cell : independence_clears)
+            economy_api::clear_cell_independence(*_economy_production_runtime, cell);
+    }
     narrative.apply_pause_policy(day);
     narrative.apply_ai_policy(day);
     narrative.queue_automatic_choice(day, suppress_event_popups_on(day));

@@ -94,8 +94,10 @@
     std::shared_ptr<const RuntimeIdeologyReadView> latest_ideology_read_view() const;
     std::shared_ptr<const RuntimeEraRewardView> latest_era_reward() const;
     std::shared_ptr<const RuntimeEraAdvancementView> latest_era_advancement() const;
-    bool initialize_narrative(const godot::Dictionary &, const godot::Dictionary &);
-    godot::Dictionary restore_narrative_checkpoint(const godot::Dictionary &);
+    bool initialize_narrative(const godot::Dictionary &, const godot::Dictionary &,
+                              int32_t world_cell_count);
+    godot::Dictionary restore_narrative_checkpoint(const godot::Dictionary &,
+                                                   int32_t world_cell_count);
     std::shared_ptr<const RuntimeNarrativeView> latest_narrative() const;
     godot::Dictionary capture_narrative() const;
     godot::Dictionary submit_narrative_choice_request(std::shared_ptr<struct RuntimeNarrativeRequest>);

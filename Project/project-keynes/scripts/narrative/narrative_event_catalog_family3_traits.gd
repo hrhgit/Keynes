@@ -16,8 +16,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 重农族（B）══════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_ENCLOSURE_RESIST),
-		"title": "{settlement_name}·重农族",
-		"body_text": "城外的荒地要圈给牧场，周家的地正好在中间。周朴说这一族三代种地，地是命根子；牧场的人说，一亩草养三只羊。韦顺带着文书来，文书上写着补偿的数目。周朴把文书推回去，说数目不对。推的时候，他的手在抖。院子里的犁还挂在墙上，犁头磨得发亮。他的指尖在“补偿”两个字上停了一下。",
+		"title": "{settlement_name}·圈地抗争",
+		"body_text": "随着近代毛纺与肉食需求激增，商营牧场正向{settlement_name}城郊大举扩张，并获准圈占大片土地，其中恰巧包含世代重农的本地大族核心田产。宗族长老愤然退回地方官署送达的补偿文书，痛斥圈地是断绝农家命脉；牧场投资方则强调集约畜牧的收益远胜传统耕作。在旧农本秩序与新资本浪潮的正面冲撞中，官府必须选边站队。",
 		"image_key": "economy.resource",
 		"ai_visual_prompt": "A farming clan elder refusing an enclosure document, a polished ploughshare hanging on the wall, pasture stakes outside",
 		"tags": ["family", "land", "unrest"],
@@ -26,6 +26,7 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		"cooldown_days": 900,
 		"min_era_index": 6,
 		"max_era_index": 8,
+		"required_technologies": ["tech.commercial_estates"],
 		"conditions": [
 			{"op": Op.HAS_FAMILY_TRAIT, "target_key": "i001_agrarian", "bool_value": true},
 			{"op": Op.FAMILY_PRESTIGE_GTE, "int_value": 2},
@@ -45,29 +46,29 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.option(
-				"force_the_enclosure", "强行圈走",
-				"界桩钉进了他家的地",
-				"界桩钉进他家的地，周朴带人拔了三回。第四回，衙门的差役站在坡上看着。那年周家不再种那块地，周朴把犁收进屋里，再没挂出来。",
+				"force_the_enclosure", "强行圈地，推进牧业",
+				"强制圈地激化冲突",
+				"官署动用武力完成圈地，重农大族被迫放弃祖传耕作传统。集约化经营显著提升了城郊农业总产出，但强拆与夺地引发的激烈对抗令全城动荡不安。",
 				[
 					TraitChanges.remove("i001_agrarian", "重农"),
-					Shared.agriculture(5, 540),
+					Shared.agriculture(15, 540),
 					Shared.bias(Ids.TAG_UNREST, 1.35, 540),
 				]),
 			Shared.option(
-				"trade_land", "拿别处换",
-				"换到河那边",
-				"换到河那边，地远了一截，水却更好。周朴去看了一回，蹲在田埂上抓了把土，说这土能种。补偿的钱还没到位，他已经让人去翻地了。",
+				"trade_land", "国库贴补，异地置换",
+				"易地拓荒双赢收场",
+				"国库拨款补偿并为该族在河对岸划拨水利更佳的新垦区。大族顺势转型为锐意进取的拓荒力量，新旧产业各得其所，本地农业产出稳步增长。",
 				[
-					Shared.cash_out(2.0, 360),
-					Shared.agriculture(2, 540),
+					Shared.cash_out(5, 360),
+					Shared.agriculture(8, 540),
 					TraitChanges.grant("i025_pioneer", "拓荒者"),
 				]),
 			Shared.option(
-				"drop_it", "这事先作罢",
-				"牧场另找地方",
-				"牧场另找地方，周家的地保住了。那年秋天，牧场的人从坡下过，周朴让人给他们送了一担水。坡上坡下都没再动土。",
+				"drop_it", "叫停圈地，保全农田",
+				"农田得保工商受阻",
+				"地方官署撤销了圈地许可，传统农田安然无恙，城郊紧张气氛随之缓和。但牧场与下游毛纺原料供应计划被迫搁浅，本地制造业扩张步伐明显放缓。",
 				[
-					Shared.manufacturing(-3, 360),
+					Shared.manufacturing(-10, 360),
 					Shared.bias(Ids.TAG_UNREST, 0.90, 360),
 				]),
 		],
@@ -76,8 +77,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 商帮（B）════════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_CHARTER_GUILD),
-		"title": "{settlement_name}·商帮",
-		"body_text": "李家的商队从北边回来，带回一张特许的样本：别处的商号拿到这张纸，就能包一条商路。李七想要，韦顺说特许要公开招。周敬之在旁边听着，说公开招也是价高者得。李七把样本放在桌上，纸角压着一枚铜印。窗外，另外两家商号的伙计已经在门口转了两圈。李七说，这张纸要是拿不到，明年北边的路就归别人了。",
+		"title": "{settlement_name}·商路特许",
+		"body_text": "{settlement_name}深耕商路的本地大族向地方官署呈上外邦特许状样本，请求独占北方长途商路的经营权，并愿向度支司缴纳高额特许保证金。城内其余商帮闻讯立刻联合抗议，指责私授垄断特许将彻底扼杀公平竞争，要求实行公开招标。官署面临经典的重商主义抉择：是扶持一家超级寡头以迅速打通商路，还是维护公开竞价以保市场平衡？",
 		"image_key": "country.economy",
 		"ai_visual_prompt": "A merchant clan leader with a sample charter under a bronze seal, rival clerks loitering outside the window",
 		"tags": ["family", "market", "trade"],
@@ -105,35 +106,35 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.gamble(
-				"grant_the_charter", "把特许给他",
-				Shared.branch(39322, "商路通了", # 60%
-					"商路通了，李家的车队每月走一趟，回来时车厢里装着北边的皮子。李七在祠堂里供了那张特许，纸角压着铜印。另外两家商号把招牌改了。",
+				"grant_the_charter", "授予特许，独占商路",
+				Shared.branch(39322, "特许商路财源广进", # 60%
+					"特许状落地后，该族车队迅速垄断北方皮货贸易，跻身家大业大的豪商巨贾。全国贸易运力大幅提升，稳定的特许收益亦随之充实国库。",
 					[
 						TraitChanges.grant("i026_magnate", "家大业大"),
-						Shared.trade_capacity(6, 540),
-						Shared.cash_in(1.0, 360),
+						Shared.trade_capacity(15, 540),
+						Shared.cash_in(3, 360),
 					]),
-				Shared.branch(26214, "同行把他告了", # 40%
-					"同行把李家告了，说特许是私下许的。衙门来查，特许暂扣。李七在堂上站了半天，回来把样本锁进柜子，再没拿出来。",
+				Shared.branch(26214, "同行控告特许暂扣", # 40%
+					"其余商帮联名状告官商勾结，朝廷被迫介入暂扣特许状彻查。官府虽没收了部分保证金，但混乱的调查过程令本地制造与商贸双双受挫，怨声四起。",
 					[
-						Shared.cash_in(1.0, 360),
-						Shared.manufacturing(-3, 360),
+						Shared.cash_in(3, 360),
+						Shared.manufacturing(-10, 360),
 						Shared.bias(Ids.TAG_UNREST, 1.25, 540),
 					])),
 			Shared.option(
-				"open_bidding", "公开招标",
-				"价高者得",
-				"公开招标，价高者得。李家出的价排第二，商路归了别家。李七把标书收起来，说这样也好，输得明白；那年他家的车队改走水路。",
+				"open_bidding", "公开招标，价高者得",
+				"公开竞标国库大赚",
+				"度支司主持了激烈竞标，商路由出价更高的外来商帮夺得，国库收获丰厚标金。失标的本地大族被迫改走水路，对官府的怨怼却已悄然结下。",
 				[
-					Shared.cash_in(2.0, 360),
+					Shared.cash_in(5, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.15, 540),
 				]),
 			Shared.option(
-				"turn_it_down", "把折子驳回",
-				"样本退回去了",
-				"样本退回去了，李七在门口站了一会儿。另外两家商号也没拿到，商路照旧没人包。那年北边的货少了一成，来的车也少了。",
+				"turn_it_down", "驳回特许，暂不开禁",
+				"商路冷清众商失望",
+				"地方官署退回了特许呈文，北方商路继续处于无序分散状态。缺乏大商帮统筹致使北来原料与货流缩减，本地手工业随之降温，商界颇多怨言。",
 				[
-					Shared.manufacturing(-3, 360),
+					Shared.manufacturing(-10, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.10, 540),
 				]),
 		],
@@ -142,8 +143,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 工匠族（B）══════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_CRAFT_SPLIT),
-		"title": "{settlement_name}·工匠族",
-		"body_text": "罗阿石的族里出了七个匠人，行会只认三个。行会说族里抢了行会的活，族里说行会的价压得太低。两边在作坊门口对峙，学徒站在中间，不知道该听谁。罗阿石把工具收进箱子，说这活不干了。箱子扣上，锁没锁。学徒的工钱是族里出的，行会不认这笔账，也不认这几个人。",
+		"title": "{settlement_name}·工匠分家",
+		"body_text": "{settlement_name}的工匠世家本地大族近年培养了大批熟练匠人，并压低工价广揽订单，彻底触怒了当地传统行会。行会执事援引旧章，仅承认其不到半数的师徒名额，指责该族破坏行业定价体系；大族工场则以全面停工相威胁，要求脱离行会自立门户。大批学徒夹在中间进退维谷，地方官署必须裁定这场关乎生产组织形态的路线之争。",
 		"image_key": "map.construction",
 		"ai_visual_prompt": "Craftsmen facing a guild steward at a workshop door, apprentices standing between them, a tool chest half closed",
 		"tags": ["family", "labor", "market"],
@@ -171,29 +172,29 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.option(
-				"back_the_clan", "站在族里这边",
-				"箱子又打开了",
-				"箱子又打开了，罗阿石带着七个匠人另立了门户。行会的册子上少了七行。那年冬天，行会的活排到开春，族里的活接不完。",
+				"back_the_clan", "支持大族，打破行会",
+				"制造世家自立门户",
+				"地方官署批准大族工场脱离行会独立经营，该族迅速转型为高效扩张的制造世家。订单纷至沓来，本地制造业产出与工具供给双双迎来跃升。",
 				[
 					TraitChanges.grant("i003_manufacturing", "制造世家"),
-					Shared.manufacturing(4, 540),
-					Shared.tools(5, 540),
+					Shared.manufacturing(12, 540),
+					Shared.tools(15, 540),
 				]),
 			Shared.option(
-				"back_the_guild", "站在行会这边",
-				"七个减成三个",
-				"七个减成三个，另外四个把工具卖了，去了码头。罗阿石不再挂族里的招牌，行会的册子上添了他的名字。作坊的门口，行会的牌子挂得比族牌高。",
+				"back_the_guild", "维护行会，削减名额",
+				"行会胜出产能回落",
+				"官署裁定严格执行行会名额限制，多余匠人被迫转行离去，大族从此失去工匠世家根基。传统行业秩序与街面稳定得以维持，但本地制造产能显著萎缩。",
 				[
 					TraitChanges.remove("j004_craft", "工匠世家"),
-					Shared.manufacturing(-4, 360),
+					Shared.manufacturing(-12, 360),
 					Shared.bias(Ids.TAG_UNREST, 0.90, 360),
 				]),
 			Shared.option(
-				"mediate", "两头调停",
-				"两边各让一步",
-				"两边各让一步，行会认了五个，族里把价抬了一成。罗阿石请两边的人吃了一顿饭，饭桌上谁也没提这件事。",
+				"mediate", "出资斡旋，折中妥协",
+				"勉强调停暗流未息",
+				"国库拨款补贴了部分学徒安置费用，换取行会放宽名额、大族上调工价。表面上的僵局虽暂告化解，但新旧生产体制间的深层矛盾并未根除。",
 				[
-					Shared.cash_out(1.5, 360),
+					Shared.cash_out(4, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.10, 540),
 				]),
 		],
@@ -202,8 +203,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 查书（B）════════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_LETTERS_RAID),
-		"title": "{settlement_name}·查书",
-		"body_text": "周家的藏书楼被查了。来的人说有一部书不该留，周朴说这书是祖上传的，书页上有先人的批注。韦顺站在书架前，把书抽出来又放回去。楼下的院子里，几个差役在等。周朴的手按在书脊上，没有松。楼外的风把窗纸吹得响。韦顺说，书是死的，人是活的，可这话他说得很轻。",
+		"title": "{settlement_name}·藏书风波",
+		"body_text": "{settlement_name}素负盛名的书香门第近来卷入了一场文禁风波，有人检举其本地大族藏书楼中私藏多部讥议时政的违禁古籍。地方官署已派员封锁院落准备清查，宗族长老则死守书架，力陈这批典籍乃数代先贤批注的心血孤本，毁之无异于断绝本地文脉。是严厉查抄以肃思想，还是网开一面以全学术，决策已呈至御案。",
 		"image_key": "family.house",
 		"ai_visual_prompt": "A clan library being searched, an elder's hand resting on a book spine, clerks waiting in the courtyard",
 		"tags": ["family", "school", "court"],
@@ -212,6 +213,7 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		"cooldown_days": 900,
 		"min_era_index": 3,
 		"max_era_index": 8,
+		"required_technologies": ["tech.writing"],
 		"conditions": [
 			{"op": Op.HAS_FAMILY_TRAIT, "target_key": "j009_letters", "bool_value": true},
 			{"op": Op.PROFESSION_SHARE_GTE, "target_key": "scholar", "float_value": 0.01},
@@ -231,30 +233,30 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.option(
-				"shield_the_books", "把书保下来",
-				"书还在架上",
-				"书还在架上，周朴在楼里坐了一夜。第二天，差役走了，书楼的门照旧开着。来借书的人多了一倍，也有人再没来过。",
+				"shield_the_books", "网开一面，保全典籍",
+				"藏书得保文脉大盛",
+				"朝廷下令撤回查抄人员，藏书楼得以完好保留。本地大族深受感召，倾力资助学术研究，全城知识产出大幅跃升，但宽松的舆论氛围也让激进思潮暗中滋长。",
 				[
 					TraitChanges.grant("i005_knowledge", "学术赞助"),
-					Shared.knowledge(5, 540),
+					Shared.knowledge(15, 540),
 					Shared.bias(Ids.TAG_UNREST, 1.30, 540),
 				]),
 			Shared.option(
-				"hand_it_over", "把书交出去",
-				"书架空了一格",
-				"书架空了一格，周朴把那一格的灰擦了又擦。差役走的时候，把书装进一只木匣。族里的人从此不再提这部书。",
+				"hand_it_over", "依法收缴，封存禁书",
+				"禁书收缴清议消声",
+				"违禁典籍被装匣封存带走，大族书香门第的荣耀随之凋零。城中异议声音迅速沉寂，社会秩序趋于安定，但本地学术研究与思想活力也蒙受重创。",
 				[
 					TraitChanges.remove("j009_letters", "书香门第"),
-					Shared.knowledge(-4, 360),
+					Shared.knowledge(-12, 360),
 					Shared.bias(Ids.TAG_UNREST, 0.90, 360),
 				]),
 			Shared.option(
-				"burn_half", "烧掉一半",
-				"院子里烧了半夜",
-				"院子里烧了半夜，纸灰飘到墙外。周朴站在火边，把没烧完的几页捡出来，夹进另一本书里。第二天，查的人来看了一眼，走了。",
+				"burn_half", "择要销毁，留存残卷",
+				"半数焚毁折中结案",
+				"官署拨付安抚款项并采取折中处置，仅当众销毁敏感卷帙，默许大族保留其余学术注疏。风波得以体面平息，但典籍残缺仍令本地知识积累略有倒退。",
 				[
-					Shared.knowledge(-2, 360),
-					Shared.cash_out(1.0, 360),
+					Shared.knowledge(-8, 360),
+					Shared.cash_out(3, 360),
 				]),
 		],
 	}))
@@ -262,8 +264,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 抗税（B）════════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_MAGNATE_TAX),
-		"title": "{settlement_name}·抗税",
-		"body_text": "加税的告示贴到南门，李氏的铺子当天关了半边门。李七说族里的生意经不起再加，韦顺说税是朝廷的。周敬之把告示揭下来，卷好，放进袖子里。第二天，南门的铺子开了，价牌换了一块，字比原来小。李七说加一成税，铺子就得关一半；韦顺说，税不是他定的。价牌换了新的，字比原来小，老主顾得凑近才看清。",
+		"title": "{settlement_name}·豪强抗税",
+		"body_text": "朝廷新颁的商税告示刚在{settlement_name}张贴，手握全城商业命脉的本地大族便串联商帮半闭铺门，以变相罢市抵制新政。宗族长老向地方官署施压，声称加税将令全城商贸瘫痪；度支司则严词敦促强硬执法，警告若在豪强抗税面前退缩，全国税法尊严将荡然无存。市面交易正迅速降温，朝廷必须立刻亮明态度。",
 		"image_key": "country.economy",
 		"ai_visual_prompt": "A shuttered clan shop at the south gate, a tax notice taken down and rolled, a new smaller price board",
 		"tags": ["family", "fiscal", "unrest"],
@@ -291,28 +293,28 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.option(
-				"collect_it_anyway", "照告示加税",
-				"税吏进了铺子",
-				"税吏进了铺子，李七把账本摊开，一页一页翻。税是收上来了，南门的铺子关了三家。那年冬天，街上的人少了一截。",
+				"collect_it_anyway", "严厉执法，照章强征",
+				"铁腕征税商界震动",
+				"度支司派员强行核查账簿并照章足额征税，国库进项极为丰厚。但数家老字号商铺随之关停，街市冷清，商民对高压税政的愤怒迅速蔓延。",
 				[
-					Shared.cash_in(2.5, 360),
+					Shared.cash_in(6, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.35, 540),
 				]),
 			Shared.option(
-				"negotiate", "跟族里谈",
-				"税减了一成",
-				"税减了一成，李家把铺子全开了，还添了一间。李七在祠堂里请了一桌，韦顺没去。第二年，李家的商队多走了两条路。",
+				"negotiate", "私下磋商，酌情减让",
+				"妥协减税商路更畅",
+				"官署与大族达成闭门协议，略微减让税率换取商帮全面复市。国库仍获得稳健税收，大族则借此进一步拓展商路人脉，带动了全国贸易运力。",
 				[
-					Shared.cash_in(1.0, 360),
-					Shared.trade_capacity(3, 540),
+					Shared.cash_in(3, 360),
+					Shared.trade_capacity(8, 540),
 					TraitChanges.grant("i019_trade", "商路人脉"),
 				]),
 			Shared.option(
-				"exempt_them", "免了这一回",
-				"告示收进了袖子",
-				"告示没有贴回去，税也没收。李家的铺子照旧开着，价牌也换了回去。别家商号看着，第二年也有样学样。",
+				"exempt_them", "暂缓新税，豁免本季",
+				"豁免新税权威受损",
+				"加税告示被悄然撤回，商铺全面复业并带动本地工商业小幅回暖。然而豪强以罢市逼退政令的先例迅速传开，各方势力皆在蠢蠢欲动。",
 				[
-					Shared.manufacturing(2, 360),
+					Shared.manufacturing(8, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.20, 540),
 				]),
 		],
@@ -321,8 +323,8 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 	# ═══ 转产（B）════════════════════════════════════════════════════════
 	catalog.register_event(NarrativeEventDefinitionScript.from_dict({
 		"event_id": String(Ids.EVT_FAMILY3_COASTAL_SHIFT),
-		"title": "{settlement_name}·转产",
-		"body_text": "周家的船队跑了二十年，港口的税一年比一年重。李潮说把船卖了，在城外开纺织厂；周朴说船是祖上传下来的。韦顺把两种账都算了一遍，算完把两张纸并排放在桌上。港口传来汽笛声，是别家的船进港了。周朴说祖上也没见过这么大的厂，李潮说时代不一样了。李潮把两张纸往前推了推，周朴的指头压在上面那张，没动。",
+		"title": "{settlement_name}·资本转型",
+		"body_text": "随着蒸汽轮船与现代机器工业兴起，{settlement_name}手握沿海资本的本地大族正站在时代十字路口。港口关税日重、帆船航运利润微薄，族中少壮派力主变卖老旧商船队，将全部资本投入城外新建现代纺织厂；守旧的宗族长老却坚持航运乃祖业根基，不愿孤注一掷。地方官署受邀评估两套产业方案，朝廷的政策倾斜将决定这股地方资本的流向。",
 		"image_key": "hydrology.water",
 		"ai_visual_prompt": "A clan shipowner weighing two account sheets, harbour and a factory site outside the window, a steamer arriving",
 		"tags": ["family", "sea", "market"],
@@ -331,6 +333,7 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		"cooldown_days": 720,
 		"min_era_index": 6,
 		"max_era_index": 9,
+		"required_technologies": ["tech.steam_power"],
 		"conditions": [
 			{"op": Op.HAS_FAMILY_TRAIT, "target_key": "i029_coastal", "bool_value": true},
 			{"op": Op.ERA_GTE, "int_value": 6},
@@ -350,28 +353,28 @@ static func append(catalog, mul_115: int, mul_120: int) -> void:
 		],
 		"options": [
 			Shared.option(
-				"shift_to_factory", "支持转产",
-				"船卖了，厂开了",
-				"船卖了，厂开了。李潮把第一批布匹装上火车，周朴去码头看了最后一眼。船坞空了，厂房里的机器响到半夜。",
+				"shift_to_factory", "补贴转型，兴办工厂",
+				"海商转型工业巨擘",
+				"国库提供产业转型补贴，大族果断卖船建厂，蜕变为雄心勃勃的制造世家。老旧船坞虽归沉寂，但城外彻夜轰鸣的机器将本地工业产能推上新高。",
 				[
 					TraitChanges.grant("i003_manufacturing", "制造世家"),
-					Shared.manufacturing(5, 540),
-					Shared.cash_out(2.0, 360),
+					Shared.manufacturing(15, 540),
+					Shared.cash_out(5, 360),
 				]),
 			Shared.option(
-				"keep_the_fleet", "维持船队",
-				"船又补了一回",
-				"船又补了一回，底舱换了新板。那年季风来得晚，船队少跑一趟。李潮把账本合上，说再撑一年看看。",
+				"keep_the_fleet", "扶持航运，维持船队",
+				"坚守海运错失工业",
+				"官署顺应守旧派诉求，协助修缮扩充商船队，全国海运贸易容量得以稳固。但错失工业化转型的窗口，也令本地制造业发展略显滞后。",
 				[
-					Shared.trade_capacity(4, 540),
-					Shared.manufacturing(-2, 360),
+					Shared.trade_capacity(10, 540),
+					Shared.manufacturing(-8, 360),
 				]),
 			Shared.option(
-				"hedge_both", "两头下注",
-				"船和厂都留一半",
-				"船和厂都留了一半，钱分成两处。周朴说这样稳，李潮说这样两头都做不大。第一年两边都没赔，也都没赚。",
+				"hedge_both", "两头兼顾，分资并进",
+				"分散投资难成气候",
+				"官府出资协调大族同时保留半数船队与小规模厂房。资本分散致使两边皆难成规模，既耗费了财政补贴，也让族内新旧两派的路线争执久拖不决。",
 				[
-					Shared.cash_out(2.0, 360),
+					Shared.cash_out(5, 360),
 					Shared.bias(Ids.TAG_UNREST, 1.10, 540),
 				]),
 		],

@@ -332,7 +332,7 @@ bool RuntimeEconomyPodAuthority::try_apply_owned_core_command(
             error = "demolish_owned_count_insufficient";
             return false;
         }
-        buildings.group_units.write_scalar(static_cast<size_t>(group_id), buildings.group_units[static_cast<size_t>(group_id)] - (count));
+        buildings.remove_units(static_cast<size_t>(group_id), count);
         settled_out = count;
         return true;
     }

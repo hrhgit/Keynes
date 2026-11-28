@@ -183,8 +183,6 @@
             const int32_t cell_count = end - _building_cell_cursor;
             _building_funded_capacity_q16.resize(building_count(), 0);
             _building_working_capital_allocated.resize(building_count(), 0);
-            _building_recovery_probe_capacity_q16.resize(building_count(), 0);
-            _building_recovery_liquidation_eligible.resize(building_count(), 0);
             if (_production_results_scratch.size() <
                     static_cast<size_t>(cell_count)) {
                 _production_results_scratch.resize(

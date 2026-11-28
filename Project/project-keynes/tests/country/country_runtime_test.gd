@@ -34,6 +34,19 @@ func _run() -> void:
 		String(default_ext.get_country_cell_summary(0).country_id) == "country.default" and
 		int(default_ext.get_country_cell_summary(1).country_slot) == -1 and
 		String(default_ext.get_country_cell_summary(2).country_id) == "country.default")
+	var default_water := PackedByteArray([0, 1, 0])
+	var default_handle := int(default_ext.get_country_cell_summary(0).country_handle)
+	for invalid_rates in [500, PackedInt32Array([500]), PackedInt32Array([10001, 0, 0, 0, 0])]:
+		var denied: Dictionary = default_ext.bootstrap_country({"tax_defaults_bp": invalid_rates}, default_water)
+		_expect("invalid opening tax defaults preserve the existing country",
+			String(denied.get("reason", "")) == "country_bootstrap_tax_policy_invalid" and
+			int(default_ext.get_country_cell_summary(0).get("country_handle", 0)) == default_handle)
+	var defaults := PackedInt32Array([500, 400, -300, 0, 0])
+	var implicit_tax: Dictionary = default_ext.bootstrap_country({"tax_defaults_bp": defaults}, default_water)
+	var implicit_handle := int(default_ext.get_country_cell_summary(0).country_handle)
+	_expect("implicit country applies opening tax defaults",
+		bool(implicit_tax.get("ok", false)) and
+		default_ext.get_country_tax_policy_snapshot(implicit_handle).get("default_rates_basis_points") == defaults)
 	var water_ext := _new_ext(2)
 	water_ext.configure_country(catalog, profile, 2, 8)
 	_expect("all-water default bootstrap is rejected precisely",

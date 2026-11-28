@@ -1,5 +1,14 @@
 Dictionary DCWorldExt::begin_or_reuse_economy_input_epoch(
         int64_t day_index, const Dictionary &generation) {
+    if (_economy_runtime && runtime_from(_economy_runtime)->stream_restore_active()) {
+        Dictionary out;
+        out["ok"] = false;
+        out["fatal"] = false;
+        out["done"] = true;
+        out["captured"] = false;
+        out["reason"] = "save_restore_active";
+        return out;
+    }
     EconomyInputGeneration input_generation;
     std::string generation_error;
     if (!parse_economy_input_generation(day_index, generation,
@@ -362,6 +371,7 @@ Dictionary DCWorldExt::run_economy_slice_internal(const Dictionary &ctx, bool co
     }
     const Dictionary cap = begin_or_reuse_economy_input_epoch(
         day_index, input_generation);
+    if (!bool(cap.get("ok", false)) && !bool(cap.get("fatal", false))) return cap;
     if (bool(cap.get("fatal", false))) {
         Dictionary out;
         out["ok"] = false;

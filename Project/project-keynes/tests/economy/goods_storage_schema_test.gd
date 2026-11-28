@@ -621,8 +621,33 @@ func _test_environment_substitution(compiled: Dictionary) -> void:
 	_expect("environment snapshot day published", int(cold.get_economy_report().environment_day) == 0)
 
 func _test_price_quantity_response(compiled: Dictionary) -> void:
-	var baseline := _configured_price_worker(compiled, 1801)
-	var expensive := _configured_price_worker(compiled, 1802)
+	# Give the worker a discretionary portion above the protected protein ration.
+	# Both arms keep the authored ration, price response and price limits.
+	var fixture := compiled.duplicate(true)
+	var worker_signature: int = fixture.signature_keys.find("worker|default")
+	var survival_plan: int = fixture.plan_ids.find("survival_household")
+	var protein: int = fixture.need_ids.find("protein")
+	_expect("price fixture has worker and survival protein plans",
+		worker_signature >= 0 and survival_plan >= 0 and protein >= 0)
+	if worker_signature < 0 or survival_plan < 0 or protein < 0:
+		return
+	var worker_plan: int = fixture.signature_plan_ids[worker_signature]
+	var plan_offsets: PackedInt32Array = fixture.plan_need_offsets
+	var need_ids: PackedInt32Array = fixture.need_stable_ids
+	var worker_protein := need_ids.find(protein, plan_offsets[worker_plan])
+	var survival_protein := need_ids.find(protein, plan_offsets[survival_plan])
+	var protein_rows_available := (
+		worker_protein >= 0 and worker_protein < plan_offsets[worker_plan + 1]
+		and survival_protein >= 0 and survival_protein < plan_offsets[survival_plan + 1]
+	)
+	_expect("price fixture locates both protein rows", protein_rows_available)
+	if not protein_rows_available:
+		return
+	var quantities: PackedInt64Array = fixture.need_base_qty_per_person
+	quantities[worker_protein] = 2 * quantities[survival_protein]
+	fixture.need_base_qty_per_person = quantities
+	var baseline := _configured_price_worker(fixture, 1801)
+	var expensive := _configured_price_worker(fixture, 1802)
 	var goods: PackedStringArray = compiled.good_ids
 	var staple_ids := ["prepared_staples", "bread", "grain", "gathered_plants", "potatoes"]
 	var protein_ids := ["game_meat", "meat", "fish", "canned_fish", "dairy_products"]

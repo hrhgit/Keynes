@@ -63,7 +63,11 @@ struct NativeEconomyRuntime::BuildingInvestmentCellContext {
     int64_t available_credit = 0;
     bool portfolio_population_changed = false;
     int32_t active_types = 0;
+    uint64_t search_trials = 0;
+    uint64_t material_quotes = 0;
     std::array<ConstructionMaterialPlan, 4> commit_material_plans{};
+    int32_t rejected_invoice = -1;
+    int64_t rejected_invoice_count = 0;
     int32_t commit_cost_factor = Q16_ONE;
     int32_t commit_time_factor = Q16_ONE;
     int64_t total_buildings = 0;

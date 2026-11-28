@@ -57,14 +57,29 @@ uint64_t NativeEconomyRuntime::trace_hash_mix(uint64_t hash, uint64_t value) {
 int32_t NativeEconomyRuntime::find_cohort_slot(int32_t cell, int32_t signature_id) const {
     if (cell < 0 || cell >= _cell_count.get() || signature_id < 0 ||
         signature_id >= static_cast<int32_t>(_signatures.size())) return -1;
-    const int64_t before = population_store().scan_steps;
+    int64_t steps = 0;
     const int32_t slot = population_store().find_signature(
-        cell, static_cast<uint32_t>(signature_id));
-    const int64_t steps = population_store().scan_steps - before;
-    _scan_steps_find_signature += steps;
-    ++_scan_calls_find_signature;
-    note_scan_steps(steps);
+        cell, static_cast<uint32_t>(signature_id), &steps);
+    CohortLookupCounts *counts = nullptr;
+    if (_building_plan_result_sink != nullptr)
+        counts = &_building_plan_result_sink->cohort_lookups;
+    else if (_production_result_sink != nullptr)
+        counts = &_production_result_sink->cohort_lookups;
+    else if (_market_result_sink != nullptr)
+        counts = &_market_result_sink->cohort_lookups;
+    if (counts != nullptr) {
+        ++counts->calls;
+        counts->steps += steps;
+    } else {
+        merge_cohort_lookup_counts({1, steps});
+    }
     return slot;
+}
+
+void NativeEconomyRuntime::merge_cohort_lookup_counts(const CohortLookupCounts &counts) const {
+    _scan_calls_find_signature += counts.calls;
+    _scan_steps_find_signature += counts.steps;
+    note_scan_steps(counts.steps);
 }
 
 void NativeEconomyRuntime::mark_market_signal_cell_dirty(int32_t cell) {

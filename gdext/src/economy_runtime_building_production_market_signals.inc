@@ -33,7 +33,8 @@
                 item.required_q16, 0, Q16_ONE);
             if (required > 0 && required < Q16_ONE &&
                 !soft_input_purchase_allowed(group, type, i)) continue;
-            const int32_t selected = select_input_candidate(item, false, 0);
+            const int32_t selected = select_input_candidate(
+                item, false, 0, group.output_factor_q16);
             if (selected < 0) continue;
             const InputCandidate &candidate = _building_input_candidates[selected];
             const int64_t effective = mul_div_sat(saturating_mul(
@@ -42,7 +43,7 @@
             const int64_t planned = effective_production_input_quantity(
                 cell, candidate.good_id,
                 physical_input_quantity(effective, candidate),
-                _saturation_count);
+                _saturation_count, group.output_factor_q16);
             const int32_t signal = market_signal_index(cell, candidate.good_id);
             if (signal >= cell_signal_begin && signal < cell_signal_end) {
                 const size_t local_signal = static_cast<size_t>(signal - cell_signal_begin);
@@ -72,7 +73,7 @@
             const int64_t funded = suspended ? 0 : effective_production_input_quantity(
                 cell, candidate.good_id,
                 physical_input_quantity(funded_effective, candidate),
-                _saturation_count);
+                _saturation_count, group.output_factor_q16);
             if (signal >= 0) {
                 if (signal < static_cast<int32_t>(_epoch_desired_business_demand.size())) {
                     _epoch_desired_business_demand[signal] = saturating_add(
@@ -111,7 +112,7 @@
             continue;
         const BuildingType &sale_type = _building_types[sale.type_id];
         const int64_t owner_livelihood = saturating_mul(saturating_mul(
-            living_cost_for_signature(cell, sale_group.owner_signature_id, -1,
+            living_cost_for_signature(cell, settlement_owner_signatures[sale.group - begin], -1,
                                       _saturation_count),
             std::max<int64_t>(0, sale_group.filled_owner), _saturation_count),
             std::max(1, _epoch_days.get()), _saturation_count);
@@ -173,7 +174,7 @@
                 group.last_capacity_q16, Q16_ONE, _saturation_count);
             if (qty <= 0) continue;
             const int64_t owner_livelihood = saturating_mul(saturating_mul(
-                living_cost_for_signature(cell, group.owner_signature_id, -1,
+                living_cost_for_signature(cell, settlement_owner_signatures[g - begin], -1,
                                           _saturation_count),
                 std::max<int64_t>(0, group.filled_owner), _saturation_count),
                 std::max(1, _epoch_days.get()), _saturation_count);
