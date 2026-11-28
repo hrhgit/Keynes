@@ -27,7 +27,155 @@ using namespace persistence_codec;
 
 #include "economy_runtime_persistence_section_save_capture.inc"
 
+struct NativeEconomyRuntime::RestoreStream {
+    NativeEconomyRuntime candidate;
+    std::vector<PackedByteArray> chunks;
+    uint64_t country_generation = 0;
+    int64_t country_hash = 0;
+};
+
 Dictionary NativeEconomyRuntime::begin_restore() {
+    Dictionary result = open_restore_session();
+    if (!static_cast<bool>(result["ok"])) return result;
+    auto stream = std::make_shared<RestoreStream>();
+    auto &candidate = stream->candidate;
+    candidate.attach_country_runtime(_country_runtime);
+    // Configuration resolves immutable stat IDs. No archive bytes reach this peer.
+    candidate.attach_modifier_runtime(_modifier_runtime);
+    Dictionary configured = candidate.configure_runtime(
+        _restore_catalog, _restore_profile, _cell_count.get(), _seed.get());
+    candidate.attach_modifier_runtime(nullptr);
+    if (!static_cast<bool>(configured["ok"])) {
+        _restore = {};
+        set_restore_rejected_reason(String(configured["reason"]).utf8().get_data());
+        return configured;
+    }
+    candidate._restore.active = true;
+    candidate.prepare_restore_candidate_scratch();
+    _restore.stream = std::move(stream);
+    return result;
+}
+
+Dictionary NativeEconomyRuntime::feed_restore_chunk(const PackedByteArray &chunk) {
+    if (!_restore.stream) {
+        Dictionary out;
+        out["ok"] = false;
+        out["reason"] = "restore_not_active";
+        return out;
+    }
+    Dictionary result = _restore.stream->candidate.feed_restore_candidate(chunk);
+    if (static_cast<bool>(result["ok"])) {
+        if (_restore.stream->chunks.empty()) {
+            _restore.stream->country_generation = country_reads().generation();
+            _restore.stream->country_hash = country_reads().state_hash();
+        }
+        _restore.stream->chunks.push_back(chunk);
+    } else {
+        // Some callers stop at the first rejected feed and never call end.
+        // Release the candidate and the session immediately; end can still
+        // report the original error once.
+        _restore = {};
+        _restore.error = String(result["reason"]).utf8().get_data();
+        set_restore_rejected_reason(_restore.error);
+    }
+    return result;
+}
+
+Dictionary NativeEconomyRuntime::end_restore() {
+    auto stream = std::move(_restore.stream);
+    if (!stream) {
+        Dictionary out;
+        out["ok"] = false;
+        out["reason"] = _restore.error.empty() ? String("restore_not_active") : String(_restore.error.c_str());
+        _restore.error.clear();
+        return out;
+    }
+    _restore = {};
+    // Raw feeds only collect the modifier section. The final cross-reference
+    // checks decode it against a private copy with the current peer catalog.
+    auto &candidate = stream->candidate;
+    candidate.attach_effect_runtime(_effect_runtime);
+    Dictionary result;
+    if (_modifier_runtime) {
+        auto modifier = modifier_api::copy_runtime(*_modifier_runtime);
+        modifier_api::attach_economy_runtime(*modifier, &candidate);
+        candidate.attach_modifier_runtime(modifier.get());
+        result = candidate.finish_restore_candidate(false);
+        candidate.attach_modifier_runtime(nullptr);
+    } else {
+        result = candidate.finish_restore_candidate(false);
+    }
+    if (!static_cast<bool>(result["ok"])) {
+        set_restore_rejected_reason(String(result["reason"]).utf8().get_data());
+        return result;
+    }
+    if (country_reads().generation() != stream->country_generation ||
+        country_reads().state_hash() != stream->country_hash) {
+        set_restore_rejected_reason("economy_country_restore_order_or_hash_mismatch");
+        result["ok"] = false;
+        result["reason"] = String(_restore_rejected_reason.c_str());
+        return result;
+    }
+    // The raw stream also supports the opening before the first committed day.
+    // Keep its exact bytes and install them in one call at the stopped boundary.
+    // The native owner, its non-PKEC inputs and its external bindings keep their identity.
+    auto chunks = std::move(stream->chunks);
+    stream.reset();
+    auto install = [&](const std::vector<PackedByteArray> &wire) {
+        Dictionary installed = open_restore_session();
+        if (!static_cast<bool>(installed["ok"])) return installed;
+        prepare_restore_candidate_scratch();
+        for (const auto &chunk : wire) {
+            installed = feed_restore_candidate(chunk);
+            if (!static_cast<bool>(installed["ok"])) return installed;
+        }
+        return finish_restore_candidate();
+    };
+    // Context outside PKEC (for example Country's generation) can have
+    // changed between feeds. Keep a rollback point for that final installation.
+    RuntimeEconomyEcp2State backup;
+    std::vector<PackedByteArray> opening;
+    std::string error;
+    const bool had_world = _bootstrapped;
+    const bool committed = had_world && !_fatal && _last_committed_day.get() >= 0;
+    if (committed && !capture_ecp2_authority(backup, error, ECP2_CAPTURE_ROLLBACK_BACKUP)) {
+        result["ok"] = false;
+        result["reason"] = String(error.c_str());
+        set_restore_rejected_reason(error);
+        return result;
+    }
+    if (had_world && !committed) {
+        result = begin_forensics_save(4 * 1024 * 1024);
+        if (!static_cast<bool>(result["ok"])) return result;
+        for (;;) {
+            auto chunk = read_save_chunk(4 * 1024 * 1024);
+            if (chunk.is_empty()) break;
+            opening.push_back(std::move(chunk));
+        }
+        result = end_save();
+        if (!static_cast<bool>(result["ok"])) return result;
+    }
+    result = install(chunks);
+    if (!static_cast<bool>(result["ok"])) {
+        const String reason = result["reason"];
+        _restore = {};
+        if (committed) {
+            apply_ecp2_authority_internal(backup, error);
+        } else if (had_world) {
+            const Dictionary rolled_back = install(opening);
+            if (!static_cast<bool>(rolled_back["ok"]))
+                error = String(rolled_back["reason"]).utf8().get_data();
+        }
+        _restore = {};
+        result["reason"] = error.empty() ? reason : reason + String(";rollback_failed:") + String(error.c_str());
+        set_restore_rejected_reason(String(result["reason"]).utf8().get_data());
+    } else {
+        _restore_rejected_reason.clear();
+    }
+    return result;
+}
+
+Dictionary NativeEconomyRuntime::open_restore_session() {
     Dictionary out;
     if (!_configured || _epoch_active || _save.active || _restore.active ||
         _fiscal_reservation_continuation.active ||
@@ -69,15 +217,8 @@ Dictionary NativeEconomyRuntime::begin_restore() {
             String(out["reason"]).utf8().get_data());
         return out;
     }
-    // The public chunked restore API is itself an ECP2 transaction boundary.
-    // Prepare the candidate surface here so callers using the documented
-    // begin -> feed -> end sequence do not need the internal migrate helper.
-    // The caller's live state remains recoverable through the restore backup
-    // established by begin_restore_internal().
     _restore = {};
     _restore.active = true;
-    _restore.scratch_prepared = false;
-    prepare_restore_candidate_scratch();
     out["ok"] = true;
     out["schema_version"] = SCHEMA_VERSION;
     out["scratch_prepared"] = true;
@@ -91,7 +232,7 @@ void NativeEconomyRuntime::set_restore_rejected_reason(
     _restore_rejected_reason = reason;
 }
 
-Dictionary NativeEconomyRuntime::feed_restore_chunk(const PackedByteArray &chunk) {
+Dictionary NativeEconomyRuntime::feed_restore_candidate(const PackedByteArray &chunk) {
     Dictionary out;
     if (!_restore.active || _restore.failed || _restore.end_seen || chunk.is_empty()) {
         out["ok"] = false;
@@ -137,7 +278,7 @@ Dictionary NativeEconomyRuntime::feed_restore_chunk(const PackedByteArray &chunk
     return out;
 }
 
-Dictionary NativeEconomyRuntime::end_restore() {
+Dictionary NativeEconomyRuntime::finish_restore_candidate(bool install) {
 #include "economy_runtime_persistence_section_restore_validation.inc"
 #include "economy_runtime_persistence_section_restore_inventory.inc"
 #include "economy_runtime_persistence_section_restore_peers_and_publish.inc"
@@ -145,7 +286,7 @@ Dictionary NativeEconomyRuntime::end_restore() {
 
 bool NativeEconomyRuntime::begin_restore_internal(std::string &error) {
     error.clear();
-    const Dictionary out = begin_restore();
+    const Dictionary out = open_restore_session();
     if (!static_cast<bool>(out.get("ok", false))) {
         error = String(out.get("reason", "restore_begin_failed")).utf8().get_data();
         set_restore_rejected_reason(error);
@@ -155,7 +296,7 @@ bool NativeEconomyRuntime::begin_restore_internal(std::string &error) {
 }
 bool NativeEconomyRuntime::end_restore_internal(std::string &error) {
     error.clear();
-    const Dictionary out = end_restore();
+    const Dictionary out = finish_restore_candidate();
     if (!static_cast<bool>(out.get("ok", false))) {
         error = String(out.get("reason", "restore_end_failed")).utf8().get_data();
         set_restore_rejected_reason(error);

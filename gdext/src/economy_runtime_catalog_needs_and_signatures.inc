@@ -423,9 +423,8 @@
             break;
         }
     }
-    // Build the dense (profession, ethnicity) -> signature lookup. Deterministic:
-    // signatures are the profession x ethnicity cartesian product, so at most one
-    // entry per (profession, ethnicity). Any unfilled cell stays -1.
+    // A profession change uses the first catalog signature for the pair.
+    // Existing cohorts can have another plan with the same profession and ethnicity.
     {
         const size_t n_prof = _profession_ids.size();
         const size_t n_eth = _ethnicity_ids.size();

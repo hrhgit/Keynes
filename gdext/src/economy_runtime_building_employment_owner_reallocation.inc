@@ -347,9 +347,13 @@
                 if (source_signature_id < 0 || source_signature_id >=
                         static_cast<int32_t>(_signatures.size())) continue;
                 const Signature &source_signature = _signatures[source_signature_id];
+                // A transfer within the profession keeps its existing cohort,
+                // including its plan when several signatures share an ethnicity.
                 const int32_t candidate_target_signature =
-                    signature_for_profession_ethnicity(target_owner_profession,
-                        source_signature.ethnicity_id);
+                    source_signature.profession_id == target_owner_profession
+                        ? source_signature_id
+                        : signature_for_profession_ethnicity(target_owner_profession,
+                            source_signature.ethnicity_id);
                 if (candidate_target_signature < 0) continue;
                 const int64_t source_income =
                     projected_owner_income[candidate - first];

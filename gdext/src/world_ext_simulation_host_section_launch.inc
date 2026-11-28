@@ -9,6 +9,13 @@ Dictionary DCWorldExt::start_runtime_worker(const Dictionary &config) {
         rejected["thread_report"] = runtime_report_to_dictionary(_runtime_host->report(), _runtime_host.get());
         return rejected;
     }
+    if (_economy_runtime && static_cast<NativeEconomyRuntime *>(_economy_runtime)->stream_restore_active()) {
+        Dictionary rejected;
+        rejected["ok"] = false;
+        rejected["pending"] = false;
+        rejected["code"] = "economy_restore_active";
+        return rejected;
+    }
     if (!_runtime_host) _runtime_host = std::make_unique<NativeSimulationHost>();
     // native_daily_inline：必须在 start() 之前落到 host 上，start() 读它决定
     // "起不起 worker 线程"。缺省 false —— 桌面端路径逐字节不变。

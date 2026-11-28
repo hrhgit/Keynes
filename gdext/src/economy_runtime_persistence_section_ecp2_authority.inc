@@ -350,7 +350,7 @@ bool NativeEconomyRuntime::apply_ecp2_authority_internal(
         chunk.resize(static_cast<int64_t>(bytes.size()));
         if (!bytes.empty())
             std::memcpy(chunk.ptrw(), bytes.data(), bytes.size());
-        const Dictionary fed = feed_restore_chunk(chunk);
+        const Dictionary fed = feed_restore_candidate(chunk);
         if (!static_cast<bool>(fed.get("ok", false))) {
             error = String(fed.get("reason", "ecp2_restore_chunk_failed"))
                         .utf8()
@@ -436,6 +436,10 @@ bool NativeEconomyRuntime::apply_ecp2_authority(
         const RuntimeEconomyEcp2State &in, std::string &error) {
     error.clear();
 
+    if (_restore.stream) {
+        error = "save_restore_already_active";
+        return false;
+    }
     if (_epoch_active) {
         error = "restore_requires_committed_boundary";
         return false;

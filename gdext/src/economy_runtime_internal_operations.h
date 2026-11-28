@@ -513,6 +513,11 @@ private:
                                uint16_t schema, uint32_t records, std::string &error);
     bool begin_restore_internal(std::string &error);
     bool end_restore_internal(std::string &error);
+    godot::Dictionary open_restore_session();
+    godot::Dictionary feed_restore_candidate(const godot::PackedByteArray &chunk);
+    godot::Dictionary finish_restore_candidate(bool install = true);
+    godot::Dictionary configure_runtime(const godot::Dictionary &catalog,
+        const godot::Dictionary &profile, int32_t cell_count, int64_t seed);
     // Clears live SoA into an empty candidate rebuild surface. Must only run
     // after apply_ecp2_authority has captured a rollback backup (or from the
     // explicit PKEC migrate helper).

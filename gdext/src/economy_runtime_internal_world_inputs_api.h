@@ -131,6 +131,7 @@
     godot::PackedByteArray read_save_chunk(int32_t max_bytes);
     godot::Dictionary end_save();
     godot::Dictionary begin_restore();
+    bool stream_restore_active() const noexcept { return _restore.stream != nullptr; }
     godot::Dictionary feed_restore_chunk(const godot::PackedByteArray &chunk);
     godot::Dictionary end_restore();
 

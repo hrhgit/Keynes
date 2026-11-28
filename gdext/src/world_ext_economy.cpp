@@ -701,6 +701,7 @@ Dictionary DCWorldExt::run_economy_stage_ops_day(int64_t day_index) {
     // before epoch open, or prelude parks as pending_input forever.
     const Dictionary cap =
         begin_or_reuse_economy_input_epoch(day_index, Dictionary());
+    if (!bool(cap.get("ok", false)) && !bool(cap.get("fatal", false))) return cap;
     if (bool(cap.get("fatal", false))) {
         out["ok"] = false;
         out["done"] = true;

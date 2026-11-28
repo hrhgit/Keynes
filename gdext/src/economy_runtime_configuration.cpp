@@ -36,6 +36,18 @@ void NativeEconomyRuntime::rebuild_building_upgrade_requirements() {
 
 Dictionary NativeEconomyRuntime::configure(const Dictionary &catalog, const Dictionary &profile,
                                            int32_t cell_count, int64_t seed) {
+    Dictionary result = configure_runtime(catalog, profile, cell_count, seed);
+    if (static_cast<bool>(result.get("ok", false))) {
+        // A streaming decoder must see the same configuration even if the
+        // script later edits its dictionaries to configure another world.
+        _restore_catalog = catalog.duplicate(true);
+        _restore_profile = profile.duplicate(true);
+    }
+    return result;
+}
+
+Dictionary NativeEconomyRuntime::configure_runtime(const Dictionary &catalog,
+        const Dictionary &profile, int32_t cell_count, int64_t seed) {
     reset("reconfigure");
     _worker_natural_resources.clear();
     Dictionary out;

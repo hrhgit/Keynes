@@ -380,6 +380,22 @@
             return out;
         }
     }
+    for (int32_t cell = 0; cell < _cell_count.get(); ++cell) {
+        const bool should_have_name =
+            _settlements.tier[cell] >= _settlement_named_tier ||
+            _settlements.name_forced[cell] != 0;
+        if (should_have_name != (_settlements.name_active[cell] != 0)) {
+            out["ok"] = false;
+            out["reason"] = "restore_settlement_name_activity_mismatch";
+            return out;
+        }
+    }
+    // All archive rejection paths precede publication and external Effect or
+    // Trigger binding. Validation has its own Economy and Modifier storage.
+    if (!install) {
+        out["ok"] = true;
+        return out;
+    }
     rebuild_family_expedition_indices();
     for (int32_t expedition = 0; expedition < static_cast<int32_t>(
             family_expeditions_store().active.size()); ++expedition) {
@@ -428,16 +444,6 @@
     rebuild_country_trade_indices();
     rebuild_trade_arrival_buckets();
     rebuild_committed_summaries();
-    for (int32_t cell = 0; cell < _cell_count.get(); ++cell) {
-        const bool should_have_name =
-            _settlements.tier[cell] >= _settlement_named_tier ||
-            _settlements.name_forced[cell] != 0;
-        if (should_have_name != (_settlements.name_active[cell] != 0)) {
-            out["ok"] = false;
-            out["reason"] = "restore_settlement_name_activity_mismatch";
-            return out;
-        }
-    }
     _settlements.revision = 1;
     _closing_totals = audit_totals();
     std::atomic_store_explicit(&_committed_audit_view,
