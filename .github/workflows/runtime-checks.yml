@@ -21,16 +21,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Text-only guards: sources, scripts and agent skills; no assets or binaries.
+          # Text-only guards: sources, docs and manifest inputs; no assets or binaries.
+          fetch-depth: 2
           sparse-checkout-cone-mode: false
           sparse-checkout: |
+            /**/*.[mM][dD]
             /tools/ci/
             /tools/factory/
             /tools/perf/
             /gdext/src/
             /gdext/tests/
             /Project/project-keynes/**/*.gd
-            /Project/project-keynes/data/native_binding_manifest.json
+            /Project/project-keynes/data/**/*.tres
+            /Project/project-keynes/data/**/*.json
+            /Project/project-keynes/data/**/*.csv
+            /Project/project-keynes/scripts/**/*.tres
+            /Project/project-keynes/scripts/**/*.json
+            /Project/project-keynes/scripts/**/*.csv
+            /Project/project-keynes/tools/loading_catalog_sources.json
             /Project/project-keynes/tools/technology_tree/building_distinction_review.json
             /skills/
             /docs/architecture/
@@ -43,13 +51,28 @@ jobs:
           python-version: "3.12"
       - name: Static architecture guards
         working-directory: tools/ci
+        env:
+          KEYNES_GUARD_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          if [ -z "$KEYNES_GUARD_BASE_REF" ] || [ "$KEYNES_GUARD_BASE_REF" = "$GITHUB_SHA" ] || \
+              [ "$KEYNES_GUARD_BASE_REF" = 0000000000000000000000000000000000000000 ]; then
+            KEYNES_GUARD_BASE_REF=$(git rev-parse --verify HEAD^) || exit 1
+            export KEYNES_GUARD_BASE_REF
+          fi
+          if ! git cat-file -e "$KEYNES_GUARD_BASE_REF^{commit}"; then
+            git fetch --depth=1 --filter=blob:none origin "$KEYNES_GUARD_BASE_REF" || exit 1
+          fi
           status=0
           for guard in check_size_ratchet.py check_cpp_deps.py check_cross_domain_inventory.py \
               check_runtime_advancers.py check_runtime_switches.py check_committed_views.py \
               check_save_contracts.py check_module_contracts.py check_resolve_apply.py \
               check_module_api.py check_skill_mirrors.py check_module_map.py world_ext_bindings.py check_world_ext_bindings.py check_script_native_access.py test_architecture_guards.py \
-              test_tax_committed_view.py test_regression_evidence.py test_runtime_load_consistency.py; do
+              check_day_stage_reuse.py check_tax_row_keys.py check_generated_manifests.py \
+              check_markdown_links.py check_test_strictness.py \
+              test_tax_committed_view.py test_regression_evidence.py test_runtime_load_consistency.py \
+              test_day_stage_reuse.py test_tax_row_keys.py test_frontend_and_save_guards.py \
+              test_narrative_save_contracts.py test_frontend_live_scopes.py test_generated_manifests.py test_markdown_links.py \
+              test_test_strictness.py test_guard_baselines.py; do
             echo "::group::$guard"
             python "$guard" || { status=1; echo "::error::$guard failed"; }
             echo "::endgroup::"

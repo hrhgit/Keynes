@@ -96,6 +96,7 @@ TESTS = (
     "tests/runtime/modifier_tax_frame_rejection_test.gd",
     "tests/runtime/modifier_opening_rejection_test.gd",
     "tests/runtime/unoccupied_cell_tax_policy_test.gd",
+    "tests/economy/cell_tax_row_settlement_test.gd",
     "tests/runtime/runtime_inline_coordinator_save_test.gd",
     "tests/runtime/startup_save_boundary_test.gd",
     "tests/runtime/economy_settlement_save_boundary_test.gd",
@@ -137,6 +138,7 @@ TESTS = (
     "tests/runtime/golden_day_hash_test.gd",
     "tests/runtime/military_index_continuation_test.gd",
     "tests/runtime/runtime_events_pod_test.gd",
+    "tests/runtime/runtime_narrative_checkpoint_test.gd",
     "tests/runtime/fiscal_return_intent_test.gd",
     "tests/runtime/procurement_intent_test.gd",
     "tests/runtime/fiscal_cash_intent_test.gd",
@@ -214,6 +216,7 @@ def is_engine_error(line: str) -> bool:
 # This negative fixture deliberately calls the public rejecting builder. The
 # exact diagnostic must occur once; every other error and every leak still fails.
 EXPECTED_ERRORS = {
+    "runtime_events_pod_test": ("ERROR: narrative_archive_invalid: world_seed",),
     "ideology_effect_override_test": (
         "ERROR: [effect-catalog] effect_catalog_ideology_effect_parameter_max_stacks_invalid",
     ),
@@ -283,7 +286,8 @@ def run_check(godot: str, name: str, arguments: list[str], logs: Path,
     errors.extend("unexpected test artifact: " + name for name in artifacts)
     passed = result.returncode == 0 and not errors
     for line in lines:
-        if "checks," in line or "save listing (" in line or "[save-roundtrip] PASS" in line:
+        if ("checks," in line or "save listing (" in line or "[save-roundtrip] PASS" in line
+                or line.startswith(("KNOWN tax row collision:", "tax rows [cell 0 paid,"))):
             print(line)
     leaks = sum(bool(SHUTDOWN_LEAK.search(line)) for line in lines)
     print(f"{'PASS' if passed else 'FAIL'} {name}; exit={result.returncode}; "

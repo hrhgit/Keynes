@@ -1,6 +1,7 @@
 #include "world_ext.h"
 #include "native_simulation_host.h"
 #include "runtime_snapshot_ring.h"
+#include "runtime_narrative.h"
 #include "native_parallel_executor.h"
 #include "runtime_domain_pod.h"
 #include "runtime_country_pod.h"
@@ -125,11 +126,52 @@ bool DCWorldExt::runtime_ideology_pod_self_test() const {
     return ok;
 }
 
+namespace {
+// The host normally creates a fresh object when configuring a world. Reuse a
+// populated instance here so premature writes cannot be hidden by the host swap.
+bool narrative_rejection_preserves_instance(std::string &error) {
+    RuntimeNarrative live;
+    Dictionary packet;
+    packet["country"] = 7;
+    packet["events"] = Array::make(Dictionary());
+    Array unrest, actions;
+    for (int i = 0; i < 12; ++i) unrest.push_back(Dictionary());
+    for (int i = 0; i < 4; ++i) actions.push_back(Array());
+    packet["unrest"] = unrest;
+    packet["unrest_actions"] = actions;
+    packet["month_lengths"] = Array::make(30);
+    Dictionary checkpoint, disorder, cooldowns;
+    disorder["last_day"] = 8;
+    cooldowns["country:recent"] = 8; // prune(8) removes this entry.
+    checkpoint["stratum_unrest"] = disorder;
+    checkpoint["cooldowns"] = cooldowns;
+    checkpoint["world_seed"] = 42;
+    if (!live.configure(packet, checkpoint) || live.capture()["cooldowns"] != Variant(cooldowns)) {
+        error = "narrative rejection fixture did not install its live cooldown";
+        return false;
+    }
+    const auto before = UtilityFunctions::var_to_bytes(live.capture());
+    const auto rejects_unchanged = [&](const Dictionary &catalog, const Dictionary &archive) {
+        return !live.configure(catalog, archive) && before == UtilityFunctions::var_to_bytes(live.capture());
+    };
+    Dictionary bad_type, no_player;
+    bad_type["world_seed"] = "42";
+    no_player["player_country_handle"] = 0;
+    if (!rejects_unchanged(packet, bad_type) || !rejects_unchanged({}, checkpoint) ||
+            !rejects_unchanged(packet, no_player)) {
+        error = "narrative rejection changed live checkpoint bytes or accepted the invalid input";
+        return false;
+    }
+    return true;
+}
+} // namespace
+
 bool DCWorldExt::runtime_events_authority_self_test() const {
     std::string error;
     const bool ok = RuntimeEventsAuthority::self_test(error) &&
         RuntimeEventsSnapshotRing::self_test() &&
-        std::make_unique<NativeSimulationHost>()->events_day_publication_self_test(error);
+        std::make_unique<NativeSimulationHost>()->events_day_publication_self_test(error) &&
+        narrative_rejection_preserves_instance(error);
     if (!ok) {
         godot::UtilityFunctions::printerr(
             godot::String("runtime_events_authority_self_test: ") +

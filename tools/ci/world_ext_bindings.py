@@ -103,6 +103,12 @@ def load_table(root: Path) -> dict:
     return json.loads((root / TABLE).read_text(encoding="utf-8"))
 
 
+def manifest_bytes(bindings: list[dict]) -> bytes:
+    names = sorted({binding["name"] for binding in bindings})
+    payload = {"class": "DCWorldExt", "count": len(names), "methods": names}
+    return (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
 def inventory(root: Path) -> tuple[list[dict], list[str]]:
     table = load_table(root)
     file_module: dict[str, str] = {}
@@ -178,13 +184,10 @@ def main() -> int:
     args = parser.parse_args()
     bindings, problems = inventory(args.root)
     if args.write_manifest and not problems:
-        names = sorted({binding["name"] for binding in bindings})
         path = args.root / MANIFEST
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"class": "DCWorldExt", "count": len(names),
-                                    "methods": names}, ensure_ascii=False, indent=2) + "\n",
-                        encoding="utf-8")
-        print(f"wrote native binding manifest: {path} ({len(names)} methods)")
+        path.write_bytes(manifest_bytes(bindings))
+        print(f"wrote native binding manifest: {path} ({len(bindings)} methods)")
     if args.audit:
         table = load_table(args.root)
         refs = references(args.root, {b["name"] for b in bindings})

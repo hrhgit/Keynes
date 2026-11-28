@@ -55,6 +55,7 @@ func _run() -> void:
 	var effect: Dictionary = EffectDomainCatalog.build().compile_native_catalog()
 	var snapshot_dir := "user://test_loading_catalog_%d_%d" % [OS.get_process_id(), Time.get_ticks_usec()]
 	expect("bake this process's catalog fixture", LoadingCatalogBake.bake(snapshot_dir) == OK)
+	_expect_baked_source_manifest(snapshot_dir)
 	await LoadingCatalogCache.prepare(ext, null, snapshot_dir)
 	expect("catalog snapshot matches source compiler",economy==LoadingCatalogCache.economy_catalog())
 	var cached_effect := LoadingCatalogCache.effect_catalog()
@@ -82,6 +83,28 @@ func _run() -> void:
 	for failure in failures: push_error(failure)
 	print("[native-loading-tasks] %d failures" % failures.size())
 	quit(0 if failures.is_empty() else 1)
+
+func _expect_baked_source_manifest(snapshot_dir: String) -> void:
+	var baked_bytes := FileAccess.get_file_as_bytes(snapshot_dir.path_join("sources.json"))
+	var baked: Variant = JSON.parse_string(baked_bytes.get_string_from_utf8())
+	var committed_path := LoadingCatalogCache.DIRECTORY.path_join("sources.json")
+	var committed: Variant = JSON.parse_string(FileAccess.get_file_as_string(committed_path))
+	if not baked is Dictionary or not committed is Dictionary or committed.is_empty():
+		failures.append("cannot compare freshly baked and committed source manifests")
+		return
+	var expected := {}
+	for source: String in committed:
+		if not baked.has(source):
+			failures.append("catalog source missing from bake: " + source)
+			return
+		# 用磁盘内容核对实际生成器，也适用于已登记旧指纹的文件。
+		expected[source] = FileAccess.get_sha256(source)
+		if expected[source].is_empty():
+			failures.append("cannot hash catalog source: " + source)
+			return
+	expect("baked source manifest matches tracked paths and disk fingerprints byte for byte",
+		baked_bytes == JSON.stringify(expected, "\t", true).to_utf8_buffer())
+
 
 func _expect_generated_topology(cfg: MapConfig, generated: Dictionary) -> void:
 	var size := "%dx%d" % [cfg.width, cfg.height]
