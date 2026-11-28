@@ -47,7 +47,7 @@ PREFLIGHTED -> safe commit -> runtime COMMITTED -> ACK`. Cross-domain
 transactions remain pending until every required domain bit is acknowledged.
 整图授权时，`NativeSimulationHost::stage_effect_adapter` 在日尾安装已提交的
 Effect 结果，保留 Economy 加入的殖民、运河事务和 Country、Economy 的回执关联。
-前台的 Effect 报告读取该阶段随日发布的视图。所有接管组合都按开日封口受理外来登记、指标更新和退役。整批登记共用受理日，气候预发不推进这个日期。同日按实例编号分配事务号，按指标修订号应用观测值。登记、退役与待办存档按实例编号排序。同一实例按自己的变更顺序处理，只有字段和受理日完全相同的连续登记才合并。同日续算可交付封口内请求产生的事务和待收回执。重访按 Effect 提交日期判断，独立阶段和 Modifier 内嵌阶段共用规则。每条首次命令随实际生效日发布事件，重送沿用原事务号、序号、程序、来源和幅值倍率。回执先按事务中的正式接收方解释编号，校验日期和目标。事务中没有该接收方且旧编号单义时才按旧编号确认。队列中的回执逐条校验，错误回执只拒绝该条。
+前台的 Effect 报告读取该阶段随日发布的视图。所有接管组合都按开日封口受理外来登记、指标更新和退役。整批登记共用受理日，气候预发不推进这个日期。同日按实例编号分配事务号，按指标修订号应用观测值。登记、退役与待办存档按实例编号排序。同一实例按自己的变更顺序处理，同一受理日、同实例同代只改预约日或失效日时更新原条目。退役或换代另排。同日续算可交付封口内请求产生的事务和待收回执。重访按 Effect 提交日期判断，独立阶段和 Modifier 内嵌阶段共用规则。每条首次命令随实际生效日发布事件，重送沿用原事务号、序号、程序、来源和幅值倍率。回执先按事务中的正式接收方解释编号，校验日期和目标。事务中没有该接收方且旧编号单义时才按旧编号确认。开日封存旧事务的回执。当天的 Country 请求正等待旧事务时，续算仍接收该事务的回执。登记和指标处理失败时保留回执和队列容量。逐条校验回执，错误回执只拒绝该条。
 Known Modifier commands should use the native batch bridge first:
 `EffectRuntime::dispatch_native_modifier()` -> `ModifierRuntime` POD enqueue ->
 `modifier_daily` -> `ack_native_modifier()`. `EffectFacade` is only the
@@ -83,7 +83,7 @@ authored key is invalid.
 Register `effect_runtime` after `trigger_runtime` and before `modifier_daily`.
 Use `effect_should_run(day)` and a cooperative `done=false` cursor.
 
-PKEF v14 保存实例、指标快照和版本、程序哈希、触发序号、生命周期与叠层、待收回执的事务、正在计算的候选及上次消费的输入版本。读档校验格式版本、目录哈希及数据完整性。后台 EFP1 v5 同时保存首次发射时的程序、来源与倍率。旧 v4 待收的修正确能还原时沿原事务重送，缺失必要参数时拒绝该档。两种版本均校验事务游标，目录号段用尽时拒绝分配。PKSR v6 写入 ETQ2，保存外来输入的受理日。读档用当前目录校验每个待处理指标的编号和修订号。读取 PKSR v5 时兼容 ETQ1 与 ETQ2，ETQ1 在下一次可处理时交付。
+PKEF v14 保存实例、指标快照和版本、程序哈希、触发序号、生命周期与叠层、待收回执的事务、正在计算的候选及上次消费的输入版本。读档校验格式版本、目录哈希及数据完整性。后台 EFP1 v5 同时保存首次发射时的程序、来源与倍率。旧 v4 待收的修正确能还原时沿原事务重送，缺失必要参数时拒绝该档。两种版本均校验事务游标，目录号段用尽时拒绝分配。PKSR v6 必须声明并包含带受理日的 ETQ2。v5 兼容无尾段、ETQ1 和 ETQ2，ETQ1 在下一次可处理时交付。指标编号始终按目录校验。v5 的负修订号按档内实例和已排队登记判断，只有在受理时已失效的代次才作为一次丢弃恢复。
 
 Store a native-bound
 `PREFLIGHTED` transaction as `PLANNED`: native Modifier request IDs are not

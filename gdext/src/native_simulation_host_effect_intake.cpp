@@ -3,13 +3,14 @@
 #include <algorithm>
 #include <limits>
 #include <tuple>
+#include <unordered_set>
 
 namespace pk {
 namespace {
 auto binding_fields(const RuntimeEffectPodInstanceInput &in) {
     return std::tie(in.instance_id, in.generation, in.program_id, in.source_type, in.source_id,
-        in.source_handle, in.target_handle, in.target_generation, in.level, in.next_due_day,
-        in.expires_day, in.magnitude_scale_q16, in.latched, in.active);
+        in.source_handle, in.target_handle, in.target_generation, in.level,
+        in.magnitude_scale_q16, in.latched, in.active);
 }
 } // namespace
 
@@ -34,6 +35,30 @@ void NativeSimulationHost::sort_effect_receipts(std::deque<RuntimeDomainAck> &re
     });
 }
 
+void NativeSimulationHost::include_effect_day_peer_receipts_locked(int64_t day) {
+    const auto &snapshot = _effect_pod_authority.snapshot();
+    if (snapshot.committed_day != day || _effect_ready_ack_count == _effect_acks.size()) return;
+    // A continuation can finish today's own transactions and the exact older
+    // transaction on which a sealed Country request is currently parked.
+    std::unordered_set<uint64_t> current_transactions;
+    for (const auto &tx : snapshot.transactions) {
+        if (tx.effective_day == day) current_transactions.insert(static_cast<uint64_t>(tx.transaction_id));
+    }
+    for (const auto &[request, result] : _country_worker_results) {
+        const auto *wait = pending_country_effect_peer_locked(request, result);
+        if (!wait || wait->day != day) continue;
+        const auto view = _effect_pod_authority.copy_committed_view(wait->effect_instance_id);
+        if (view.found && view.instance.generation == wait->effect_generation &&
+                view.instance.pending_transaction_id > 0)
+            current_transactions.insert(static_cast<uint64_t>(view.instance.pending_transaction_id));
+    }
+    auto first = _effect_acks.begin() + static_cast<ptrdiff_t>(_effect_ready_ack_count);
+    const auto end = std::stable_partition(first, _effect_acks.end(), [&](const auto &ack) {
+        return current_transactions.count(ack.transaction_id) != 0;
+    });
+    _effect_ready_ack_count = static_cast<size_t>(end - _effect_acks.begin());
+}
+
 bool NativeSimulationHost::allocate_effect_input_sequence_locked(uint64_t &sequence, std::string &error) {
     if (_effect_transport_sequence == std::numeric_limits<uint64_t>::max()) {
         error = "effect_transport_sequence_exhausted";
@@ -47,7 +72,7 @@ bool NativeSimulationHost::allocate_effect_input_sequence_locked(uint64_t &seque
 // transport lock after an erase, a rollback, or the installation of a checkpoint.
 void NativeSimulationHost::rebuild_effect_queue_index_locked() {
     _last_queued_effect_instance.clear();
-    for (const auto &item : _effect_instance_queue) {
+    for (auto &item : _effect_instance_queue) {
         auto &last = _last_queued_effect_instance[item.input.instance_id];
         if (!last || last->sequence < item.sequence) last = &item;
     }
@@ -102,12 +127,16 @@ std::vector<uint8_t> NativeSimulationHost::queue_effect_pod_instances(
 
 bool NativeSimulationHost::append_effect_instance_locked(
         const RuntimeEffectPodInstanceInput &input, int64_t admitted_day, std::string &error) {
-    // A repeated binding preserves lifecycle state in upsert_instance. Only an
-    // identical payload can be elided without skipping that state transition.
+    // Rescheduling the same pending binding uses its existing slot. Changes to
+    // lifecycle inputs still pass through upsert_instance in their causal order.
     const auto previous = _last_queued_effect_instance.find(input.instance_id);
     if (previous != _last_queued_effect_instance.end() &&
         previous->second->admitted_day == admitted_day &&
-        binding_fields(previous->second->input) == binding_fields(input)) return true;
+        binding_fields(previous->second->input) == binding_fields(input)) {
+        previous->second->input.next_due_day = input.next_due_day;
+        previous->second->input.expires_day = input.expires_day;
+        return true;
+    }
     if (_effect_instance_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
         error = "effect_instance_capacity_exceeded";
         return false;

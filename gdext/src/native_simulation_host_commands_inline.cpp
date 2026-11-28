@@ -173,9 +173,11 @@ NativeSimulationHost::InlineDayOutcome NativeSimulationHost::run_inline_day() {
     day_commands.reserve(16u);
     std::vector<RuntimeCommandReceipt> day_receipts;
     uint64_t admitted_submit_order = 0;
-    const int64_t previous_seal = frozen_command_day();
-    if (!try_freeze_command_inputs(day)) {
-        runtime_copy_text(out.reason, "inline_daily_command_input_pending");
+    const int64_t previous_seal = _command_seal.load(std::memory_order_acquire) & ~int64_t{1};
+    int64_t day_seal = 0;
+    if (!try_freeze_command_inputs(day, &day_seal)) {
+        runtime_copy_text(out.reason, state() == RuntimeWorkerState::FAULTED
+            ? RuntimeCommandAdmission::day_range_error : "inline_daily_command_input_pending");
         return out;
     }
     prepare_narrative_day(day);
@@ -216,8 +218,7 @@ NativeSimulationHost::InlineDayOutcome NativeSimulationHost::run_inline_day() {
     out.country_peer_progress =
         _country_peer_signal.load(std::memory_order_acquire) != peer_signal;
     if (_inline_budget_exceeded) {
-        int64_t expected = day * 2;
-        _command_seal.compare_exchange_strong(expected, previous_seal * 2,
+        _command_seal.compare_exchange_strong(day_seal, previous_seal,
             std::memory_order_acq_rel, std::memory_order_acquire);
         // 看门狗掐断：这一天没有提交，也不该被当成"缺 peer"再重试 —— 重试只
         // 会再花一次同样的预算。调用方看到的是可上报的一次明确失败。
@@ -234,8 +235,7 @@ NativeSimulationHost::InlineDayOutcome NativeSimulationHost::run_inline_day() {
         return out;
     }
     if (day_commit.preflight_ok == 0) {
-        int64_t expected = day * 2;
-        _command_seal.compare_exchange_strong(expected, previous_seal * 2,
+        _command_seal.compare_exchange_strong(day_seal, previous_seal,
             std::memory_order_acq_rel, std::memory_order_acquire);
         // 没提交：收据与命令都退回，等调用方泵完 peer 再试同一天。
         _executor_pending_commands.insert(_executor_pending_commands.begin(),

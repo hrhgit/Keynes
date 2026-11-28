@@ -76,7 +76,51 @@ std::vector<uint8_t> NativeSimulationHost::encode_effect_transport() const {
     return std::move(out.bytes);
 }
 
-bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &bytes, bool install) {
+bool NativeSimulationHost::validate_effect_transport_metrics(
+        std::deque<EffectPodMetricQueueItem> &metrics, const std::deque<EffectPodInstanceQueueItem> &instances,
+        const RuntimeSaveBundle &bundle, const RuntimeEffectPodAuthority &saved_effect) const {
+    std::vector<EffectPodMetricQueueItem *> legacy;
+    for (auto &metric : metrics) {
+        if (_effect_pod_catalog.valid_metric_input(metric.metric_id, metric.revision)) continue;
+        if (bundle.bundle_version != RUNTIME_SAVE_BUNDLE_LEGACY_V5 ||
+            !_effect_pod_catalog.valid_metric_input(metric.metric_id, 0)) return false;
+        legacy.push_back(&metric);
+    }
+    if (legacy.empty()) return true;
+
+    // Old writers accepted negative revisions. set_metric checked identity first:
+    // match the saved generation after bindings eligible on the observation's day.
+    // Retirements keep their identity (even an inactive tombstone accepts metrics).
+    const auto open_day = [&](int64_t admitted) { return std::max(bundle.committed_day + 1, admitted); };
+    std::vector<const EffectPodInstanceQueueItem *> bindings;
+    for (const auto &bind : instances) bindings.push_back(&bind);
+    const auto key = [&](const auto *bind) { return std::make_pair(open_day(bind->admitted_day), bind->sequence); };
+    std::sort(bindings.begin(), bindings.end(), [&](auto *a, auto *b) { return key(a) < key(b); });
+    std::sort(legacy.begin(), legacy.end(), [](auto *a, auto *b) { return a->admitted_day < b->admitted_day; });
+    std::unordered_map<int64_t, uint32_t> generations;
+    for (const auto &row : saved_effect.snapshot().instances) generations[row.instance_id] = row.generation;
+    auto next = bindings.begin();
+    for (auto *metric : legacy) {
+        while (next != bindings.end() && open_day((*next)->admitted_day) <= open_day(metric->admitted_day)) {
+            const auto &bind = **next++;
+            auto input = bind.input;
+            input.next_due_day = std::max(input.next_due_day, open_day(bind.admitted_day));
+            std::string error;
+            if (saved_effect.validate_instance(input, error)) generations[input.instance_id] = input.generation;
+        }
+        const auto live = generations.find(metric->instance_id);
+        if (live != generations.end() && live->second == metric->generation) return false;
+        // Preserve the dated discard, including across an immediate v6 resave.
+        // Generation zero never binds, even if this identity is registered again.
+        metric->generation = 0;
+        metric->revision = 0;
+    }
+    return true;
+}
+
+bool NativeSimulationHost::restore_effect_transport(
+        const RuntimeSaveBundle &bundle, const RuntimeEffectPodAuthority &saved_effect, bool install) {
+    const auto &bytes = bundle.effect_transport_bytes;
     CheckpointReader in{bytes.data(), bytes.size()};
     uint32_t marker = 0;
     uint64_t sequence = 0;
@@ -86,13 +130,16 @@ bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &
     decltype(_effect_acks) acks;
     const bool has_marker = in.field(marker);
     const bool has_day = marker == EFFECT_TRANSPORT_MARKER;
-    if (!bytes.empty() && (!has_marker || (!has_day && marker != EFFECT_TRANSPORT_LEGACY) ||
+    const bool v5 = bundle.bundle_version == RUNTIME_SAVE_BUNDLE_LEGACY_V5;
+    const bool declared = (bundle.section_mask & RUNTIME_SAVE_SECTION_EFFECT_TRANSPORT) != 0;
+    if (declared) {
+        if (!has_marker || (!has_day && !(v5 && marker == EFFECT_TRANSPORT_LEGACY)) ||
             !in.field(sequence) || !in.rows(instances, dated(instance_fields, has_day)) ||
             !in.rows(metrics, dated(metric_fields, has_day)) ||
             !in.rows(removals, dated(removal_fields, has_day)) ||
-            !in.rows(acks, ack_fields) || in.cursor != in.size)) return false;
-    for (const auto &entry : metrics) {
-        if (!_effect_pod_catalog.valid_metric_input(entry.metric_id, entry.revision)) return false;
+            !in.rows(acks, ack_fields) || in.cursor != in.size) return false;
+    } else if (!v5 || !bytes.empty()) {
+        return false;
     }
     // Both historical queues use strictly increasing, shared ordinals.
     auto binding = instances.begin();
@@ -105,6 +152,7 @@ bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &
         if (current <= previous || current > sequence) return false;
         previous = current;
     }
+    if (!validate_effect_transport_metrics(metrics, instances, bundle, saved_effect)) return false;
     if (!install) return true;
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
     _effect_transport_sequence = sequence;
@@ -113,6 +161,7 @@ bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &
     _effect_remove_queue = std::move(removals);
     rebuild_effect_queue_index_locked();
     _effect_acks = std::move(acks);
+    _effect_ready_ack_count = 0; // A saved whole day opens its next receipt batch at the next seal.
     _effect_intents.clear();
     return true;
 }

@@ -156,6 +156,12 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     const int64_t start_day = restore_pending
         ? _pending_restore_bundle.committed_day
         : (resuming_previous_lifetime ? previous_committed : initial_day);
+    int64_t start_seal = 0;
+    if (!RuntimeCommandAdmission::encode_day(start_day, start_seal)) {
+        set_fault(RuntimeCommandAdmission::day_range_error);
+        _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
+        return false;
+    }
     const double start_speed = restore_pending
         ? _pending_restore_bundle.speed_days_per_second : speed_days_per_second;
     const bool start_paused = restore_pending
@@ -229,7 +235,7 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     _mode.store(mode, std::memory_order_release);
     _committed_day.store(start_day, std::memory_order_release);
     publish_narrative_boundary(start_day);
-    _command_seal.store(start_day * 2, std::memory_order_release);
+    _command_seal.store(start_seal, std::memory_order_release);
     _effect_input_sealed_day.store(start_day, std::memory_order_release);
     _clock_requested_day.store(start_day, std::memory_order_release);
     _calendar_suspended.store(start_paused, std::memory_order_release);
@@ -721,7 +727,7 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     if (restore_pending && !restore_trigger_transport(_pending_restore_bundle.trigger_transport_bytes, ecp2_apply_error, true)) {
         set_fault(ecp2_apply_error.c_str()); return false;
     }
-    if (restore_pending && !restore_effect_transport(_pending_restore_bundle.effect_transport_bytes, true)) {
+    if (restore_pending && !restore_effect_transport(_pending_restore_bundle, _effect_pod_authority, true)) {
         set_fault("effect_transport_continuation_invalid");
         return false;
     }

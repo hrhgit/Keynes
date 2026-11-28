@@ -1,4 +1,5 @@
 #include "native_simulation_host.h"
+#include "pk_log.h"
 
 namespace pk {
 bool NativeSimulationHost::effect_input_order_self_test(
@@ -18,6 +19,12 @@ bool NativeSimulationHost::effect_input_order_self_test(
         input.next_due_day = 2;
         return input;
     };
+    {
+        auto limit = std::make_unique<NativeSimulationHost>();
+        const int64_t last = INT64_MAX / 2;
+        check(limit->try_freeze_command_inputs(last) && limit->frozen_command_day() == last,
+            "last_representable_command_seal");
+    }
     const uint32_t modifier = runtime_domain_mask(RuntimeDomainId::MODIFIER);
     const uint32_t climate = runtime_domain_mask(RuntimeDomainId::CLIMATE);
     const uint32_t economy = runtime_domain_mask(RuntimeDomainId::ECONOMY);
@@ -87,7 +94,11 @@ bool NativeSimulationHost::effect_input_order_self_test(
         if (interleaved) check(pending == first_pending, "independent_retire_changed_pending_bytes");
         else first_pending = pending;
         auto cold = std::make_unique<NativeSimulationHost>();
-        if (!cold->configure_effect_pod(catalog, error) || !cold->restore_effect_transport(pending, true))
+        RuntimeSaveBundle archive;
+        archive.section_mask |= RUNTIME_SAVE_SECTION_EFFECT_TRANSPORT;
+        archive.effect_transport_bytes = pending;
+        if (!cold->configure_effect_pod(catalog, error) ||
+            !cold->restore_effect_transport(archive, cold->_effect_pod_authority, true))
             return false;
         for (auto *owner : {host.get(), cold.get()}) {
             // The last binding for 17 is still pending on both sides of a cold load.
@@ -110,6 +121,163 @@ bool NativeSimulationHost::effect_input_order_self_test(
         check(full->queue_effect_pod_instance(row(1), error) &&
             !full->queue_effect_pod_instance(changed, error) && error == "effect_instance_capacity_exceeded",
             "interleaving_changed_capacity_for_repeated_binding");
+    }
+    // The three deliveries all name the same D1 transaction. Only the
+    // control receipt arrives before the D2 input boundary.
+    std::vector<uint8_t> late_day_two, late_inbox;
+    for (int delivery = 0; delivery < 3; ++delivery) {
+        auto host = std::make_unique<NativeSimulationHost>();
+        if (!host->configure_effect_pod(catalog, error)) return false;
+        host->_mode.store(RuntimeSimulationMode::ACTIVE);
+        auto original = row(11);
+        original.next_due_day = 1;
+        RuntimeDayCommit commit;
+        RuntimeDomainIntent intent;
+        if (!host->queue_effect_pod_instance(original, error) || !host->try_freeze_command_inputs(1) ||
+            !host->execute_effect_worker_stage(1, 1, commit, error) ||
+            !host->poll_effect_pod_intent(intent)) return false;
+        RuntimeDomainAck retry;
+        retry.transaction_id = retry.request_id = intent.request_id;
+        retry.target_handle = intent.target_handle;
+        retry.target_generation = intent.target_generation;
+        retry.domain = intent.target_domain;
+        retry.effective_day = intent.effective_day;
+        retry.code = RuntimeDomainAckCode::RETRY;
+        auto pending = row(12);
+        pending.next_due_day = 10;
+        if (!host->queue_effect_pod_instance(pending, error) ||
+            !host->queue_effect_pod_metric(12, 1, 0, 1, 42, error) ||
+            (delivery == 0 && !host->submit_effect_pod_ack(retry, error)) ||
+            !host->try_freeze_command_inputs(2) ||
+            (delivery == 1 && !host->submit_effect_pod_ack(retry, error)) ||
+            !host->execute_effect_worker_stage(2, 2, commit, error)) return false;
+        int resend = host->poll_effect_pod_intent(intent) ? 2 : 0;
+        if (delivery == 2 && !host->submit_effect_pod_ack(retry, error)) return false;
+        // Reopening an incomplete whole day must not move the cutoff either.
+        if (!host->try_freeze_command_inputs(2) || !host->execute_effect_worker_stage(2, 2, commit, error))
+            return false;
+        if (delivery != 0) {
+            std::vector<uint8_t> day_two;
+            if (!host->encode_effect_pod_save(day_two, error)) return false;
+            check(host->_effect_pod_authority.snapshot().transactions.front().retry_count == 0,
+                "late_receipt_mutated_D2_transaction");
+            const auto inbox = host->encode_effect_transport();
+            if (delivery == 1) {
+                late_day_two = std::move(day_two);
+                late_inbox = inbox;
+            } else {
+                check(day_two == late_day_two && inbox == late_inbox, "late_receipt_changed_D2_save");
+            }
+        }
+        if (!host->try_freeze_command_inputs(3) || !host->execute_effect_worker_stage(3, 3, commit, error))
+            return false;
+        if (host->poll_effect_pod_intent(intent)) resend = resend == 0 ? 3 : -1;
+        pk::log_info("[effect-receipt] schedule=%d tx=%llu resend=D%d", delivery,
+            static_cast<unsigned long long>(retry.transaction_id), resend);
+        check(resend == (delivery == 0 ? 2 : 3) && intent.request_id == retry.transaction_id,
+            "receipt_cutoff_schedule_" + std::to_string(delivery) + "_D" + std::to_string(resend));
+    }
+    {
+        // A transient binding failure leaves the frozen receipt in the bounded inbox.
+        auto host = std::make_unique<NativeSimulationHost>();
+        auto small = catalog;
+        small.max_instances = 1;
+        auto original = row(11);
+        original.next_due_day = 1;
+        RuntimeDayCommit commit;
+        RuntimeDomainIntent intent;
+        if (!host->configure_effect_pod(small, error) || !host->queue_effect_pod_instance(original, error) ||
+            !host->try_freeze_command_inputs(1) || !host->execute_effect_worker_stage(1, 1, commit, error) ||
+            !host->poll_effect_pod_intent(intent)) return false;
+        RuntimeDomainAck ok;
+        ok.transaction_id = ok.request_id = intent.request_id;
+        ok.target_handle = intent.target_handle;
+        ok.target_generation = intent.target_generation;
+        ok.domain = intent.target_domain;
+        ok.effective_day = intent.effective_day;
+        if (!host->submit_effect_pod_ack(ok, error) || !host->queue_effect_pod_instance(row(12), error) ||
+            !host->try_freeze_command_inputs(2)) return false;
+        const auto before = host->encode_effect_transport();
+        check(!host->execute_effect_worker_stage(2, 2, commit, error) &&
+            error == "effect_pod_instance_capacity_exhausted" && host->encode_effect_transport() == before,
+            "binding_failure_lost_sealed_receipt");
+    }
+    {
+        // A sealed D2 Country grant can already be waiting on a D1 fire.
+        auto host = std::make_unique<NativeSimulationHost>();
+        auto peer_catalog = catalog;
+        peer_catalog.commands.front().action = RuntimeEffectPodAction::COUNTRY_COMMAND;
+        peer_catalog.commands.front().domain = 1;
+        if (!host->configure_effect_pod(peer_catalog, error)) return false;
+        auto original = row(11);
+        original.next_due_day = 1;
+        original.target_handle = (uint64_t{1} << 32u) | 7;
+        RuntimeDayCommit commit;
+        RuntimeDomainIntent intent;
+        if (!host->queue_effect_pod_instance(original, error) || !host->try_freeze_command_inputs(1) ||
+            !host->execute_effect_worker_stage(1, 1, commit, error) || !host->poll_effect_pod_intent(intent) ||
+            !host->try_freeze_command_inputs(2)) return false;
+        host->_country_pod_catalog.technology_effect_key_hashes = {peer_catalog.definitions[0].key_hash};
+        CountryPeerIntent grant;
+        grant.day = 2;
+        grant.request_id = 41;
+        grant.technology = 0;
+        grant.target_handle = original.target_handle;
+        grant.effect_instance_id = original.instance_id;
+        grant.effect_generation = original.generation;
+        const auto waiting = host->resolve_country_technology_effect(grant);
+        if (waiting.code != CountryPeerResultCode::PENDING) return false;
+        host->_country_worker_intents[grant.request_id] = grant;
+        host->_country_worker_results[grant.request_id] = waiting;
+        RuntimeDomainAck reply;
+        reply.transaction_id = reply.request_id = intent.request_id;
+        reply.target_handle = intent.target_handle;
+        reply.target_generation = intent.target_generation;
+        reply.domain = intent.target_domain;
+        reply.effective_day = intent.effective_day;
+        if (!host->execute_effect_worker_stage(2, 2, commit, error) ||
+            !host->submit_effect_pod_ack(reply, error) ||
+            !host->execute_effect_worker_stage(2, 2, commit, error)) return false;
+        check(host->resolve_pending_country_effect_peers() == 1 &&
+            host->_country_worker_results.at(grant.request_id).code == CountryPeerResultCode::READY,
+            "D2_country_wait_lost_prior_fire_receipt");
+    }
+    std::vector<uint8_t> full_queue;
+    for (const bool at_tail : {true, false}) {
+        auto host = std::make_unique<NativeSimulationHost>();
+        host->set_inline_daily_mode(true);
+        if (!host->configure_effect_pod(catalog, error) ||
+            !host->start(RuntimeSimulationMode::ACTIVE, true, 1, 0, true,
+                         runtime_domain_mask(RuntimeDomainId::EFFECT))) return false;
+        const auto target = row(1);
+        if (!at_tail && !host->queue_effect_pod_instance(target, error)) return false;
+        for (size_t i = 2; i <= RUNTIME_COMMAND_QUEUE_CAPACITY; ++i) {
+            auto other = row(i);
+            other.next_due_day = 20;
+            if (!host->queue_effect_pod_instance(other, error)) return false;
+        }
+        if (at_tail && !host->queue_effect_pod_instance(target, error)) return false;
+        auto changed = target;
+        changed.next_due_day = 3;
+        const bool accepted = host->queue_effect_pod_instance(changed, error);
+        const std::string result = accepted ? "ok" : error;
+        if (at_tail) full_queue = host->encode_effect_transport();
+        else check(full_queue == host->encode_effect_transport(), "reschedule_changed_saved_order");
+        if (!host->try_freeze_command_inputs(2)) return false;
+        changed.next_due_day = 4;
+        check(!host->queue_effect_pod_instance(changed, error) && error == "effect_instance_capacity_exceeded",
+            "cross_day_reschedule_overwrote_sealed_binding");
+        check(host->_effect_instance_queue.size() == RUNTIME_COMMAND_QUEUE_CAPACITY, "reschedule_used_slot");
+        RuntimeDayCommit commit;
+        RuntimeDomainIntent intent;
+        int fired = 0;
+        for (int day : {2, 3}) {
+            if (!host->execute_effect_worker_stage(day, day, commit, error)) return false;
+            if (host->poll_effect_pod_intent(intent) && intent.source_id == 1) fired = day;
+        }
+        pk::log_info("[effect-capacity] tail=%d update=%s fired=D%d", int(at_tail), result.c_str(), fired);
+        check(accepted && fired == 3, "full_reschedule_" + result + "_D" + std::to_string(fired));
+        host->request_stop();
     }
     std::vector<uint8_t> first_save;
     uint64_t first_hash = 0;

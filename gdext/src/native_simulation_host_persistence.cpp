@@ -196,6 +196,11 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
     std::memcpy(&parsed.environment_day, &environment_day_bits, sizeof(int64_t));
     std::memcpy(&parsed.climate_anomaly, &anomaly_bits, sizeof(double));
     std::memcpy(&parsed.time_debt_days, &debt_bits, sizeof(double));
+    int64_t saved_seal = 0;
+    if (!RuntimeCommandAdmission::encode_day(parsed.committed_day, saved_seal)) {
+        error = RuntimeCommandAdmission::day_range_error;
+        return false;
+    }
     if (parsed.committed_day < 0 || parsed.environment_day < 0 ||
         !std::isfinite(parsed.speed_days_per_second) ||
         parsed.speed_days_per_second < 0.0 ||
@@ -255,8 +260,9 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
     uint32_t regular_commands = 0;
 #include "native_simulation_host_persistence_section_pending_commands.inc"
 #include "native_simulation_host_persistence_section_runtime_authorities.inc"
+    RuntimeEffectPodAuthority saved_effect;
 #include "native_simulation_host_persistence_section_gameplay_and_economy.inc"
-    // The optional Effect inbox follows the final authority section. Its
+    // The Effect inbox follows the final authority section. Its
     // payload is already covered by the whole bundle checksum.
     for (auto [section, bytes_out] : {
             std::make_pair(RUNTIME_SAVE_SECTION_MILITARY_TERRAIN, &parsed.military_terrain_bytes),
@@ -278,12 +284,11 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
     }
     if ((parsed.section_mask & RUNTIME_SAVE_SECTION_EFFECT_TRANSPORT) != 0u) {
         parsed.effect_transport_bytes.assign(bytes + cursor, bytes + payload_end);
-        if (parsed.effect_transport_bytes.empty() ||
-                !restore_effect_transport(parsed.effect_transport_bytes, false)) {
-            error = "effect_transport_continuation_invalid";
-            return false;
-        }
         cursor = payload_end;
+    }
+    if (!restore_effect_transport(parsed, saved_effect, false)) {
+        error = "effect_transport_continuation_invalid";
+        return false;
     }
     if (cursor != payload_end) {
         error = "runtime_bundle_producer_cursor_invalid";
@@ -295,33 +300,27 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
         error = "runtime_bundle_player_confirmation_invalid";
         return false;
     }
-    _pending_restore_bundle = std::move(parsed);
     if (try_fault_injection("restore.validate.before")) {
         error = "restore_validate_fault_injected_before";
-        _pending_restore_bundle = RuntimeSaveBundle{};
-        _has_pending_restore = false;
         return false;
     }
-    _has_pending_restore = true;
-    // The main thread numbers the next environment input from the reported
-    // environment generation, and it captures the first post-load input
-    // before the worker starts. Publishing the saved generation only at worker
-    // start let that first input restart at 1, below the restored Climate
-    // authority's last input, which faulted with
-    // climate_input_generation_not_monotonic on the first day after a load.
-    if (_pending_restore_bundle.environment_generation >
-            _environment_generation.load(std::memory_order_acquire)) {
-        _environment_generation.store(_pending_restore_bundle.environment_generation,
-                                      std::memory_order_release);
-    }
-    // GPU/Object state is intentionally outside the runtime bundle. The next
-    // committed visual batch must therefore be a reconstructible full refresh
-    // after any successful restore, even when the visual ring had no drop.
     if (try_fault_injection("restore.swap.before")) {
         error = "restore_swap_fault_injected_before";
-        _pending_restore_bundle = RuntimeSaveBundle{};
-        _has_pending_restore = false;
         return false;
+    }
+    std::lock_guard<std::mutex> publish_lock(_environment_publish_mutex);
+    _pending_restore_bundle = std::move(parsed);
+    _has_pending_restore = true;
+    // On a used host, even its latest input belongs to the abandoned timeline.
+    // A replacement published after this boundary is the only valid startup seed.
+    if (has_started_once()) {
+        std::atomic_store_explicit(&_environment_snapshot,
+            std::shared_ptr<const RuntimeEnvironmentSnapshot>(), std::memory_order_release);
+        _environment_generation.store(_pending_restore_bundle.environment_generation, std::memory_order_release);
+        _environment_day.store(_pending_restore_bundle.environment_day, std::memory_order_release);
+    } else if (_pending_restore_bundle.environment_generation > _environment_generation.load(std::memory_order_acquire)) {
+        // A fresh host may already have the new world's initial map capture.
+        _environment_generation.store(_pending_restore_bundle.environment_generation, std::memory_order_release);
     }
     return true;
 }

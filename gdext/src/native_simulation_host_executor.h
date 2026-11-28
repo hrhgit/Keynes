@@ -115,7 +115,8 @@
                                        int64_t admitted_day, std::string &error);
     bool drain_effect_transport_queues(std::string &error, int64_t open_day = 0);
     std::vector<uint8_t> encode_effect_transport() const;
-    bool restore_effect_transport(const std::vector<uint8_t> &bytes, bool install);
+    bool restore_effect_transport(const RuntimeSaveBundle &bundle,
+                                  const RuntimeEffectPodAuthority &saved_effect, bool install);
     // E8: shared Modifier POD stage for SHADOW diagnostics and ACTIVE
     // production. authority_plan is non-null only on SHADOW (fixture ACK /
     // domain-runner commit). ACTIVE passes nullptr. Failure isolates
@@ -155,7 +156,7 @@
             CountryCommandReceiptCode code, uint64_t generation,
             const char *reason, bool include_superseded_ai = false);
     void retire_country_ai_ingress(const std::vector<RuntimeCommandPacket> &packets);
-    bool try_freeze_command_inputs(int64_t day);
+    bool try_freeze_command_inputs(int64_t day, int64_t *encoded_day = nullptr);
     void drain_command_inbox(std::vector<RuntimeCommandPacket> &out) {
         drain_command_inbox_through(out, _command_enqueue_pos.load(std::memory_order_acquire));
     }

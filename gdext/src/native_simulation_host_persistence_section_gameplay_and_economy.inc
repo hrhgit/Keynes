@@ -105,10 +105,9 @@
             error = "runtime_bundle_effect_catalog_missing";
             return false;
         }
-        RuntimeEffectPodAuthority candidate;
         std::string effect_restore_error;
-        if (!candidate.configure(_effect_pod_catalog, effect_restore_error) ||
-            !candidate.restore(parsed.effect_bytes.data(),
+        if (!saved_effect.configure(_effect_pod_catalog, effect_restore_error) ||
+            !saved_effect.restore(parsed.effect_bytes.data(),
                                parsed.effect_bytes.size(), effect_restore_error)) {
             error = effect_restore_error.empty()
                 ? "runtime_bundle_effect_restore_invalid" : effect_restore_error;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <limits>
 #include <mutex>
 #include <utility>
 
@@ -11,6 +13,14 @@ namespace pk {
 // owns the producer mutex while moving commands, planning a day, or saving.
 class RuntimeCommandAdmission {
 public:
+    static constexpr const char *day_range_error = "command_seal_day_out_of_range";
+    static bool encode_day(int64_t day, int64_t &encoded) noexcept {
+        if (day < std::numeric_limits<int64_t>::min() / 2 ||
+            day > std::numeric_limits<int64_t>::max() / 2) return false;
+        encoded = day * 2;
+        return true;
+    }
+
     RuntimeCommandAdmission() = default;
     explicit RuntimeCommandAdmission(bool accepted) : _accepted(accepted) {}
     RuntimeCommandAdmission(std::mutex &producers, std::atomic<int64_t> &seal)

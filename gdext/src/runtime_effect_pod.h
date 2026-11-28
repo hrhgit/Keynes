@@ -478,6 +478,7 @@ public:
     int32_t program_id_for_instance(
         int64_t instance_id, uint32_t generation) const noexcept;
 
+    bool validate_instance(const RuntimeEffectPodInstanceInput &input, std::string &error) const;
     bool upsert_instance(const RuntimeEffectPodInstanceInput &input,
                          std::string &error);
     bool remove_instance(int64_t instance_id, uint32_t generation,
@@ -593,8 +594,6 @@ private:
     void set_blocker(const char *reason) noexcept;
     bool validate_catalog(const RuntimeEffectPodCatalog &catalog,
                           std::string &error) const;
-    bool validate_instance(const RuntimeEffectPodInstanceInput &input,
-                           std::string &error) const;
     bool evaluate_conditions(const RuntimeEffectPodDefinition &definition,
                              const RuntimeEffectPodInstance &instance,
                              const State &state, int64_t day) const;

@@ -143,6 +143,9 @@
         RuntimeEffectPodInstanceInput input;
         auto order_key() const { return std::make_pair(input.instance_id, sequence); }
     };
+    bool validate_effect_transport_metrics(std::deque<EffectPodMetricQueueItem> &metrics,
+        const std::deque<EffectPodInstanceQueueItem> &instances, const RuntimeSaveBundle &bundle,
+        const RuntimeEffectPodAuthority &saved_effect) const;
     struct EffectPodRemoveQueueItem {
         int64_t admitted_day = 0;
         uint64_t sequence = 0;
@@ -161,12 +164,18 @@
     // Guarded by `_effect_transport_mutex`.
     uint64_t _effect_transport_sequence = 0;
     std::deque<EffectPodInstanceQueueItem> _effect_instance_queue;
-    std::unordered_map<int64_t, const EffectPodInstanceQueueItem *> _last_queued_effect_instance;
+    std::unordered_map<int64_t, EffectPodInstanceQueueItem *> _last_queued_effect_instance;
     void rebuild_effect_queue_index_locked();
     std::deque<EffectPodMetricQueueItem> _effect_metric_queue;
     std::deque<EffectPodRemoveQueueItem> _effect_remove_queue;
     std::deque<RuntimeDomainIntent> _effect_intents;
     std::deque<RuntimeDomainAck> _effect_acks;
+    // Prefix owned by the open day. Rows stay in the inbox until bindings and
+    // metrics succeed, so failures retain receipts and their capacity slots.
+    size_t _effect_ready_ack_count = 0;
+    void include_effect_day_peer_receipts_locked(int64_t day);
+    const CountryPeerIntent *pending_country_effect_peer_locked(
+        uint64_t request, const CountryPeerResult &result) const;
     // Day-local MODIFIER-targeted intents produced by the Effect stage for
     // Modifier E7. Cleared at the start of each Effect stage visit.
     std::vector<RuntimeDomainIntent> _effect_day_modifier_intents;

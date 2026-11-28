@@ -115,6 +115,8 @@ static func valid(bytes: PackedByteArray, report: Dictionary = {}) -> bool:
 	# RUNTIME_ENVELOPE|DOMAIN_POD and adds CLIMATE once the climate store carries
 	# cells, so an equality test against a single section can never hold.
 	var mask := int(bytes.decode_u32(OFFSET_SECTION_MASK))
+	if bytes.decode_u32(OFFSET_VERSION) == BUNDLE_VERSION and (mask & SECTION_EFFECT_TRANSPORT) == 0:
+		return false
 	if (mask & SECTION_RUNTIME_ENVELOPE) == 0:
 		return false
 	# An unknown section bit means the writer knows a section this build cannot

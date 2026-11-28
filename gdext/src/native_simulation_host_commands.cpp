@@ -66,14 +66,24 @@ RuntimeCommandAdmission NativeSimulationHost::admit_command(int64_t &effective_d
     return admission;
 }
 
-bool NativeSimulationHost::try_freeze_command_inputs(int64_t day) {
+bool NativeSimulationHost::try_freeze_command_inputs(int64_t day, int64_t *encoded_day) {
+    int64_t sealed = 0;
+    if (!RuntimeCommandAdmission::encode_day(day, sealed)) {
+        set_fault(RuntimeCommandAdmission::day_range_error);
+        return false;
+    }
     std::lock_guard<std::mutex> control(_control_mutex);
     if (player_requests_pending_locked()) return false;
+    std::lock_guard<std::mutex> receipts(_effect_transport_mutex);
     int64_t seal = _command_seal.load(std::memory_order_acquire);
     if ((seal & 1) != 0) return false;
-    if (!_command_seal.compare_exchange_strong(seal, day * 2,
+    if (!_command_seal.compare_exchange_strong(seal, sealed,
             std::memory_order_acq_rel, std::memory_order_acquire)) return false;
-    _effect_input_sealed_day.store(day, std::memory_order_release);
+    if (encoded_day) *encoded_day = sealed;
+    if (day != _effect_input_sealed_day.load(std::memory_order_relaxed)) {
+        _effect_ready_ack_count = _effect_acks.size();
+        _effect_input_sealed_day.store(day, std::memory_order_release);
+    }
     return true;
 }
 

@@ -60,6 +60,7 @@ func _run() -> void:
 		await _stop(reader)
 	await _stop(ext)
 	await _future_climate_input()
+	await _seal_range()
 	print("partial worker save boundary: %d checks, %d failures" % [checks, failures])
 	quit(0 if failures == 0 else 1)
 
@@ -88,3 +89,28 @@ func _future_climate_input() -> void:
 	if saved.get("ready", false):
 		await _day(ext, false, 1)
 	await _stop(ext)
+
+
+func _seal_range() -> void:
+	const LAST := 4611686018427387903
+	var ext := DCWorldExt.new()
+	var config := _config(false, 0x20)
+	config.day = LAST
+	config.paused = false
+	config.speed_days_per_second = 30.0
+	_expect("configure bare Effect", ext.configure_effects(EffectDomainCatalog.build().compile_native_catalog()).ok)
+	_expect("worker starts at last representable seal", ext.start_runtime_worker(config).ok)
+	var report := ext.get_runtime_thread_report()
+	while ext.runtime_committed_day() == LAST and str(report.get("fault_code", "")).is_empty() and str(report.get("effect_pod_fallback_reason", "")).is_empty():
+		await process_frame
+		report = ext.get_runtime_thread_report()
+	print("DAY_SEAL last=%d committed=%d fault=%s effect=%s" % [LAST, ext.runtime_committed_day(), report.fault_code, report.effect_pod_fallback_reason])
+	_expect("next open faults before the Effect plan and preserves the last committed day",
+		ext.runtime_committed_day() == LAST and report.fault_code == "command_seal_day_out_of_range")
+	await _stop(ext)
+	var invalid := DCWorldExt.new()
+	config.day = LAST + 1
+	config.paused = true
+	_expect("unrepresentable starting seal is refused", not invalid.start_runtime_worker(config).ok and
+		invalid.get_runtime_thread_report().fault_code == "command_seal_day_out_of_range")
+	await _stop(invalid)

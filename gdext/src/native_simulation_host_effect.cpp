@@ -261,6 +261,7 @@ bool NativeSimulationHost::configure_effect_pod(
         _effect_remove_queue.clear();
         _effect_intents.clear();
         _effect_acks.clear();
+        _effect_ready_ack_count = 0;
     }
     _effect_day_modifier_intents.clear();
     _effect_day_stage_ok = false;
@@ -308,12 +309,14 @@ bool NativeSimulationHost::submit_effect_pod_ack(
         error = "effect_ack_invalid";
         return false;
     }
-    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    if (_effect_acks.size() >= RUNTIME_DOMAIN_INTENT_CAPACITY) {
-        error = "effect_ack_capacity_exceeded";
-        return false;
+    {
+        std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+        if (_effect_acks.size() >= RUNTIME_DOMAIN_INTENT_CAPACITY) {
+            error = "effect_ack_capacity_exceeded";
+            return false;
+        }
+        _effect_acks.push_back(ack);
     }
-    _effect_acks.push_back(ack);
     {
         std::lock_guard<std::mutex> control_lock(_control_mutex);
         _country_peer_signal.fetch_add(1, std::memory_order_release);
@@ -334,7 +337,12 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
     std::deque<EffectPodMetricQueueItem> metrics;
     std::deque<EffectPodRemoveQueueItem> removes;
     {
+        // Country may already be waiting on a previous day's transaction. Take
+        // its wait and the receipt prefix at the same continuation boundary.
+        std::unique_lock<std::mutex> country(_country_transport_mutex, std::defer_lock);
+        if (_effect_pod_authority.snapshot().committed_day == open_day) country.lock();
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+        include_effect_day_peer_receipts_locked(open_day);
         const auto take_admitted = [open_day](auto &queue, auto &ready) {
             const auto first_moved = std::remove_if(queue.begin(), queue.end(), [&](auto &entry) {
                 if (entry.admitted_day > open_day) return false;
@@ -476,12 +484,16 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
             return false;
         }
     }
-    // Only take the independent peer receipts once all earlier work succeeded.
-    // A bad target rejects one receipt and cannot consume another peer's OK.
+    // The opening boundary and this visit already selected the prefix. Receipts
+    // arriving while the rows were processed stay outside it.
     std::deque<RuntimeDomainAck> acks;
     {
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-        acks.swap(_effect_acks);
+        while (_effect_ready_ack_count > 0) {
+            acks.push_back(std::move(_effect_acks.front()));
+            _effect_acks.pop_front();
+            --_effect_ready_ack_count;
+        }
     }
     sort_effect_receipts(acks);
     for (const auto &ack : acks) {

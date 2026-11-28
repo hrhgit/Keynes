@@ -412,18 +412,21 @@ bool NativeSimulationHost::effect_pod_transport_queue_self_test(
         return fail("effect_transport_mutation_crossed_sealed_day");
 
     auto restored = std::make_unique<NativeSimulationHost>();
-    const auto transport = dated->encode_effect_transport();
+    RuntimeSaveBundle archive;
+    archive.section_mask |= RUNTIME_SAVE_SECTION_EFFECT_TRANSPORT;
+    archive.effect_transport_bytes = dated->encode_effect_transport();
+    const auto &transport = archive.effect_transport_bytes;
     std::vector<uint8_t> authority;
     if (!dated->encode_effect_pod_save(authority, error) ||
         !restored->configure_effect_pod(catalog, error) ||
         !restored->restore_effect_pod_save(authority.data(), authority.size(), error) ||
-        !restored->restore_effect_transport(transport, true) ||
+        !restored->restore_effect_transport(archive, restored->_effect_pod_authority, true) ||
         restored->encode_effect_transport() != transport)
         return fail("effect_transport_dated_restore_failed");
-    auto bad_date = transport;
+    auto bad_date = archive;
     // ETQ2 header is the marker, sequence, row count, then the first date.
-    std::fill_n(bad_date.begin() + 16, 8, uint8_t{255});
-    if (restored->restore_effect_transport(bad_date, true) ||
+    std::fill_n(bad_date.effect_transport_bytes.begin() + 16, 8, uint8_t{255});
+    if (restored->restore_effect_transport(bad_date, restored->_effect_pod_authority, true) ||
         restored->encode_effect_transport() != transport)
         return fail("effect_transport_invalid_day_accepted");
     if (!restored->drain_effect_transport_queues(error, 2) ||

@@ -107,10 +107,10 @@ func _run() -> int:
 	var pre_save_report: Dictionary = ext.get_runtime_perf_snapshot(3)
 	var golden: Dictionary = pre_save_report.get("golden_domains", {})
 	var domains: Dictionary = golden.get("domains", {})
-	var pre_save_climate_hash := int(domains.get("CLIMATE", {}).get("hash", 0))
+	var pre_save_climate_hash := String(domains.get("CLIMATE", {}).get("hash", ""))
 	_expect("the climate store published a non-zero hash at the saved boundary",
 		bool(golden.get("ready", false)) and int(golden.get("day", -1)) == climate_days
-		and pre_save_climate_hash != 0)
+		and pre_save_climate_hash.is_valid_int() and pre_save_climate_hash.left(1) in "123456789")
 
 	var polled := _capture_bundle(ext)
 	if not bool(polled.get("ready", false)):
@@ -142,7 +142,8 @@ func _check_header(bytes: PackedByteArray, polled: Dictionary) -> void:
 		return
 	_expect("bundle is PKSR",
 		bytes.slice(OFFSET_MAGIC, OFFSET_MAGIC + 4).get_string_from_ascii() == "PKSR")
-	_expect("bundle version is 5", int(bytes.decode_u32(OFFSET_VERSION)) == 5)
+	_expect("the native writer emits PKSR v%d" % Header.BUNDLE_VERSION,
+		bytes.decode_u32(OFFSET_VERSION) == Header.BUNDLE_VERSION)
 	var abi := int(bytes.decode_u32(OFFSET_DOMAIN_ABI))
 	_expect("runtime domain ABI in the header matches the host report (%d)" % abi,
 		abi == int(polled.get("runtime_domain_abi_version", -1)))
@@ -153,6 +154,8 @@ func _check_header(bytes: PackedByteArray, polled: Dictionary) -> void:
 		(section_mask & SECTION_RUNTIME_ENVELOPE) != 0)
 	_expect("the domain POD section is present",
 		(section_mask & SECTION_DOMAIN_POD) != 0)
+	_expect("the Effect transport section is present",
+		(section_mask & Header.SECTION_EFFECT_TRANSPORT) != 0)
 	# This is the point of the test: a live climate store must reach the save as
 	# its own CLM2 section, and the old `section_mask == 1` check could not
 	# possibly accept that.
@@ -219,7 +222,7 @@ func _check_coordinator_validator(bytes: PackedByteArray, polled: Dictionary) ->
 
 
 func _check_restore(ext, bytes: PackedByteArray, polled: Dictionary,
-		pre_save_climate_hash: int) -> void:
+		pre_save_climate_hash: String) -> void:
 	# A truncated tail and a corrupted CLM2 payload have to be caught here, not
 	# adopted as climate state. Test the rejections before the accept, so the
 	# host is not already holding a pending bundle when they run.
@@ -297,7 +300,7 @@ func _check_restore(ext, bytes: PackedByteArray, polled: Dictionary,
 	_expect("the CLM2 payload survives save -> restore -> save unchanged (%d vs %d bytes)" % [
 			original_climate.size(), roundtripped_climate.size()],
 		original_climate.size() > 0 and original_climate == roundtripped_climate)
-	print("  CLM2 roundtrip: %d bytes, saved_day=%d, pre_save_climate_hash=%d" % [
+	print("  CLM2 roundtrip: %d bytes, saved_day=%d, pre_save_climate_hash=%s" % [
 		original_climate.size(), saved_day, pre_save_climate_hash])
 
 
