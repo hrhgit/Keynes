@@ -107,18 +107,13 @@ bool NativeSimulationHost::ensure_effect_pod_technology_instance(
     input.target_handle = target_handle;
     input.target_generation = target_generation;
     input.level = 0;
-    // Effect often soft-skips the same calendar day Country seals. Schedule
-    // the first fire for the next sequential Effect day (committed+1), never
-    // the already-closed committed day — otherwise plan_day cannot see the
-    // instance until a never-fired cadence retry (technology cadence is 3650).
-    const int64_t effect_day = _effect_pod_authority.snapshot().committed_day;
-    input.next_due_day = effect_day >= 0 ? effect_day + 1 : day;
+    input.next_due_day = day;
     input.active = true;
     // Queue only. The main-thread Country peer adapter must never mutate the
     // Effect POD authority: worker plan_day/commit/ack run concurrently and a
     // same-turn upsert races them (instances stuck fire_seq=0 / never fire).
     // Effect stage drain_effect_transport_queues installs before plan/soft-skip.
-    if (!queue_effect_pod_instance(input, error)) return false;
+    if (!queue_effect_pod_instance(input, error, true)) return false;
     return true;
 }
 
@@ -223,6 +218,17 @@ bool NativeSimulationHost::effect_pod_instance_fire_acked(
     return true;
 }
 
+const CountryPeerIntent *NativeSimulationHost::pending_country_effect_peer_locked(
+        uint64_t request, const CountryPeerResult &result) const {
+    if (result.code != CountryPeerResultCode::PENDING ||
+        (result.opcode != CountryPeerIntentCode::ENSURE_TECHNOLOGY_EFFECT &&
+         result.opcode != CountryPeerIntentCode::NUDGE_TECHNOLOGY_EFFECT)) return nullptr;
+    const auto it = _country_worker_intents.find(request);
+    if (it == _country_worker_intents.end() ||
+        it->second.effect_instance_id == 0 || it->second.effect_generation == 0) return nullptr;
+    return &it->second;
+}
+
 uint32_t NativeSimulationHost::resolve_pending_country_effect_peers() {
     if (!_effect_pod_configured) return 0;
     uint32_t promoted = 0;
@@ -230,16 +236,9 @@ uint32_t NativeSimulationHost::resolve_pending_country_effect_peers() {
         std::lock_guard<std::mutex> lock(_country_transport_mutex);
         for (auto &entry : _country_worker_results) {
             CountryPeerResult &result = entry.second;
-            if (result.code != CountryPeerResultCode::PENDING) continue;
-            if (result.opcode != CountryPeerIntentCode::ENSURE_TECHNOLOGY_EFFECT &&
-                result.opcode != CountryPeerIntentCode::NUDGE_TECHNOLOGY_EFFECT) {
-                continue;
-            }
-            const auto intent_it = _country_worker_intents.find(entry.first);
-            if (intent_it == _country_worker_intents.end()) continue;
-            const CountryPeerIntent &intent = intent_it->second;
-            if (intent.effect_instance_id == 0 || intent.effect_generation == 0)
-                continue;
+            const auto *pending = pending_country_effect_peer_locked(entry.first, result);
+            if (!pending) continue;
+            const auto &intent = *pending;
             if (!effect_pod_instance_fire_acked(
                     static_cast<int64_t>(intent.effect_instance_id),
                     intent.effect_generation)) {

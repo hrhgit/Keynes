@@ -11,8 +11,7 @@
     _epoch_compiled_cell_tax_default_modes.clear();
     _epoch_has_cell_tax_policies = false;
     std::unordered_map<uint64_t, uint32_t> compiled_policy_ids;
-    std::unordered_map<uint64_t, int32_t> settlement_default_rows;
-    std::map<std::tuple<int32_t, int32_t, int32_t, int32_t>, int32_t> display_default_rows;
+    CellTaxDefaultRows default_rows;
     const auto item_count_for_kind = [&](int32_t kind) -> size_t {
         switch (kind) {
             case CountryApi::TAX_INCOME:
@@ -47,18 +46,8 @@
     };
     const auto ensure_default_row = [&](int32_t country, int32_t kind,
                                         int32_t base_rate,
-                                        int32_t base_mode, bool display_only) -> int32_t {
-        // Keep existing settlement row identities. For display-only policies the full
-        // signed amount and mode are independent fields (also for zero or subsidies).
-        const uint64_t settlement_key =
-            (static_cast<uint64_t>(static_cast<uint32_t>(country)) << 40U) |
-            (static_cast<uint64_t>(static_cast<uint8_t>(kind)) << 32U) |
-            (static_cast<uint64_t>(static_cast<uint8_t>(base_mode & 0xff))
-             << 24U) |
-            static_cast<uint32_t>(base_rate);
-        int32_t &row_number = display_only
-            ? display_default_rows[std::make_tuple(country, kind, base_rate, base_mode)]
-            : settlement_default_rows[settlement_key];
+                                        int32_t base_mode) -> int32_t {
+        int32_t &row_number = default_rows.row_number(country, kind, base_rate, base_mode);
         if (row_number != 0) return row_number - 1;
         const size_t item_count = item_count_for_kind(kind);
         CompiledCellTaxDefaultRow row;
@@ -91,7 +80,7 @@
         row_number = row_id + 1;
         return row_id;
     };
-    const auto compile_cell_policy = [&](int32_t cell, bool display_only) {
+    const auto compile_cell_policy = [&](int32_t cell) {
         const uint32_t authority_id =
             snapshot_cell_tax_policy_ids[static_cast<size_t>(cell)];
         const int32_t country = _epoch_cell_country[static_cast<size_t>(cell)];
@@ -153,7 +142,7 @@
                             ? 0
                             : local_default;
                     const int32_t row_id = ensure_default_row(
-                        country, kind, resolved_rate, resolved_mode, display_only);
+                        country, kind, resolved_rate, resolved_mode);
                     compiled.default_row_ids[static_cast<size_t>(kind)] = row_id;
                     const CompiledCellTaxDefaultRow &row =
                         _epoch_compiled_cell_tax_default_rows[
@@ -266,16 +255,16 @@
     };
     if (_economy_live_cells.empty()) {
         for (int32_t cell = 0; cell < _cell_count.get(); ++cell)
-            compile_cell_policy(cell, false);
+            compile_cell_policy(cell);
     } else {
         for (const int32_t cell : _economy_live_cells)
-            compile_cell_policy(cell, false);
+            compile_cell_policy(cell);
         if (retain_tax_policy) {
             // Finish the display table after every policy used for settlement
             // has its final row. Cells without a local policy inherit nationally.
             for (int32_t cell = 0; cell < _cell_count.get(); ++cell) {
                 if (_epoch_cell_compiled_tax_policy[cell] == 0 && snapshot_cell_tax_policy_ids[cell] != 0)
-                    compile_cell_policy(cell, true);
+                    compile_cell_policy(cell);
             }
         }
     }

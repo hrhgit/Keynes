@@ -2,6 +2,7 @@
     struct DayExecution;
     RuntimeDayCommit execute_shadow_day(DayExecution &);
     void prepare_climate_day(DayExecution &);
+    void consume_climate_input(uint64_t generation);
     bool capture_day_input(DayExecution &, const RuntimeEnvironmentSnapshot &);
     bool run_day_events(DayExecution &, int64_t, bool publish_immediately = true);
     bool publish_day_events(int64_t, RuntimeEventsReport, std::string);
@@ -104,14 +105,18 @@
     std::vector<uint8_t> encode_trigger_transport() const;
     bool restore_trigger_transport(const std::vector<uint8_t> &, std::string &, bool install);
     bool execute_effect_worker_stage(int64_t day, uint64_t input_generation,
-                                     RuntimeDayCommit &commit,
-                                     std::string &error);
+                                     RuntimeDayCommit &commit, std::string &error,
+                                     std::vector<RuntimeCommandPacket> *event_packets = nullptr);
     // Apply queued instance/metric/remove/ACK transport without planning a day.
     // Soft-skip and climate-park paths must call this so main-thread ENSURE
     // registrations are not stranded in `_effect_instance_queue`.
-    bool drain_effect_transport_queues(std::string &error);
+    RuntimeCommandAdmission admit_effect_input(int64_t &admitted_day);
+    bool append_effect_instance_locked(const RuntimeEffectPodInstanceInput &input,
+                                       int64_t admitted_day, std::string &error);
+    bool drain_effect_transport_queues(std::string &error, int64_t open_day = 0);
     std::vector<uint8_t> encode_effect_transport() const;
-    void restore_effect_transport(const std::vector<uint8_t> &bytes);
+    bool restore_effect_transport(const RuntimeSaveBundle &bundle,
+                                  const RuntimeEffectPodAuthority &saved_effect, bool install);
     // E8: shared Modifier POD stage for SHADOW diagnostics and ACTIVE
     // production. authority_plan is non-null only on SHADOW (fixture ACK /
     // domain-runner commit). ACTIVE passes nullptr. Failure isolates
@@ -139,7 +144,9 @@
             RuntimeModifierPodCommand &command);
     // Rebuild day-local Effect intents for COMMITTED transactions still missing
     // ACKs (day-lane retry soft-skip must not drop the Modifier handoff).
-    void reemit_effect_committed_pending_intents(int64_t day);
+    bool effect_input_order_self_test(const RuntimeEffectPodCatalog &catalog, std::string &error);
+    bool modifier_effect_redelivery_self_test(const RuntimeModifierPodCatalog &catalog, std::string *error);
+    void collect_day_modifier_intents();
     // PUBLISH_EVENT intents do not go through Modifier; ACK them in-worker so
     // technology activation is not pinned on the main-thread Effect pump.
     uint32_t ack_effect_events_intents_in_worker(
@@ -149,7 +156,7 @@
             CountryCommandReceiptCode code, uint64_t generation,
             const char *reason, bool include_superseded_ai = false);
     void retire_country_ai_ingress(const std::vector<RuntimeCommandPacket> &packets);
-    bool try_freeze_command_inputs(int64_t day);
+    bool try_freeze_command_inputs(int64_t day, int64_t *encoded_day = nullptr);
     void drain_command_inbox(std::vector<RuntimeCommandPacket> &out) {
         drain_command_inbox_through(out, _command_enqueue_pos.load(std::memory_order_acquire));
     }

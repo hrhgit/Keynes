@@ -235,8 +235,8 @@ Dictionary EffectInstanceForwarder::submit_batch(const Dictionary &batch) {
         // read different columns than the forwarding path.
         const PackedInt64Array accepted_ids = result.get("instance_ids",
                                                          PackedInt64Array());
-        int32_t mirrored = 0;
         int32_t mirror_rejected = 0;
+        std::vector<RuntimeEffectPodInstanceInput> pending;
         for (int i = 0; i < ids.size() && i < program_keys.size(); ++i) {
             bool accepted = false;
             for (int a = 0; a < accepted_ids.size(); ++a) {
@@ -270,13 +270,13 @@ Dictionary EffectInstanceForwarder::submit_batch(const Dictionary &batch) {
             input.latched = i >= 0 && i < latched_column.size()
                 && latched_column[i] != 0 ? 1 : 0;
             input.active = i >= active.size() || active[i] != 0;
-            std::string mirror_error;
-            if (_host->queue_effect_pod_instance(input, mirror_error))
-                ++mirrored;
-            else
-                ++mirror_rejected;
+            pending.push_back(input);
         }
-        result["effect_pod_mirrored"] = mirrored;
+        std::string mirror_error;
+        const auto accepted = _host->queue_effect_pod_instances(pending, mirror_error);
+        const auto mirrored = std::count(accepted.begin(), accepted.end(), uint8_t{1});
+        mirror_rejected += static_cast<int32_t>(accepted.size() - mirrored);
+        result["effect_pod_mirrored"] = static_cast<int32_t>(mirrored);
         result["effect_pod_mirror_rejected"] = mirror_rejected;
         // Rule 1 also applies to the legacy path: if EFFECT moved to the worker
         // while this batch was in flight, the caller must retry instead of
@@ -298,6 +298,7 @@ Dictionary EffectInstanceForwarder::submit_batch(const Dictionary &batch) {
     int32_t rejected = 0;
     const char *reject_reason = nullptr;
     std::string result_reason;
+    std::vector<RuntimeEffectPodInstanceInput> pending;
     for (int i = 0; i < ids.size() && i < program_keys.size(); ++i) {
         const ProgramFacts *facts = facts_for(program_keys[i].utf8().get_data());
         if (facts == nullptr || !facts->resolved) {
@@ -340,17 +341,15 @@ Dictionary EffectInstanceForwarder::submit_batch(const Dictionary &batch) {
         input.latched = i >= 0 && i < latched_column.size()
             && latched_column[i] != 0 ? 1 : 0;
         input.active = row_active;
-        std::string queue_error;
-        if (_host->queue_effect_pod_instance(input, queue_error)) {
-            accepted_ids.push_back(ids[i]);
-        } else {
-            ++rejected;
-            if (!queue_error.empty())
-                result_reason = queue_error;
-            else
-                reject_reason = result_token(Result::QUEUE_REJECTED);
-        }
+        pending.push_back(input);
     }
+    const auto accepted = _host->queue_effect_pod_instances(pending, result_reason);
+    for (size_t i = 0; i < accepted.size(); ++i) {
+        if (accepted[i]) accepted_ids.push_back(pending[i].instance_id);
+        else ++rejected;
+    }
+    if (accepted_ids.size() != static_cast<int64_t>(pending.size()) && result_reason.empty())
+        reject_reason = result_token(Result::QUEUE_REJECTED);
 
     Dictionary result;
     const bool batch_ok = rejected == 0 && accepted_ids.size() == ids.size();

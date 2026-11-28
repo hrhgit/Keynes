@@ -5,23 +5,60 @@ namespace pk {
 
 using namespace godot;
 
+namespace {
+// 每次持久化自测均经过正式目录校验。程序 0 是一次性效果，程序 1 持续十天。
+Dictionary persistence_test_catalog() {
+    Dictionary catalog;
+    catalog["effect_keys"] = PackedStringArray{"test.capture.original", "test.capture.replacement"};
+    catalog["metric_keys"] = PackedStringArray{"test.capture.metric"};
+    for (const char *field : {"source_kinds", "target_domains", "operations", "stack_policies",
+            "priorities", "target_selector_kinds", "instruction_arg0", "instruction_arg1",
+            "command_value_modes"})
+        catalog[field] = PackedInt32Array{0, 0};
+    for (const char *field : {"stack_keys", "target_selector_ids"})
+        catalog[field] = PackedStringArray{"", ""};
+    catalog["lifecycles"] = PackedInt32Array{0, 1};
+    catalog["duration_days"] = PackedInt32Array{-1, 10};
+    catalog["instruction_ops"] = PackedInt32Array{EffectRuntime::EMIT_COMMAND, EffectRuntime::EMIT_COMMAND};
+    catalog["max_stacks"] = PackedInt32Array{1, 1};
+    catalog["condition_offsets"] = PackedInt32Array{0, 0, 0};
+    catalog["instruction_offsets"] = PackedInt32Array{0, 1, 2};
+    catalog["command_offsets"] = PackedInt32Array{0, 1, 2};
+    catalog["command_actions"] = PackedInt32Array{EffectRuntime::MODIFIER_COMMAND, EffectRuntime::MODIFIER_COMMAND};
+    catalog["command_domains"] = PackedInt32Array{3, 3};
+    catalog["command_opcodes"] = PackedInt32Array{1, 1};
+    catalog["command_target_resolvers"] = PackedInt32Array{EffectRuntime::TARGET_INSTANCE, EffectRuntime::TARGET_INSTANCE};
+    catalog["command_duration_days"] = PackedInt32Array{-1, -1};
+    catalog["command_stacks"] = PackedInt32Array{1, 1};
+    catalog["command_keys"] = PackedStringArray{"test.capture.emit", "test.capture.replace"};
+    catalog["command_definition_keys"] = PackedStringArray{"test.capture.modifier", "test.capture.modifier"};
+    for (const char *field : {"instruction_values", "command_static_targets", "command_values",
+            "command_payload_i0", "command_payload_i1", "command_payload_i2", "command_payload_i3"})
+        catalog[field] = PackedInt64Array{0, 0};
+    return catalog;
+}
+} // namespace
+
 bool EffectRuntime::pod_snapshot_persistence_self_test(std::string &error) const {
     auto fail = [&](const char *reason) { error = reason; return false; };
-    int32_t program = -1;
-    for (int32_t i = 0; i < static_cast<int32_t>(_definitions.size()); ++i) {
-        const Definition &d = _definitions[i];
-        if (!uses_managed_lifecycle(d) && d.behavior_id.empty() && d.command_count > 0) {
-            program = i;
-            break;
-        }
+    EffectRuntime candidate;
+    const Dictionary configured = candidate.configure(persistence_test_catalog());
+    if (!bool(configured.get("ok", false))) {
+        error = String(configured.get("reason", "effect_persistence_fixture_program_missing")).utf8().get_data();
+        return false;
     }
-    if (program < 0) return fail("effect_persistence_fixture_program_missing");
-    const Definition &d = _definitions[program];
-    const CommandDefinition &c = _command_definitions[d.command_begin];
+    const int32_t program = 0;
+    const int32_t replacement_program = 1;
+    if (candidate._definitions.size() != 2 || !uses_managed_lifecycle(candidate._definitions[replacement_program]))
+        return fail("test_only_effect_replacement_program_missing");
+    const Definition &d = candidate._definitions[program];
+    if (uses_managed_lifecycle(d) || !d.behavior_id.empty() || d.command_count < 1)
+        return fail("effect_persistence_fixture_program_missing");
+    const CommandDefinition &c = candidate._command_definitions[d.command_begin];
     RuntimeEffectPodSnapshot snapshot;
     snapshot.generation = 1;
     snapshot.committed_day = 12;
-    snapshot.metric_values.resize(_metric_count, 0);
+    snapshot.metric_values.resize(candidate._metric_count, 37);
     RuntimeEffectPodInstance instance;
     instance.instance_id = 42;
     instance.program_id = program;
@@ -65,21 +102,52 @@ bool EffectRuntime::pod_snapshot_persistence_self_test(std::string &error) const
     tx.command_count = 1;
     tx.fire_sequence = 3;
     tx.input_revision = 7;
+    tx.delivery_program_id = instance.program_id;
+    tx.delivery_source_type = instance.source_type;
+    tx.delivery_source_id = instance.source_id;
+    tx.delivery_magnitude_scale_q16 = instance.magnitude_scale_q16;
     tx.required_ack_mask = RuntimeEffectPodAuthority::adapter_ack_bit(command.action);
     tx.received_ack_mask = tx.required_ack_mask;
     tx.status = RuntimeEffectPodTransactionStatus::ACKED;
     tx.plan_hash = RuntimeEffectPodAuthority::calculate_plan_hash(42, 1, 12, 3, snapshot.command_arena);
     snapshot.transactions.push_back(tx);
-    EffectRuntime candidate = *this;
-    candidate.reset_runtime_state();
-    candidate._country_runtime = nullptr;
     if (!candidate.apply_pod_snapshot(snapshot, error)) return false;
     const PackedByteArray canonical = candidate.capture();
     if (!bool(candidate.restore(canonical).get("ok", false)) ||
         candidate.capture() != canonical)
         return fail("effect_pod_snapshot_roundtrip_failed");
+    // A later ENSURE can replace the instance's program while the original
+    // transaction still waits for its receipt. PKEF stores both identities.
+    RuntimeEffectPodSnapshot changed_program = snapshot;
+    ++changed_program.generation;
+    const Definition &replacement = candidate._definitions[replacement_program];
+    auto &updated_instance = changed_program.instances[0];
+    updated_instance.program_id = replacement_program;
+    updated_instance.lifecycle = static_cast<RuntimeEffectPodLifecycle>(replacement.lifecycle);
+    updated_instance.stack_policy = static_cast<RuntimeEffectPodStackPolicy>(replacement.stack_policy);
+    updated_instance.max_stacks = replacement.max_stacks;
+    updated_instance.cadence_days = replacement.cadence_days;
+    changed_program.instances[0].pending_transaction_id = tx.transaction_id;
+    changed_program.transactions[0].status = RuntimeEffectPodTransactionStatus::COMMITTED;
+    changed_program.transactions[0].received_ack_mask = 0;
+    EffectRuntime projection = candidate;
+    if (!projection.apply_pod_snapshot(changed_program, error)) return false;
+    const auto replaced_save = projection.capture();
+    if (!bool(projection.restore(replaced_save).get("ok", false)) ||
+        projection.capture() != replaced_save ||
+        projection._instances[0].program_id != changed_program.instances[0].program_id ||
+        projection._transactions[0].program_id != program ||
+        projection._transactions[0].status != COMMITTED)
+        return fail("test_only_effect_pending_program_changed_on_roundtrip");
+    for (int32_t invalid_program : {-1, static_cast<int32_t>(projection._definitions.size())}) {
+        changed_program.transactions[0].delivery_program_id = invalid_program;
+        if (projection.apply_pod_snapshot(changed_program, error) ||
+            error != "effect_pod_snapshot_program_invalid" ||
+            projection.capture() != replaced_save)
+            return fail("test_only_effect_invalid_delivery_program_not_rejected_atomically");
+    }
     const uint64_t activation = candidate._instances[0].activation_sequence;
-    snapshot.generation = 2;
+    ++snapshot.generation;
     if (!candidate.apply_pod_snapshot(snapshot, error) ||
         candidate._instances[0].activation_sequence != activation)
         return fail("effect_pod_activation_changed_on_refresh");
@@ -93,20 +161,18 @@ bool EffectRuntime::pod_snapshot_persistence_self_test(std::string &error) const
             country_handle, 1, expedition_handle, 1, 20, 0, error,
             &claim_transaction))
         return false;
-    snapshot.generation = 3;
+    ++snapshot.generation;
     snapshot.transactions[0].transaction_id = 6;
     if (!candidate.apply_pod_snapshot(snapshot, error)) return false;
     if (candidate.transaction_status_pod(claim_transaction) != PLANNED ||
             candidate.transaction_status_pod(6) != ACKED)
         return fail("effect_pod_family_claim_transaction_lost");
-    // Reproduce the old bridge's exact omissions, including its original POD hash.
-    // Reproduce the old bridge's exact omissions, then prove the SAVE format
-    // rejects them: since the v12 bump the version gate refuses anything but
-    // the current schema, so the `schema == 11` migration branch is unreachable
-    // by construction. Pinning fail-closed is the only assertion that still
-    // means something here; the branch itself is dead code and goes away with
-    // PKEF 13.
     const PackedByteArray current = candidate.capture();
+    if (candidate.apply_pod_snapshot(snapshot, error) ||
+        error != "effect_pod_snapshot_generation_regression" ||
+        candidate.capture() != current)
+        return fail("test_only_effect_stale_snapshot_not_rejected_atomically");
+    // Schema 11 is refused before any live state changes.
     PackedByteArray legacy = current;
     const int32_t legacy_schema = 11;
     std::memcpy(legacy.ptrw() + sizeof(uint32_t), &legacy_schema,
@@ -131,49 +197,135 @@ bool EffectRuntime::pod_snapshot_persistence_self_test(std::string &error) const
         colo_tx_id < BUILTIN_TRANSACTION_ID_BASE) {
         return fail("effect_pod_colonization_builtin_id_not_disjoint");
     }
-    RuntimeEffectPodTransaction tx_next = tx;
-    tx_next.transaction_id = 6;
-    tx_next.effective_day = 13;
-    tx_next.fire_sequence = 4;
-    snapshot.transactions.push_back(tx_next);
-    snapshot.generation = 3;
-    snapshot.committed_day = 13;
-    if (!candidate.apply_pod_snapshot(snapshot, error) ||
-        !candidate.has_pending_family_colonization_transactions()) {
+    auto append_catalog_fire = [&](int64_t day) {
+        RuntimeEffectPodTransaction next = snapshot.transactions.back();
+        RuntimeEffectPodCommand emitted = snapshot.command_arena[next.command_begin];
+        ++next.transaction_id;
+        ++next.fire_sequence;
+        next.effective_day = day;
+        next.command_begin = static_cast<uint32_t>(snapshot.command_arena.size());
+        emitted.effective_day = day;
+        ++emitted.idempotency_key;
+        next.plan_hash = RuntimeEffectPodAuthority::calculate_plan_hash(
+            next.source_instance_id, next.source_generation, day, next.fire_sequence, {emitted});
+        snapshot.command_arena.push_back(emitted);
+        snapshot.transactions.push_back(next);
+        snapshot.instances[0].fire_sequence = next.fire_sequence;
+        snapshot.instances[0].last_acked_fire_sequence = next.fire_sequence;
+        ++snapshot.generation;
+        snapshot.committed_day = day;
+    };
+    append_catalog_fire(13);
+    if (!candidate.apply_pod_snapshot(snapshot, error)) return false;
+    if (!candidate.has_pending_family_colonization_transactions()) {
         return fail("effect_pod_snapshot_dropped_colonization_builtin");
     }
-    // Also verify old-save collision recovery: a builtin with a colliding small
-    // ID (7) must be remapped instead of dropped when the worker snapshot
-    // arrives carrying transaction_id == 7.
-    const int32_t colo_index = candidate.transaction_index_for_id(colo_tx_id);
-    if (colo_index < 0) return fail("effect_pod_colonization_lookup_failed");
-    candidate._transaction_ids.erase(colo_tx_id);
-    candidate._transactions[static_cast<size_t>(colo_index)].id = 7;
-    candidate._transaction_ids[7] = colo_index;
-    candidate._native_country_request_ids.push_back(101);
-    candidate._native_country_ack_bindings.push_back({7, 0, 1, 1u << 7});
-    candidate._native_country_bound_transaction_ids.insert(7);
-    RuntimeEffectPodTransaction tx_collide = tx;
-    tx_collide.transaction_id = 7;
-    tx_collide.effective_day = 14;
-    tx_collide.fire_sequence = 5;
-    snapshot.transactions.push_back(tx_collide);
-    snapshot.generation = 4;
-    snapshot.committed_day = 14;
-    if (!candidate.apply_pod_snapshot(snapshot, error) ||
-        !candidate.has_pending_family_colonization_transactions()) {
-        return fail("effect_pod_snapshot_dropped_colliding_colonization");
+    // A catalog row reusing a reserved builtin ID is invalid.
+    RuntimeEffectPodSnapshot invalid_snapshot = snapshot;
+    ++invalid_snapshot.generation;
+    invalid_snapshot.transactions.back().transaction_id = colo_tx_id;
+    const PackedByteArray before_collision = candidate.capture();
+    if (candidate.apply_pod_snapshot(invalid_snapshot, error) ||
+        error != "effect_pod_snapshot_builtin_transaction_id_collision" ||
+        candidate.capture() != before_collision ||
+        candidate.pod_snapshot_generation() != snapshot.generation)
+        return fail("test_only_effect_reserved_collision_not_rejected_atomically");
+    EffectRuntime ideology = candidate;
+    ideology._instances[0].source_type = IDEOLOGY_SOURCE_TYPE;
+    invalid_snapshot.transactions.back() = snapshot.transactions.back();
+    ++invalid_snapshot.transactions.back().effective_day;
+    const PackedByteArray before_ideology = ideology.capture();
+    if (ideology.apply_pod_snapshot(invalid_snapshot, error) ||
+        error != "effect_pod_snapshot_ideology_transaction_id_collision" ||
+        ideology.capture() != before_ideology ||
+        ideology.pod_snapshot_generation() != snapshot.generation)
+        return fail("test_only_effect_different_ideology_plan_not_rejected_atomically");
+
+    // Load an old builtin in the catalog range, then queue a pending receipt
+    // and publish a new catalog fire that needs that same ID.
+    append_catalog_fire(14);
+    const int64_t colliding_id = snapshot.transactions.back().transaction_id;
+    auto set_legacy_id = [&](EffectRuntime &runtime, int64_t current_id) {
+        const int32_t index = runtime.transaction_index_for_id(current_id);
+        if (index < 0) return false;
+        auto &builtin = runtime._transactions[static_cast<size_t>(index)];
+        runtime._transaction_ids.erase(current_id);
+        builtin.id = colliding_id;
+        builtin.plan_hash = runtime.persisted_plan_hash(builtin, runtime._command_arena);
+        runtime._transaction_ids[colliding_id] = index;
+        return true;
+    };
+    // Canals track only the numeric ID and must keep it when a snapshot fails.
+    EffectRuntime canal = candidate;
+    int64_t canal_id = 0;
+    if (!canal.enqueue_canal_commit_pod(21, 13, 21, expedition_handle, 1, 1, error, &canal_id) ||
+        !set_legacy_id(canal, canal_id))
+        return fail("test_only_effect_legacy_canal_fixture_invalid");
+    const PackedByteArray before_canal = canal.capture();
+    if (canal.apply_pod_snapshot(snapshot, error) ||
+        error != "effect_pod_snapshot_builtin_transaction_id_collision" ||
+        canal.capture() != before_canal)
+        return fail("test_only_effect_canal_collision_not_rejected_atomically");
+    if (!set_legacy_id(candidate, colo_tx_id)) return fail("effect_pod_colonization_lookup_failed");
+    const PackedByteArray old_save = candidate.capture();
+    if (!bool(candidate.restore(old_save).get("ok", false)) || candidate.capture() != old_save)
+        return fail("test_only_effect_old_builtin_save_roundtrip_failed");
+    for (bool awaiting_claim : {true, false}) {
+        EffectRuntime projection = candidate;
+        Transaction &awaiting = projection._transactions[projection.transaction_index_for_id(colliding_id)];
+        const uint32_t claim_bit = adapter_ack_bit_for(*projection.command_at(awaiting, 0));
+        const uint32_t settle_bit = adapter_ack_bit_for(*projection.command_at(awaiting, 1));
+        if (!awaiting_claim) projection.acknowledge_native_domain(awaiting, claim_bit);
+        const int64_t request_id = awaiting_claim ? 101 : 102;
+        const uint32_t domain_bit = awaiting_claim ? claim_bit : settle_bit;
+        auto &requests = awaiting_claim ? projection._native_country_request_ids
+                                        : projection._native_economy_request_ids;
+        auto &bindings = awaiting_claim ? projection._native_country_ack_bindings
+                                        : projection._native_economy_ack_bindings;
+        auto &bound_ids = awaiting_claim ? projection._native_country_bound_transaction_ids
+                                         : projection._native_economy_bound_transaction_ids;
+        requests.push_back(request_id);
+        bindings.push_back({colliding_id, 0, 1, domain_bit});
+        bound_ids.insert(colliding_id);
+        awaiting.status = PREFLIGHTED;
+        if (!projection.apply_pod_snapshot(snapshot, error)) return false;
+        if (!projection.has_pending_family_colonization_transactions())
+            return fail("effect_pod_snapshot_dropped_colliding_colonization");
+
+        int64_t resolved_id = 0;
+        const int32_t status = projection.family_colonization_transaction_status_pod(
+            colliding_id, 77, 2u, 999ULL, &resolved_id);
+        if (status != PREFLIGHTED || resolved_id < BUILTIN_TRANSACTION_ID_BASE ||
+            projection.transaction_status_pod(colliding_id) != ACKED ||
+            !projection.family_colonization_includes_claim(resolved_id) ||
+            bindings.size() != 1 || bindings[0].transaction_id != resolved_id ||
+            bindings[0].request_begin != 0 || bindings[0].request_count != 1 ||
+            bindings[0].domain_bit != domain_bit ||
+            requests.size() != 1 || requests[0] != request_id ||
+            bound_ids.count(resolved_id) != 1 || bound_ids.count(colliding_id) != 0)
+            return fail("effect_pod_snapshot_colonization_remap_invalid");
+        Transaction &recipient = projection._transactions[
+            projection.transaction_index_for_id(bindings[0].transaction_id)];
+        projection.acknowledge_native_domain(recipient, bindings[0].domain_bit);
+        if (recipient.status != (awaiting_claim ? COMMITTED : ACKED))
+            return fail("test_only_effect_remapped_receipt_wrong_status");
+
+        const PackedByteArray remapped_save = projection.capture();
+        if (!bool(projection.restore(remapped_save).get("ok", false)) ||
+            projection.capture() != remapped_save)
+            return fail("test_only_effect_remapped_builtin_save_roundtrip_failed");
     }
-    int64_t resolved_id = 0;
-    const int32_t resolved_status =
-        candidate.family_colonization_transaction_status_pod(
-            7, 77, 2u, 999ULL, &resolved_id);
-    if (resolved_status == 0 || resolved_id < BUILTIN_TRANSACTION_ID_BASE ||
-        candidate._native_country_ack_bindings.size() != 1 ||
-        candidate._native_country_ack_bindings[0].transaction_id != resolved_id ||
-        candidate._native_country_bound_transaction_ids.count(resolved_id) != 1) {
-        return fail("effect_pod_snapshot_colonization_remap_invalid");
-    }
+
+    // Repeated catalog IDs name two distinct rows and cannot be remapped.
+    invalid_snapshot = snapshot;
+    invalid_snapshot.transactions.back().transaction_id = invalid_snapshot.transactions.front().transaction_id;
+    const PackedByteArray before_duplicate = candidate.capture();
+    const uint64_t before_generation = candidate.pod_snapshot_generation();
+    if (candidate.apply_pod_snapshot(invalid_snapshot, error) ||
+        error != "effect_pod_snapshot_transaction_invalid" ||
+        candidate.capture() != before_duplicate ||
+        candidate.pod_snapshot_generation() != before_generation)
+        return fail("test_only_effect_duplicate_catalog_transaction_not_rejected_atomically");
     return true;
 }
 
@@ -294,17 +446,12 @@ bool EffectRuntime::pod_state_parity_self_test(std::string &error) const {
         RuntimeEffectPodAuthority::scaled_command_stacks(5, 2, 0) != 1)
         return fail("effect_command_stack_scaling_changed");
 
-    // A5: ABI 3 pinned the latch byte's meaning; ABI 4 adds the ACKed managed
-    // lifecycle state. Both are version-gated so an older payload cannot be
-    // mistaken for "not applied" and silently resurrect a card row.
-    //
-    // ABI 2 declared and serialized the byte but nothing ever populated it
-    // (no producer wrote a `latched` column, the forwarder read none), so an
-    // ABI-2 snapshot says "unlatched" for a latched instance. A payload from the
-    // old ABI must therefore be refused by version, not read as "latch cleared".
-    if (RUNTIME_EFFECT_POD_ABI_VERSION != 4u)
-        return fail("effect_pod_abi_must_be_4_for_managed_lifecycle_wire");
-    if (RuntimeEffectPodSnapshot{}.abi_version != 4u)
+    // Catalog hashes use the ABI 4 representation. Snapshot ABI 5 also
+    // carries the frozen Modifier inputs of each planned transaction.
+    if (RUNTIME_EFFECT_POD_CATALOG_ABI_VERSION != 4u ||
+        RuntimeEffectPodCatalog{}.abi_version != 4u)
+        return fail("test_only_effect_catalog_abi_changed");
+    if (RUNTIME_EFFECT_POD_ABI_VERSION != 5u || RuntimeEffectPodSnapshot{}.abi_version != 5u)
         return fail("effect_pod_snapshot_default_abi_is_stale");
     return true;
 }

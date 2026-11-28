@@ -257,7 +257,7 @@ Facade API:
 - `set_tax_default(handle, kind, rate_percent, effective_day, sequence)`
 - `set_tax_override(handle, kind, item_id, rate_percent, effective_day, sequence)`
 - `clear_tax_override(handle, kind, item_id, effective_day, sequence)`
-整图会话在领取时固定本次结算的税表和税策，全国、地块和综合面板共用同一读源。
+整图会话在领取时固定本次结算的税表和税策，全国、地块和综合面板共用同一读源。经济按国家、税种、计税方式和完整有符号金额复用地方默认税行，地块实缴与国库实收均按该地适用行结算。
 
 - `tax_policy_snapshot(handle)`
 - `fiscal_snapshot(handle)`

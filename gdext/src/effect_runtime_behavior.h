@@ -295,7 +295,7 @@
     // Built-in colonization transaction used by the Economy-owned expedition
     // state machine. Unowned targets emit CLAIM then SETTLE and stay unpublished
     // until Country and Economy ACK. Own-country relocation emits SETTLE only.
-    static constexpr int64_t BUILTIN_TRANSACTION_ID_BASE = int64_t{1} << 50;
+    static constexpr int64_t BUILTIN_TRANSACTION_ID_BASE = EFFECT_BUILTIN_TRANSACTION_ID_BASE;
 
     bool enqueue_family_colonization_pod(
         int64_t effect_id, int64_t effective_day, int64_t source_id,

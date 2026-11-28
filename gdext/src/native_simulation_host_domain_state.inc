@@ -127,34 +127,55 @@
     RuntimeEffectPodCatalog _effect_pod_catalog;
     bool _effect_pod_configured = false;
     struct EffectPodMetricQueueItem {
+        bool operator<(const EffectPodMetricQueueItem &other) const;
+        int64_t admitted_day = 0;
         int64_t instance_id = 0;
         uint32_t generation = 0;
         int32_t metric_id = 0;
         int64_t revision = 0;
         int64_t value = 0;
     };
-    // Upserts and retires share ONE arrival sequence. The drain replays them in
-    // arrival order: an Effect soft-skip can leave "submit on day N" and
-    // "retire on day N+1" sitting in the queue together, and draining either
-    // deque wholesale would swap that pair into "retire, submit" -- which
-    // silently resurrects the very instance the caller retired.
+    // Bindings and retirements share an ordinal so changes to one instance
+    // keep their causal order even while independent instances are reordered.
     struct EffectPodInstanceQueueItem {
+        int64_t admitted_day = 0;
         uint64_t sequence = 0;
         RuntimeEffectPodInstanceInput input;
+        auto order_key() const { return std::make_pair(input.instance_id, sequence); }
     };
+    bool validate_effect_transport_metrics(std::deque<EffectPodMetricQueueItem> &metrics,
+        const std::deque<EffectPodInstanceQueueItem> &instances, const RuntimeSaveBundle &bundle,
+        const RuntimeEffectPodAuthority &saved_effect) const;
     struct EffectPodRemoveQueueItem {
+        int64_t admitted_day = 0;
         uint64_t sequence = 0;
         int64_t instance_id = 0;
         uint32_t generation = 0;
+        auto order_key() const { return std::make_pair(instance_id, sequence); }
     };
+    static void sort_effect_inputs(std::deque<EffectPodInstanceQueueItem> &instances,
+                                   std::deque<EffectPodRemoveQueueItem> &removals);
+    static void sort_effect_receipts(std::deque<RuntimeDomainAck> &receipts);
+    bool allocate_effect_input_sequence_locked(uint64_t &sequence, std::string &error);
+    // Inline peer waits reopen the generic command boundary. External Effect
+    // inputs stay sealed once the day has started, including across a revisit.
+    std::atomic<int64_t> _effect_input_sealed_day{0};
     mutable std::mutex _effect_transport_mutex;
     // Guarded by `_effect_transport_mutex`.
     uint64_t _effect_transport_sequence = 0;
     std::deque<EffectPodInstanceQueueItem> _effect_instance_queue;
+    std::unordered_map<int64_t, EffectPodInstanceQueueItem *> _last_queued_effect_instance;
+    void rebuild_effect_queue_index_locked();
     std::deque<EffectPodMetricQueueItem> _effect_metric_queue;
     std::deque<EffectPodRemoveQueueItem> _effect_remove_queue;
     std::deque<RuntimeDomainIntent> _effect_intents;
     std::deque<RuntimeDomainAck> _effect_acks;
+    // Prefix owned by the open day. Rows stay in the inbox until bindings and
+    // metrics succeed, so failures retain receipts and their capacity slots.
+    size_t _effect_ready_ack_count = 0;
+    void include_effect_day_peer_receipts_locked(int64_t day);
+    const CountryPeerIntent *pending_country_effect_peer_locked(
+        uint64_t request, const CountryPeerResult &result) const;
     // Day-local MODIFIER-targeted intents produced by the Effect stage for
     // Modifier E7. Cleared at the start of each Effect stage visit.
     std::vector<RuntimeDomainIntent> _effect_day_modifier_intents;

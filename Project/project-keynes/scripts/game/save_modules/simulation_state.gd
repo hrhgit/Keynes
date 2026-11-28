@@ -63,10 +63,9 @@ func decode_archive(archive: Dictionary) -> Dictionary:
 		value = {}
 	elif not preload("res://scripts/game/pksr_bundle_header.gd").valid(bytes):
 		if bytes.size() >= 8 and bytes.slice(0, 4).get_string_from_ascii() == "PKSR" \
-				and bytes.decode_u32(4) != preload("res://scripts/game/pksr_bundle_header.gd").BUNDLE_VERSION:
+				and not preload("res://scripts/game/pksr_bundle_header.gd").supports_version(bytes.decode_u32(4)):
 			return _result(false, "simulation_runtime_incompatible",
-				"PKSR 版本不匹配：需要 %d，读取到 %d。" % [
-					preload("res://scripts/game/pksr_bundle_header.gd").BUNDLE_VERSION, bytes.decode_u32(4)])
+				"无法读取 PKSR 版本 %d。" % bytes.decode_u32(4))
 		value = bytes_to_var(bytes)
 		if not value is Dictionary:
 			return _result(false, "save_section_decode_failed", "无法解析存档 section：simulation_runtime")

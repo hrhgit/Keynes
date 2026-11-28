@@ -237,10 +237,6 @@ bool NativeSimulationHost::map_effect_intent_to_modifier_command(
         intent.source_domain == static_cast<uint16_t>(RuntimeDomainId::EFFECT)
         ? (intent.reserved & 0xFF) : -1;
     const int32_t adapter_target_domain = (intent.reserved >> 8) & 0xFF;
-    // EffectRuntime's GENERIC adapter reads the instance row (its own
-    // source_type / source_id), but the intent only carries the instance id
-    // in source_id. Look the row up in the snapshot the Effect stage just
-    // committed on this same thread.
     // Match EffectRuntime native adapter semantics (technology/family/person).
     // payload[2]==0 means "unset", not GLOBAL — defaulting to GLOBAL made
     // has_technology_effect miss ENTITY+TECH unique keys after a successful
@@ -314,17 +310,19 @@ bool NativeSimulationHost::map_effect_intent_to_modifier_command(
         // source_type / source_id -- not with RuntimeDomainId::EFFECT. A
         // generic program whose domain happened to be 1 was also being
         // relabelled TECH and pinned to magnitude 1.0.
-        const auto effect_view = _effect_pod_authority.copy_committed_view(intent.source_id);
-        assert(_effect_pod_authority.observe_committed_view(effect_view));
-        const RuntimeEffectPodInstance *source = effect_view.found ? &effect_view.instance : nullptr;
         command.scope = 2; // ENTITY
         command.entity_handle = intent.target_handle;
-        command.source_type = source != nullptr
-            ? static_cast<uint64_t>(source->source_type)
-            : static_cast<uint64_t>(RuntimeDomainId::EFFECT);
-        command.source_id = source != nullptr
-            ? static_cast<uint64_t>(source->source_id)
-            : intent.source_id;
+        if (intent.reserved_effect_flags & RUNTIME_DOMAIN_INTENT_HAS_EFFECT_SOURCE) {
+            command.source_type = static_cast<uint64_t>(intent.effect_source_type);
+            command.source_id = static_cast<uint64_t>(intent.effect_source_id);
+        } else {
+            const auto view = _effect_pod_authority.copy_committed_view(intent.source_id);
+            assert(_effect_pod_authority.observe_committed_view(view));
+            command.source_type = view.found ? static_cast<uint64_t>(view.instance.source_type)
+                                             : static_cast<uint64_t>(RuntimeDomainId::EFFECT);
+            command.source_id = view.found ? static_cast<uint64_t>(view.instance.source_id)
+                                           : intent.source_id;
+        }
     } else if (command.domain == 1) {
         command.scope = 2; // ENTITY
         command.source_type = 0x54454348ULL; // TECH

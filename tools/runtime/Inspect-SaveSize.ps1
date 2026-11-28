@@ -8,7 +8,7 @@ version, u32 header length, a JSON header (provider manifest + section table),
 then one zstd blob per section. The header alone already reports every section's
 compressed and uncompressed length, so the shallow report needs no decompressor.
 
--Deep additionally decompresses the simulation_runtime section (the PKSR v5
+-Deep additionally decompresses the simulation_runtime section (the PKSR v5/v6
 runtime envelope) and splits it into its internal sub-sections (CLM2 climate,
 ECP2 economy, ...). PKSV compresses a whole section at once, so a sub-section's
 share of the file cannot be read off the container table; the report therefore

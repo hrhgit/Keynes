@@ -24,7 +24,7 @@
 | MODIFIER | Modifier POD；部分授权时仍可内嵌 Effect | 不走 SHADOW 管线 |
 | GAMEPLAY_EFFECT | Host 解码、去重，排入 Events/Ideology 命令 | 无双算 |
 | ECONOMY | StageOps 调度 `NativeEconomyRuntime` 的真实计算；POD_ACTIVE 时绑定 OwnedState | 默认 ACTIVE_ONLY；显式 ACTIVE_WITH_PARITY 才跑影子 |
-| EVENTS | RuntimeEventsAuthority 写事件日志与消费者游标 | 沿用 `events_probe_enabled`，名称含 probe 但用于生产 |
+| EVENTS | RuntimeEventsAuthority 写事件日志与消费者游标 | ACTIVE 取得 Events 授权时，首启和同世界重启均开启事件日志 |
 | VISUAL | Host 产生刷新意图，`publish_day` 排序去重；实际显示归 Godot | 无双算 |
 | COMMIT | 记完成位，检查请求域全部完成，由外层发布 | 无双算 |
 
@@ -127,7 +127,7 @@ Android/iOS 与桌面现在默认使用同一 native worker 执行十二域日�
 
 PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`world_runtime_daily_adapter_part3.gd:118` 经 `world_runtime_daily_adapter_part2.gd:80` 调用 `world_runtime_modifier_writeback.gd:15`。适配器检查 Modifier 授权位 `0x040`，经 `map_generator.gd:79` 和 `map_rules_initializer.gd:99` 调用原生 `apply_runtime_modifier_snapshot`。
 
-整图会话的全国、地块和综合面板从 Economy 冻结的税表读取税率和计税方式。已占地块即使当天无人纳税，也显示适用的税策。综合面板的国库、国家修订号和已完成科技来自已领取当天的 Country 日尾。
+整图会话的全国、地块和综合面板从 Economy 冻结的税表读取税率和计税方式。地方默认税额按国家、税种、计税方式和完整有符号税额共用行。已占地块即使当天无人纳税，也显示适用的税策。综合面板的国库、国家修订号和已完成科技来自已领取当天的 Country 日尾。
 
 开局及读档首帧用同帧 Country 和 `ModifierReadView` 计算起始显示值。开局税率帧在执行器启动前校验。日常领取时先安装，再发 `map_fields_received`。税率帧被拒时，领取结果用 `modifier_display_error` 和 `modifier_display_retained_day` 报告错误及保留的税率日期，当天记录、地图和通知照常发布。帧末仍可查询已领取的税率。公开的修正求值、解释和列表等查询仍使用主线程镜像。
 
@@ -173,7 +173,7 @@ PlayerGame 领取整图提交后更新国家读视图和 Modifier 镜像。`worl
 | --- | --- |
 | Ideology 首个意见/国家快照未发布、未配置 | 保留首次装配兼容；不发伪 ACK，ready=false |
 | Trigger ACK barrier / retry / stale / rejected、未配置/未启动 | 保留列出的原策略，不制造新 ACK |
-| Effect 同日已提交重访 | 幂等重访；遇 drain/catchup 错误停车，不再宣布完成 |
+| Effect 同日已提交重访 | 继续处理本日到期的首次发射与待收回执；每条新命令的事件只发布一次 |
 | Country/Economy peer 等待 | stall、continuation_pending 与超时故障保留；部分旧注释仍称 soft，实际已不完成 |
 | Modifier 上游未授权、SHADOW/OFF、Web 回退 | 按原授权策略保留 |
 
@@ -187,7 +187,7 @@ Ideology 的 invalid/shape invalid 与任意 opinion 前缀已不再软完成。
 
 `_executor_pending_commands` 与未完成日的 `_executor_day_environment` 属于世界，由当前执行器独占访问。后台和 inline 共用待执行列表及冻结输入；停止不销毁它们。`native_simulation_host_lifecycle.cpp` 负责执行器启动：同一世界保持 ACTIVE 且授权范围不变时，只更换执行器，保留业务状态、日期、编号、确认结果、发布游标和日内继续位置；不重新初始化已提交的域。未完成日标记也随后台/inline 交接，不能在替换执行器后保存半日状态。
 
-新世界与重启分开：已启动过的 `DCWorldExt` 再 `configure_country` 时，先要求执行器确实退出，并在私有候选对象中验证配置；失败保留旧世界。成功后解除经济对旧 OwnedState 的借用，替换 Host 并重新连接适配层，Country 对象地址保持稳定，区分新旧世界的 session epoch 继续递增，新的 Host 回复协议编号也从旧值继续增加；同一世界重启则保持编号。`make_new_world_host` 在替换前重新验证并安装已配置的 Modifier、Effect、Trigger、Ideology 规则定义，以及 Modifier 稳定键到内部编号的映射；不复制旧实例、命令、确认记录、输入、意见、快照或读取进度。主线程的规则对象也清理旧实例和读取进度，使新世界从较小编号发布的结果可立即接收；同一世界重启不执行这项清理。Effect 与 Modifier 的状态清理分别集中在 `effect_runtime_lifecycle.cpp` 和 `modifier_runtime_lifecycle.cpp`。旧世界日期及授权证明不会进入新世界。读档则安装存档中的世界状态。未来命令及需要重试的命令不重新挤入实时入口。保存格式仍为 PKSR v5；待执行命令超过原有 4096 条容量时明确拒绝保存并保留现场全部命令。
+新世界与重启分开：已启动过的 `DCWorldExt` 再 `configure_country` 时，先要求执行器确实退出，并在私有候选对象中验证配置；失败保留旧世界。成功后解除经济对旧 OwnedState 的借用，替换 Host 并重新连接适配层，Country 对象地址保持稳定，区分新旧世界的 session epoch 继续递增，新的 Host 回复协议编号也从旧值继续增加；同一世界重启则保持编号。`make_new_world_host` 在替换前重新验证并安装已配置的 Modifier、Effect、Trigger、Ideology 规则定义，以及 Modifier 稳定键到内部编号的映射；不复制旧实例、命令、确认记录、输入、意见、快照或读取进度。主线程的规则对象也清理旧实例和读取进度，使新世界从较小编号发布的结果可立即接收；同一世界重启不执行这项清理。Effect 与 Modifier 的状态清理分别集中在 `effect_runtime_lifecycle.cpp` 和 `modifier_runtime_lifecycle.cpp`。旧世界日期及授权证明不会进入新世界。读档则安装存档中的世界状态。未来命令及需要重试的命令不重新挤入实时入口。保存写入 PKSR v6，读取兼容 v5。待执行命令超过原有 4096 条容量时明确拒绝保存并保留现场全部命令。
 
 同一世界重新捕获 Country 输入时，已由原生运行时接管的国家状态取自最近一次已提交副本，不覆盖成冻结的旧同步副本；重复发布同一内容身份的目录不清除请求及确认记录。新的国家配置会经过上述新世界入口。CLOCK_WAIT 在等待锁内复查停止、保存、暂停和速度变化；通知早于实际等待也不会遗失。
 
@@ -207,7 +207,7 @@ Ideology 的 invalid/shape invalid 与任意 opinion 前缀已不再软完成。
 | modifier | PKMD v3 | rules | effect |
 | trigger | PKTR v6 | history | economy |
 | ideology | PKID v14 | rules | trigger、modifier、economy |
-| host | PKSR v5 | simulation_runtime | environment、country、economy |
+| host | PKSR v6（兼容 v5） | simulation_runtime | environment、country、economy |
 | annual | PKAR v1 | history | ideology |
 
 provider 的 manifest 版本、段内字节版本、内容身份是三层不同的数，不能互相比较。

@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..\")).Path
+$repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $project = Join-Path $repo "Project\project-keynes"
 
 Write-Host "[effect] checking required files"
@@ -16,7 +16,7 @@ $required = @(
     "Project\project-keynes\scripts\effect\effect_catalog.gd",
     "Project\project-keynes\scripts\effect\effect_facade.gd",
     "Project\project-keynes\scripts\simulation\systems\effect_runtime_system.gd",
-    "docs\cpp-dots-runtime\docs/architecture/current-state.md"
+    "docs\architecture\current-state.md"
 )
 foreach ($relative in $required) {
     if (-not (Test-Path (Join-Path $repo $relative))) {
@@ -39,7 +39,7 @@ if ($Godot) {
     if (-not (Test-Path -LiteralPath $GodotPath)) {
         throw "Godot not found: $GodotPath"
     }
-    & $GodotPath --headless --path $project --script res://tests/effect_runtime_test.gd
+    & $GodotPath --headless --path $project --script res://tests/effect/effect_runtime_test.gd
     if ($LASTEXITCODE -ne 0) { throw "Effect Runtime headless test failed" }
 }
 

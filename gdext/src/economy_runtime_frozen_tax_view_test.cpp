@@ -4,7 +4,10 @@
 
 namespace pk {
 
+bool test_cell_tax_default_rows(std::string &error);
+
 bool EconomyInvariantProbe::run_frozen_tax_view(std::string &error) {
+    if (!test_cell_tax_default_rows(error)) return false;
     auto economy = std::make_unique<NativeEconomyRuntime>();
     constexpr uint64_t resident = uint64_t{1} << 32;
     constexpr uint64_t landless = resident + 1;

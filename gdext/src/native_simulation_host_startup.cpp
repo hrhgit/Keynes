@@ -100,6 +100,10 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
         _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
         return false;
     }
+    // An executor that owns Events must maintain the journal on every start,
+    // including a same-world resume with diagnostics disabled.
+    if ((wanted & runtime_domain_mask(RuntimeDomainId::EVENTS)) != 0u)
+        _events_probe_enabled.store(true, std::memory_order_release);
     if (!_has_pending_restore && has_started_once() &&
         mode == RuntimeSimulationMode::ACTIVE &&
         _mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
@@ -152,6 +156,12 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     const int64_t start_day = restore_pending
         ? _pending_restore_bundle.committed_day
         : (resuming_previous_lifetime ? previous_committed : initial_day);
+    int64_t start_seal = 0;
+    if (!RuntimeCommandAdmission::encode_day(start_day, start_seal)) {
+        set_fault(RuntimeCommandAdmission::day_range_error);
+        _state.store(RuntimeWorkerState::STOPPED, std::memory_order_release);
+        return false;
+    }
     const double start_speed = restore_pending
         ? _pending_restore_bundle.speed_days_per_second : speed_days_per_second;
     const bool start_paused = restore_pending
@@ -222,17 +232,11 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     // The request is recorded now; the grant is published only after a barrier
     // proves the worker actually ran those domains (see publish_day).
     _requested_authority_mask.store(wanted, std::memory_order_release);
-    // I8: an ACTIVE EVENTS request owns the Events stage bit, so the POD store
-    // must run whether or not the caller also asked for the diagnostic probe.
-    // Leaving it off would make the stage soft-complete forever without ever
-    // producing a snapshot.
-    if ((wanted & runtime_domain_mask(RuntimeDomainId::EVENTS)) != 0u) {
-        _events_probe_enabled.store(true, std::memory_order_release);
-    }
     _mode.store(mode, std::memory_order_release);
     _committed_day.store(start_day, std::memory_order_release);
     publish_narrative_boundary(start_day);
-    _command_seal.store(start_day * 2, std::memory_order_release);
+    _command_seal.store(start_seal, std::memory_order_release);
+    _effect_input_sealed_day.store(start_day, std::memory_order_release);
     _clock_requested_day.store(start_day, std::memory_order_release);
     _calendar_suspended.store(start_paused, std::memory_order_release);
     _display_consumed_day.store(start_day, std::memory_order_release);
@@ -723,8 +727,10 @@ bool NativeSimulationHost::start(RuntimeSimulationMode mode,
     if (restore_pending && !restore_trigger_transport(_pending_restore_bundle.trigger_transport_bytes, ecp2_apply_error, true)) {
         set_fault(ecp2_apply_error.c_str()); return false;
     }
-    if (restore_pending)
-        restore_effect_transport(_pending_restore_bundle.effect_transport_bytes);
+    if (restore_pending && !restore_effect_transport(_pending_restore_bundle, _effect_pod_authority, true)) {
+        set_fault("effect_transport_continuation_invalid");
+        return false;
+    }
     if (restore_pending && _world_environment && _economy_production_runtime &&
         _economy_production_runtime->worker_resource_seeded()) {
         std::lock_guard<std::mutex> display(_resource_display_mutex);

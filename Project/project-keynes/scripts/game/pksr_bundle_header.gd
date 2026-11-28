@@ -1,6 +1,6 @@
 extends RefCounted
 
-# PKSR v5 fixed scalar header contract.
+# PKSR v5 and v6 share this scalar header layout.
 #
 # The layout mirrors build_save_bundle in gdext/src/native_simulation_host.cpp.
 # It lives here rather than inline in GameSaveCoordinator for two reasons: the
@@ -29,7 +29,8 @@ const SCALAR_HEADER_SIZE := 89
 # cursors and the trailing checksum.
 const MIN_BUNDLE_SIZE := 2241
 
-const BUNDLE_VERSION := 5
+const BUNDLE_VERSION := 6
+const LEGACY_BUNDLE_VERSION := 5
 # Mirrors RUNTIME_DOMAIN_ABI_VERSION. The legacy host envelope stays at 1; the
 # POD section ABI is versioned separately inside the DPD2 section.
 const DOMAIN_ABI_VERSION := 1
@@ -61,6 +62,10 @@ const SECTION_KNOWN := SECTION_RUNTIME_ENVELOPE | SECTION_DOMAIN_POD | SECTION_C
 	| SECTION_ECONOMY_ECP2 | SECTION_GAMEPLAY_EFFECT | SECTION_EFFECT_TRANSPORT | SECTION_MILITARY_TERRAIN \
 	| SECTION_SEASON_HISTORY | SECTION_PLAYER_CONFIRMATION \
 	| SECTION_VISION | SECTION_BIO | SECTION_CLIMATE_CALENDAR
+
+
+static func supports_version(version: int) -> bool:
+	return version == BUNDLE_VERSION or version == LEGACY_BUNDLE_VERSION
 
 
 static func section_mask(bytes: PackedByteArray) -> int:
@@ -101,7 +106,7 @@ static func valid(bytes: PackedByteArray, report: Dictionary = {}) -> bool:
 	if bytes.slice(OFFSET_MAGIC, OFFSET_MAGIC + 4).get_string_from_ascii() != "PKSR":
 		return false
 	# PKSR v1 carried no ABI/section header and is rejected rather than guessed at.
-	if int(bytes.decode_u32(OFFSET_VERSION)) != BUNDLE_VERSION:
+	if not supports_version(bytes.decode_u32(OFFSET_VERSION)):
 		return false
 	var abi := int(bytes.decode_u32(OFFSET_DOMAIN_ABI))
 	if abi != DOMAIN_ABI_VERSION:
@@ -110,6 +115,8 @@ static func valid(bytes: PackedByteArray, report: Dictionary = {}) -> bool:
 	# RUNTIME_ENVELOPE|DOMAIN_POD and adds CLIMATE once the climate store carries
 	# cells, so an equality test against a single section can never hold.
 	var mask := int(bytes.decode_u32(OFFSET_SECTION_MASK))
+	if bytes.decode_u32(OFFSET_VERSION) == BUNDLE_VERSION and (mask & SECTION_EFFECT_TRANSPORT) == 0:
+		return false
 	if (mask & SECTION_RUNTIME_ENVELOPE) == 0:
 		return false
 	# An unknown section bit means the writer knows a section this build cannot

@@ -420,7 +420,7 @@ bool EffectRuntime::apply_pod_snapshot(const RuntimeEffectPodSnapshot &snapshot,
     }
     next_transactions.reserve(snapshot.transactions.size());
     for (const RuntimeEffectPodTransaction &entry : snapshot.transactions) {
-        if (entry.transaction_id == 0) {
+        if (entry.transaction_id <= 0 || next_transaction_ids.count(entry.transaction_id) != 0) {
             error = "effect_pod_snapshot_transaction_invalid";
             return false;
         }
@@ -433,7 +433,12 @@ bool EffectRuntime::apply_pod_snapshot(const RuntimeEffectPodSnapshot &snapshot,
             error = "effect_pod_snapshot_transaction_source_missing";
             return false;
         }
-        tx.program_id = next_instances[source->second].program_id;
+        if (entry.delivery_program_id < 0 ||
+            entry.delivery_program_id >= static_cast<int32_t>(_definitions.size())) {
+            error = "effect_pod_snapshot_program_invalid";
+            return false;
+        }
+        tx.program_id = entry.delivery_program_id;
         tx.effective_day = entry.effective_day;
         tx.plan_hash = entry.plan_hash;
         tx.required_ack_mask = entry.required_ack_mask;
@@ -466,10 +471,12 @@ bool EffectRuntime::apply_pod_snapshot(const RuntimeEffectPodSnapshot &snapshot,
         next_transactions.push_back(tx);
     }
 
-    // A transaction number cannot establish that the underlying requests
-    // match. In particular, a catalog row never represents a family claim.
+    // Expeditions can recover a legacy colonization ID by their stable identity.
+    // A canal tracks its numeric ID directly. Reserved builtin IDs stay disjoint.
     for (const PreservedBuiltin &row : preserved_builtins) {
-        if (next_transaction_ids.count(row.transaction.id) != 0) {
+        const bool legacy_colonization = row.transaction.program_id == -1 &&
+            row.transaction.id > 0 && row.transaction.id < BUILTIN_TRANSACTION_ID_BASE;
+        if (!legacy_colonization && next_transaction_ids.count(row.transaction.id) != 0) {
             error = "effect_pod_snapshot_builtin_transaction_id_collision";
             return false;
         }
@@ -536,15 +543,17 @@ bool EffectRuntime::apply_pod_snapshot(const RuntimeEffectPodSnapshot &snapshot,
         if (bound_ids.erase(old_id) > 0) bound_ids.insert(new_id);
     };
     for (PreservedBuiltin &row : preserved_builtins) {
+        row.transaction.command_begin = static_cast<uint32_t>(_command_arena.size());
+        row.transaction.command_count = static_cast<uint32_t>(row.commands.size());
+        for (Command &command : row.commands)
+            _command_arena.push_back(std::move(command));
         if (_transaction_ids.count(row.transaction.id) != 0) {
-            // Builtin transactions (colonization/canal) never originate on the
-            // worker POD. A matching ID here is an ID collision with a worker
-            // catalog transaction (for example from an older save); remap it
-            // into the disjoint builtin ID range instead of silently dropping
-            // the expedition's CLAIM/SETTLE transaction.
+            // The catalog keeps its ID. PKEF includes the builtin ID in its
+            // plan hash, and pending receipts follow the expedition to its new ID.
             const int64_t old_id = row.transaction.id;
             const int64_t new_id = allocate_builtin_transaction_id();
             row.transaction.id = new_id;
+            row.transaction.plan_hash = persisted_plan_hash(row.transaction, _command_arena);
             remap_preserved_bindings(old_id, new_id,
                 _native_country_ack_bindings,
                 _native_country_bound_transaction_ids);
@@ -552,12 +561,6 @@ bool EffectRuntime::apply_pod_snapshot(const RuntimeEffectPodSnapshot &snapshot,
                 _native_economy_ack_bindings,
                 _native_economy_bound_transaction_ids);
         }
-        row.transaction.command_begin =
-            static_cast<uint32_t>(_command_arena.size());
-        row.transaction.command_count =
-            static_cast<uint32_t>(row.commands.size());
-        for (Command &command : row.commands)
-            _command_arena.push_back(std::move(command));
         _transaction_ids[row.transaction.id] =
             static_cast<int32_t>(_transactions.size());
         if (row.transaction.status == PLANNED ||

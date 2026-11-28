@@ -1,3 +1,6 @@
+#include "runtime_effect_pod_checkpoint_selftest.inc"
+#include "runtime_effect_pod_mixed_ack_selftest.inc"
+
 bool RuntimeEffectPodAuthority::magnitude_scale_self_test(std::string &error) {
     const auto fail = [&error](const char *reason) {
         error = reason;
@@ -97,7 +100,58 @@ bool RuntimeEffectPodAuthority::self_test(std::string &error) {
     // second program to its catalog would move all of them.
     if (!cell_target_self_test(error)) return false;
     if (!latch_self_test(error)) return false;
-    if (!magnitude_scale_self_test(error)) return false;
+    if (!magnitude_scale_self_test(error) || !checkpoint_frozen_delivery_test(error)) return false;
+    if (!mixed_adapter_ack_self_test(error)) return false;
+    {
+        RuntimeEffectPodAuthority source, reader;
+        RuntimeEffectPodInstanceInput input;
+        RuntimeEffectPodPlan plan;
+        if (!checkpoint_delivery_setup(source, true, input, error)) return false;
+        ++input.instance_id;
+        if (!source.upsert_instance(input, error) || !source.plan_day(2, 2, plan, error) ||
+            !source.commit_day(plan, error) ||
+            !reader.configure(checkpoint_delivery_catalog(true), error)) return false;
+        std::vector<uint8_t> valid, duplicate, after;
+        source.serialize(valid);
+        if (!reader.restore(valid.data(), valid.size(), error)) return false;
+        // Model a save written by the old allocator after reusing the first ID.
+        // Both hashes are written by the real serializer and the cursor is ahead.
+        auto &state = source._current;
+        const int64_t reused = state.transactions.front().transaction_id;
+        state.transactions.back().transaction_id = reused;
+        state.instances.back().pending_transaction_id = reused;
+        state.deterministic_state_hash = source.state_hash(state);
+        source.serialize(duplicate);
+        const bool accepted = reader.restore(duplicate.data(), duplicate.size(), error);
+        reader.serialize(after);
+        if (accepted || error != "effect_pod_transaction_order_invalid" || after != valid)
+            return fail("test_only_effect_checkpoint_duplicate_transaction_accepted");
+    }
+    {
+        auto catalog = checkpoint_delivery_catalog(true);
+        catalog.metric_key_hashes = {hash_text("metric")};
+        RuntimeEffectPodAuthority source, reader;
+        RuntimeEffectPodInstanceInput input;
+        input.instance_id = 41;
+        input.program_id = 0;
+        input.target_generation = 1;
+        if (!source.configure(catalog, error) || !source.upsert_instance(input, error)) return false;
+        input.instance_id = 17;
+        if (!source.upsert_instance(input, error) || !reader.configure(catalog, error)) return false;
+        std::vector<uint8_t> valid, aliased, after;
+        source.serialize(valid);
+        if (!reader.restore(valid.data(), valid.size(), error)) return false;
+        source._current.instances[1].metric_base = 0;
+        for (const size_t slots : {2u, 1u}) {
+            source._current.metric_values.resize(slots);
+            source._current.metric_revisions.resize(slots);
+            source.serialize(aliased);
+            const bool accepted = reader.restore(aliased.data(), aliased.size(), error);
+            reader.serialize(after);
+            if (accepted || error != "effect_pod_metric_slab_shape_invalid" || after != valid)
+                return fail("test_only_effect_checkpoint_aliased_metrics_accepted");
+        }
+    }
     // Managed lifecycle: one apply, one deactivation after the condition
     // falls, and no idle churn while the same input stays applied. The
     // fixture also pins ACK semantics and ACKED transaction compaction.
@@ -574,7 +628,9 @@ bool RuntimeEffectPodAuthority::self_test(std::string &error) {
     RuntimeEffectPodPlan retry_plan;
     if (!authority.plan_day(1, 2, retry_plan, error) || retry_plan.intents.size() != 6u ||
         !authority.commit_day(retry_plan, error)) return fail("effect_self_test_retry_plan_failed");
-    for (const RuntimeEffectPodCommand &command : authority.snapshot().command_arena) {
+    // Applying an ACK republishes the authority snapshot. The returned plan
+    // retains the command list being acknowledged across those publications.
+    for (const RuntimeEffectPodCommand &command : retry_plan.next_snapshot.command_arena) {
         RuntimeDomainAck ack;
         ack.transaction_id = static_cast<uint64_t>(transaction_id);
         ack.target_handle = command.target_handle;

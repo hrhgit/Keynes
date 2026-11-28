@@ -17,7 +17,7 @@ func _run() -> void:
 			_expect("future command accepted", admitted.get("pending", false))
 		var saved: Dictionary = await _save(source, 81)
 		_expect("save retains both future commands", saved.get("pending_command_count", -1) == 2)
-		_expect("runtime archive uses current version", saved.get("bundle_version", -1) == 5)
+		_expect("runtime archive uses current version", saved.get("bundle_version", -1) == 6)
 		_expect("save is consumed once", not source.poll_runtime_save(81).get("ready", false))
 		var again: Dictionary = await _save(source, 82)
 		_expect("subsequent save retains backlog", again.get("pending_command_count", -1) == 2)
