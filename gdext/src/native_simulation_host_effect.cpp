@@ -255,6 +255,7 @@ bool NativeSimulationHost::configure_effect_pod(
     _effect_pod_configured = true;
     {
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+        _last_queued_effect_instance.clear();
         _effect_instance_queue.clear();
         _effect_metric_queue.clear();
         _effect_remove_queue.clear();
@@ -290,128 +291,6 @@ bool NativeSimulationHost::restore_effect_pod_save(
     if (!candidate.configure(_effect_pod_catalog, error)) return false;
     if (!candidate.restore(bytes, size, error)) return false;
     _effect_pod_authority = std::move(candidate);
-    return true;
-}
-
-bool NativeSimulationHost::effect_has_daily_input_fence() const noexcept {
-    constexpr uint32_t tax_domains = runtime_domain_mask(RuntimeDomainId::ECONOMY) |
-        runtime_domain_mask(RuntimeDomainId::MODIFIER);
-    return _world_environment || (_mode.load(std::memory_order_acquire) == RuntimeSimulationMode::ACTIVE &&
-        (_requested_authority_mask.load(std::memory_order_acquire) & tax_domains) == tax_domains);
-}
-
-RuntimeCommandAdmission NativeSimulationHost::admit_effect_input(int64_t &admitted_day) {
-    if (on_worker_thread() || !effect_has_daily_input_fence())
-        return RuntimeCommandAdmission(true);
-    RuntimeCommandAdmission admission(_command_producer_mutex, _command_seal);
-    admitted_day = std::max({command_seal_day(), frozen_command_day() + 1,
-        _effect_input_sealed_day.load(std::memory_order_acquire) + 1});
-    return admission;
-}
-
-bool NativeSimulationHost::queue_effect_pod_instance(
-        const RuntimeEffectPodInstanceInput &input, std::string &error, bool day_consequence) {
-    if (!_effect_pod_configured) {
-        error = "effect_pod_not_configured";
-        return false;
-    }
-    int64_t admitted_day = 0;
-    auto admission = day_consequence ? RuntimeCommandAdmission(true) : admit_effect_input(admitted_day);
-    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    return append_effect_instance_locked(input, admitted_day, error);
-}
-
-std::vector<uint8_t> NativeSimulationHost::queue_effect_pod_instances(
-        const std::vector<RuntimeEffectPodInstanceInput> &inputs, std::string &error) {
-    std::vector<uint8_t> accepted(inputs.size(), 0);
-    if (inputs.empty()) return accepted;
-    if (!_effect_pod_configured) {
-        error = "effect_pod_not_configured";
-        return accepted;
-    }
-    int64_t admitted_day = 0;
-    auto admission = admit_effect_input(admitted_day);
-    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    for (size_t i = 0; i < inputs.size(); ++i)
-        accepted[i] = append_effect_instance_locked(inputs[i], admitted_day, error);
-    return accepted;
-}
-
-bool NativeSimulationHost::append_effect_instance_locked(
-        const RuntimeEffectPodInstanceInput &input, int64_t admitted_day, std::string &error) {
-    // Coalesce only with the queue tail, and only when that tail is still the
-    // newest arrival. Re-ENSUREing the same identity several times per frame
-    // must keep the newest payload (a stale level / next_due_day here is exactly
-    // the "present=0, queued>0" class of bug). But if a retire landed after the
-    // tail -- it lives in the *other* deque, so the tail alone cannot tell --
-    // folding this upsert into the tail would replay it before the retire and
-    // the instance would never come back.
-    if (!_effect_instance_queue.empty()) {
-        EffectPodInstanceQueueItem &tail = _effect_instance_queue.back();
-        if (tail.sequence == _effect_transport_sequence &&
-            tail.admitted_day == admitted_day &&
-            tail.input.instance_id == input.instance_id &&
-            tail.input.generation == input.generation) {
-            tail.input = input;
-            return true;
-        }
-    }
-    if (_effect_instance_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
-        error = "effect_instance_capacity_exceeded";
-        return false;
-    }
-    EffectPodInstanceQueueItem item;
-    item.admitted_day = admitted_day;
-    item.sequence = ++_effect_transport_sequence;
-    item.input = input;
-    _effect_instance_queue.push_back(item);
-    return true;
-}
-
-bool NativeSimulationHost::queue_effect_pod_metric(
-        int64_t instance_id, uint32_t generation, int32_t metric_id,
-        int64_t revision, int64_t value, std::string &error) {
-    if (!_effect_pod_configured) {
-        error = "effect_pod_not_configured";
-        return false;
-    }
-    int64_t admitted_day = 0;
-    auto admission = admit_effect_input(admitted_day);
-    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    if (_effect_metric_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
-        error = "effect_metric_capacity_exceeded";
-        return false;
-    }
-    EffectPodMetricQueueItem item;
-    item.admitted_day = admitted_day;
-    item.instance_id = instance_id;
-    item.generation = generation;
-    item.metric_id = metric_id;
-    item.revision = revision;
-    item.value = value;
-    _effect_metric_queue.push_back(item);
-    return true;
-}
-
-bool NativeSimulationHost::queue_effect_pod_remove(
-        int64_t instance_id, uint32_t generation, std::string &error) {
-    if (!_effect_pod_configured) {
-        error = "effect_pod_not_configured";
-        return false;
-    }
-    int64_t admitted_day = 0;
-    auto admission = admit_effect_input(admitted_day);
-    std::lock_guard<std::mutex> lock(_effect_transport_mutex);
-    if (_effect_remove_queue.size() >= RUNTIME_COMMAND_QUEUE_CAPACITY) {
-        error = "effect_remove_capacity_exceeded";
-        return false;
-    }
-    EffectPodRemoveQueueItem item;
-    item.admitted_day = admitted_day;
-    item.sequence = ++_effect_transport_sequence;
-    item.instance_id = instance_id;
-    item.generation = generation;
-    _effect_remove_queue.push_back(item);
     return true;
 }
 
@@ -454,7 +333,6 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
     std::deque<EffectPodInstanceQueueItem> instances;
     std::deque<EffectPodMetricQueueItem> metrics;
     std::deque<EffectPodRemoveQueueItem> removes;
-    std::vector<RuntimeDomainAck> acks;
     {
         std::lock_guard<std::mutex> lock(_effect_transport_mutex);
         const auto take_admitted = [open_day](auto &queue, auto &ready) {
@@ -468,8 +346,7 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
         take_admitted(_effect_instance_queue, instances);
         take_admitted(_effect_metric_queue, metrics);
         take_admitted(_effect_remove_queue, removes);
-        acks.assign(_effect_acks.begin(), _effect_acks.end());
-        _effect_acks.clear();
+        if (!instances.empty() || !removes.empty()) rebuild_effect_queue_index_locked();
     }
 
     auto restore_remaining =
@@ -489,16 +366,17 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
                 _effect_remove_queue.push_front(removes_left.back());
                 removes_left.pop_back();
             }
+            rebuild_effect_queue_index_locked();
         };
 
-    // Replay retires and upserts strictly in arrival order. Draining either
-    // deque wholesale reorders "submit then retire" into "retire then submit",
-    // and the retired instance comes back on the next plan.
+    // Independent identities have one execution order on live and cold paths.
+    // A retirement and a later rebind of the same identity retain their order.
+    sort_effect_inputs(instances, removes);
     while (!removes.empty() || !instances.empty()) {
         const bool take_remove =
             !removes.empty() &&
             (instances.empty() ||
-             removes.front().sequence < instances.front().sequence);
+             removes.front().order_key() < instances.front().order_key());
         if (take_remove) {
             const EffectPodRemoveQueueItem item = removes.front();
             removes.pop_front();
@@ -575,6 +453,9 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
             return false;
         }
     }
+    // The revision is the producer's clock. Apply equal-valued observations
+    // in that order so the first revision that changed the value is reproducible.
+    std::sort(metrics.begin(), metrics.end());
     while (!metrics.empty()) {
         const EffectPodMetricQueueItem item = metrics.front();
         metrics.pop_front();
@@ -595,9 +476,20 @@ bool NativeSimulationHost::drain_effect_transport_queues(std::string &error, int
             return false;
         }
     }
-    if (!acks.empty() &&
-        !_effect_pod_authority.apply_acks(acks, error)) {
-        return false;
+    // Only take the independent peer receipts once all earlier work succeeded.
+    // A bad target rejects one receipt and cannot consume another peer's OK.
+    std::deque<RuntimeDomainAck> acks;
+    {
+        std::lock_guard<std::mutex> lock(_effect_transport_mutex);
+        acks.swap(_effect_acks);
+    }
+    sort_effect_receipts(acks);
+    for (const auto &ack : acks) {
+        std::string reason;
+        if (!_effect_pod_authority.apply_ack(ack, reason))
+            pk::log_info("[effect] rejected receipt tx=%llu domain=%u target=%llu: %s",
+                static_cast<unsigned long long>(ack.transaction_id), static_cast<unsigned>(ack.domain),
+                static_cast<unsigned long long>(ack.target_handle), reason.c_str());
     }
     return true;
 }

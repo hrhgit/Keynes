@@ -74,7 +74,10 @@ constexpr uint32_t RUNTIME_DOMAIN_POD_ABI_VERSION = 3u;
 // PKSR is the immutable runtime envelope inside the PKSV v2 container.  A
 // version bump is intentional: v1 did not carry an explicit ABI/section
 // header and must be rejected instead of being guessed at restore time.
-constexpr uint32_t RUNTIME_SAVE_BUNDLE_VERSION = 5u;
+// V6 carries dated Effect inputs. Older V5 executables silently emptied an
+// unknown transport tail. They must reject the envelope before reaching it.
+constexpr uint32_t RUNTIME_SAVE_BUNDLE_VERSION = 6u;
+constexpr uint32_t RUNTIME_SAVE_BUNDLE_LEGACY_V5 = 5u;
 constexpr uint32_t RUNTIME_SAVE_SECTION_RUNTIME_ENVELOPE = 1u << 0;
 constexpr uint32_t RUNTIME_SAVE_SECTION_DOMAIN_POD = 1u << 1;
 constexpr uint32_t RUNTIME_SAVE_SECTION_CLIMATE = 1u << 2;

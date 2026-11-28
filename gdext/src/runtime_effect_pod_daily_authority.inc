@@ -14,6 +14,22 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
     }
     if (_plan_ready) { error = "effect_pod_plan_already_pending"; set_blocker(error.c_str()); return false; }
     _next = _current;
+    // Identity, including for instances loaded in an older insertion order,
+    // determines transaction allocation and the layout of their metric rows.
+    const auto by_identity = [](const auto &a, const auto &b) { return a.instance_id < b.instance_id; };
+    if (!std::is_sorted(_next.instances.begin(), _next.instances.end(), by_identity)) {
+        std::sort(_next.instances.begin(), _next.instances.end(), by_identity);
+        const size_t width = _catalog.metric_key_hashes.size();
+        size_t base = 0;
+        for (auto &instance : _next.instances) {
+            std::copy_n(_current.metric_values.begin() + instance.metric_base, width,
+                        _next.metric_values.begin() + base);
+            std::copy_n(_current.metric_revisions.begin() + instance.metric_base, width,
+                        _next.metric_revisions.begin() + base);
+            instance.metric_base = static_cast<uint32_t>(base);
+            base += width;
+        }
+    }
     std::vector<RuntimeEffectPodCommand> emitted;
     emitted.reserve(std::min<uint32_t>(_command_capacity, 4096u));
     plan.base_generation = _current.generation;
@@ -110,7 +126,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
             continue;
         }
         const ManagedLifecycleDecision decision = evaluate_managed_lifecycle(
-            definition, instance, _current, day);
+            definition, instance, _next, day);
         if (decision == ManagedLifecycleDecision::RETIRE) {
             RuntimeEffectPodTransaction transaction;
             if (!append_retirement_transaction(
@@ -130,7 +146,7 @@ bool RuntimeEffectPodAuthority::plan_day(int64_t day, uint64_t input_generation,
             continue;
         }
         emitted.clear();
-        if (!execute_program(definition, instance, _current, day, emitted, error)) {
+        if (!execute_program(definition, instance, _next, day, emitted, error)) {
             set_blocker(error.c_str());
             return false;
         }

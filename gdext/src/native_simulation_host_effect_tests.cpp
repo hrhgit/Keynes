@@ -229,6 +229,7 @@ bool NativeSimulationHost::effect_pod_host_stage_self_test(std::string *out_erro
     if (implemented_domain_mask() != RUNTIME_ALL_DOMAIN_MASK) {
         return fail("effect_host_stage_mask_changed");
     }
+    if (!effect_input_order_self_test(catalog, error)) return fail(error.c_str());
     return true;
 }
 

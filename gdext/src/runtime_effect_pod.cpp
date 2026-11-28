@@ -66,10 +66,9 @@ void append_le(std::vector<uint8_t> &out, T value) {
     using Raw = std::remove_cv_t<T>;
     using U = typename le_raw_type<Raw>::type;
     using Unsigned = std::make_unsigned_t<U>;
-    Unsigned bits = static_cast<Unsigned>(
-        static_cast<U>(value));
+    uint64_t bits = static_cast<Unsigned>(value);
     for (size_t i = 0; i < sizeof(U); ++i) {
-        out.push_back(static_cast<uint8_t>(bits & static_cast<Unsigned>(0xffu)));
+        out.push_back(static_cast<uint8_t>(bits & 0xffu));
         bits >>= 8u;
     }
 }

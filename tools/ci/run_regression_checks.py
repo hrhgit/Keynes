@@ -77,6 +77,7 @@ TESTS = (
     "tests/world/weather_field_solver_test.gd",
     "tests/runtime/runtime_inline_save_restore_test.gd",
     "tests/runtime/partial_worker_save_boundary_test.gd",
+    "tests/runtime/effect_transport_save_contract_test.gd",
     "tests/runtime/runtime_inline_budget_admission_test.gd",
     "tests/runtime/runtime_inline_peer_wait_late_commands_test.gd",
     "tests/runtime/runtime_executor_boundary_test.gd",

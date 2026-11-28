@@ -82,6 +82,12 @@ func _partial_modifier_redelivery() -> void:
 			report.modifier_pod_fallback_reason, report.effect_pod_fallback_reason,
 			report.effect_pod_transaction_count])
 		d2_visits.append(report)
+		if visit == 0:
+			var late := ext.queue_effect_pod_instance({"instance_id": 71011, "generation": 1,
+				"program_key": technology.technology_effect_recipe_ids[slot], "source_handle": COUNTRY,
+				"target_handle": COUNTRY, "target_generation": 1, "source_type": TECH,
+				"source_id": 71011, "level": 1, "next_due_day": 2})
+			_expect("independent Effect accepted during the pending day", late.ok)
 		_expect("partial D2 visit %d keeps the original Modifier request pending" % [visit + 1],
 			result.get("continuation_pending", false) and ext.runtime_committed_day() == 1
 			and report.modifier_pod_fallback_reason == "modifier_pod_stale_generation"
@@ -106,6 +112,12 @@ func _partial_modifier_redelivery() -> void:
 	_expect("partial D2 publishes the originally submitted technology once and receives its receipt",
 		ext.runtime_committed_day() == 2 and sources == [[source, NEW_GENERATION]]
 		and final_report.effect_pod_ack_count == 1)
+	var late_source := 71011 & 0xffff
+	_expect("D2 publishes no late technology", current.entry_source_ids.find(late_source) < 0)
+	_expect("D3 captures its own inputs", _capture_partial(ext, 3))
+	_expect("D3 commits", ext.run_native_daily_inline_day().get("ok", false))
+	var next := _published(ext)
+	_expect("D3 publishes the late technology exactly once", next.entry_source_ids.count(late_source) == 1)
 	ext.request_runtime_stop()
 
 func _capture_partial(ext: DCWorldExt, day: int) -> bool:

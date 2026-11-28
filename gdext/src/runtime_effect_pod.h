@@ -265,6 +265,9 @@ struct RuntimeEffectPodCatalog {
     uint32_t max_work_per_slice = 1024;
     uint32_t max_commands_per_transaction = 4096;
     std::vector<uint64_t> metric_key_hashes;
+    bool valid_metric_input(int32_t metric_id, int64_t revision) const noexcept {
+        return metric_id >= 0 && static_cast<size_t>(metric_id) < metric_key_hashes.size() && revision >= 0;
+    }
     std::vector<RuntimeEffectPodBehaviorMetadata> behaviors;
     std::vector<RuntimeEffectPodDefinition> definitions;
     std::vector<RuntimeEffectPodCondition> conditions;

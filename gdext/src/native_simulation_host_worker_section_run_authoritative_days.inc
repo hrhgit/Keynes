@@ -24,7 +24,7 @@
                 if (try_fault_injection("worker.inflight.before")) {
                     break;
                 }
-                if (effect_has_daily_input_fence() && !try_freeze_command_inputs(day)) break;
+                if (!try_freeze_command_inputs(day)) break;
                 const bool narrative_commands = prepare_narrative_day(day);
                 if (state() == RuntimeWorkerState::FAULTED) break;
                 if (country_delivery_boundary || narrative_commands) drain_commands();

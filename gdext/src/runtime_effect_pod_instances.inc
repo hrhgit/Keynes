@@ -164,8 +164,7 @@ bool RuntimeEffectPodAuthority::set_metric(int64_t instance_id, uint32_t generat
     error.clear();
     const int32_t index = instance_index(instance_id, generation);
     if (index < 0) { error = "effect_pod_metric_stale_generation"; return false; }
-    if (metric_id < 0 || metric_id >= static_cast<int32_t>(_catalog.metric_key_hashes.size()) ||
-        revision < 0) {
+    if (!_catalog.valid_metric_input(metric_id, revision)) {
         error = "effect_pod_metric_invalid";
         return false;
     }

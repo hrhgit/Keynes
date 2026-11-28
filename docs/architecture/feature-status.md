@@ -1,8 +1,22 @@
 # 专项现状与验证记录
 
+## Effect 受理日、事务编号与存档兼容（2026-11-27）
+
+第 D 天开日封口前的外来输入可用于 D，封口后归 D+1。独立 Effect、Modifier 内嵌 Effect、整图与部分接管共用这个日期。气候预发到 D4 时，第 2 天封口后的请求仍在第 3 天受理。等待回执期间登记的第二项科技在 D3 首次发布。已受理请求的预约日期继续有效。[部分接管和整图重送](../../Project/project-keynes/tests/runtime/effect_modifier_redelivery_test.gd)
+
+每次计划按实例编号分配事务号，指标值与修订号跟随所属实例。相同实例依次登记、退役、再登记时保留各次变更。插入另一实例的登记，或在开日前保存再恢复，得到的待办与生效状态逐字节一致。交换同日登记的顺序，两笔事务、发布事件、状态哈希及 EFP1 存档均相同。不同接收方的回执逐条处理，目标错误时拒绝该条，后面的正确回执仍能完成事务。税率专项在 D3、D4 重读 D2 发布的全部事件及事务编号，在 D4 也重读 D3。[原生顺序和回执](../../gdext/src/native_simulation_host_effect_input_test.cpp) · [整图税率和事件](../../Project/project-keynes/tests/runtime/late_effect_tax_frame_test.gd)
+
+PKSR v6 保存四种待处理内容，包括登记、指标、退役和回执。只支持 v5 的程序在读取 v6 时返回版本不兼容。现行读取器支持 v5 的 ETQ1 和 ETQ2，校验每个指标的目录范围、修订号，登记和退役的先后编号，以及 EFP1 中每个实例的独立指标位置。输入不合法时保留原来已验证的存档。[存档兼容和拒绝用例](../../Project/project-keynes/tests/runtime/effect_transport_save_contract_test.gd)
+
+Godot 4.6.3 的 24 个专项全部通过。调试库和发布库各通过 100 项存档检查。四种登记排列保存出相同的 EFP1。把一笔标为 D2 的重复事件加入 D3 的日志副本，两组税率用例都能检出。正常运行的 129 项检查全部通过。真实 v5 的 ETQ2 存档改存 v6 后，四个非空待办队列逐字节相同。真实 v5 的 ETQ1 存档从已提交的 D2 恢复，D3 至 D8 的结果逐字段一致。
+
+包含项目导入和整档往返的回归通过 170 项。独立回放矩阵的普通、日历、多国和军事四组各核对八天。211 项工厂单测及 CI 的 19 条静态护栏全部通过。
+
+固定种子 `20260727` 的八天黄金记录共有 3,076 个末端字段。指定候选在空闲 10 次和七个 `yes` 进程加压 10 次中均逐字段一致。新候选在两种负载下各复核一次，差异数均为 0。两份候选的 SHA-256 均为 `dc69c6385973cd94bd20e35e9088b9c74668b25de39fac90bef8011275a5f2a3`。
+
 ## Effect 输入封口、续算和存档闸口（2026-11-27）
 
-- 整图及同时拥有 Economy 与 Modifier 授权的执行器在开日时封口外来 Effect 登记、指标和退役。同一批登记共用受理日，开日后收到的外来输入留到下一开放日。已封口的 Country 指令产生的效果及原事务回执继续结算当天。ETQ2 保存尚未消费的受理日，读取 ETQ1 时沿用下一次可处理时交付的规则。[税率和事件专项](../../Project/project-keynes/tests/runtime/late_effect_tax_frame_test.gd)
+- 执行器在开日时封口外来 Effect 登记、指标和退役。同一批登记共用受理日，开日后收到的外来输入留到下一开放日。已封口的 Country 指令产生的效果及原事务回执继续结算当天。ETQ2 保存尚未消费的受理日，读取 ETQ1 时沿用下一次可处理时交付的规则。[税率和事件专项](../../Project/project-keynes/tests/runtime/late_effect_tax_frame_test.gd)
 - 部分授权后台暂停并等待存档时，补齐输入后处理完已打开的一天，交付整日存档后保持暂停。[部分授权存档](../../Project/project-keynes/tests/runtime/partial_worker_save_boundary_test.gd)
 - 由 Modifier 内嵌 Effect 的会话以 Effect 的已提交日期识别重访。同日目标代次冲突未解决时，旧事务保持待办，移除冲突条目后以原身份收取回执。[整图和部分授权重送](../../Project/project-keynes/tests/runtime/effect_modifier_redelivery_test.gd)
 - EFP1 v4 和 v5 的事务游标超过所有已存编号，目录号段用尽时分配失败并保留原状态。回执编号在事务内命名某个接收方时，目标不匹配会被拒绝。只有事务中没有该接收方时，才按单义的旧子域解释该编号。[Effect 原生专项](../../Project/project-keynes/tests/runtime/runtime_effect_pod_test.gd)

@@ -1,6 +1,8 @@
 #include "native_simulation_host.h"
 #include "runtime_checkpoint_wire.h"
 
+#include <algorithm>
+
 namespace pk {
 namespace {
 constexpr uint32_t EFFECT_TRANSPORT_LEGACY = 0x31515445u; // ETQ1
@@ -49,10 +51,28 @@ std::vector<uint8_t> NativeSimulationHost::encode_effect_transport() const {
     CheckpointWriter out;
     out.field(EFFECT_TRANSPORT_MARKER);
     out.field(_effect_transport_sequence);
-    out.rows(_effect_instance_queue, dated(instance_fields, true));
-    out.rows(_effect_metric_queue, dated(metric_fields, true));
-    out.rows(_effect_remove_queue, dated(removal_fields, true));
-    out.rows(_effect_acks, ack_fields);
+    // Only changes to one identity have a causal order. Persist those chains
+    // by identity with canonical ordinals, independently of producer interleaving.
+    auto instances = _effect_instance_queue;
+    auto removals = _effect_remove_queue;
+    sort_effect_inputs(instances, removals);
+    auto bind = instances.begin();
+    auto retire = removals.begin();
+    uint64_t ordinal = 0;
+    while (bind != instances.end() || retire != removals.end()) {
+        if (retire == removals.end() || (bind != instances.end() && bind->order_key() < retire->order_key()))
+            (bind++)->sequence = ++ordinal;
+        else
+            (retire++)->sequence = ++ordinal;
+    }
+    auto metrics = _effect_metric_queue;
+    std::sort(metrics.begin(), metrics.end());
+    auto acks = _effect_acks;
+    sort_effect_receipts(acks);
+    out.rows(instances, dated(instance_fields, true));
+    out.rows(metrics, dated(metric_fields, true));
+    out.rows(removals, dated(removal_fields, true));
+    out.rows(acks, ack_fields);
     return std::move(out.bytes);
 }
 
@@ -71,12 +91,27 @@ bool NativeSimulationHost::restore_effect_transport(const std::vector<uint8_t> &
             !in.rows(metrics, dated(metric_fields, has_day)) ||
             !in.rows(removals, dated(removal_fields, has_day)) ||
             !in.rows(acks, ack_fields) || in.cursor != in.size)) return false;
+    for (const auto &entry : metrics) {
+        if (!_effect_pod_catalog.valid_metric_input(entry.metric_id, entry.revision)) return false;
+    }
+    // Both historical queues use strictly increasing, shared ordinals.
+    auto binding = instances.begin();
+    auto removal = removals.begin();
+    uint64_t previous = 0;
+    while (binding != instances.end() || removal != removals.end()) {
+        const bool take_binding = removal == removals.end() ||
+            (binding != instances.end() && binding->sequence < removal->sequence);
+        const uint64_t current = take_binding ? (binding++)->sequence : (removal++)->sequence;
+        if (current <= previous || current > sequence) return false;
+        previous = current;
+    }
     if (!install) return true;
     std::lock_guard<std::mutex> lock(_effect_transport_mutex);
     _effect_transport_sequence = sequence;
     _effect_instance_queue = std::move(instances);
     _effect_metric_queue = std::move(metrics);
     _effect_remove_queue = std::move(removals);
+    rebuild_effect_queue_index_locked();
     _effect_acks = std::move(acks);
     _effect_intents.clear();
     return true;

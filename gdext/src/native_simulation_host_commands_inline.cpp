@@ -174,7 +174,7 @@ NativeSimulationHost::InlineDayOutcome NativeSimulationHost::run_inline_day() {
     std::vector<RuntimeCommandReceipt> day_receipts;
     uint64_t admitted_submit_order = 0;
     const int64_t previous_seal = frozen_command_day();
-    if (effect_has_daily_input_fence() && !try_freeze_command_inputs(day)) {
+    if (!try_freeze_command_inputs(day)) {
         runtime_copy_text(out.reason, "inline_daily_command_input_pending");
         return out;
     }

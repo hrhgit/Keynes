@@ -98,6 +98,7 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, late_submission: b
 	_expect("test content adds income tax to the technology", (host as TaxProbeHost).configured and stat >= 0)
 	var d2_tax := -1
 	var d2_paid := -1
+	var published_events := {}
 	economy.population_cell_snapshot(cell)
 	clock.pause(false)
 	for day in range(1, 5):
@@ -193,13 +194,11 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, late_submission: b
 					and late.get("next_due_day") == tax_day + cadence)
 			var journal: Dictionary = ext.poll_gameplay_events({"consumer_id": &"late_effect_test",
 				"after_event_id": 0, "max_events": 0, "type": 900})
-			var commands := {}
-			for i in journal.get("tick", PackedInt64Array()).size():
-				if journal.tick[i] == day and journal.entity_handle[i] == handle:
-					var tx: int = journal.value_i64[i]
-					if not commands.has(tx):
-						commands[tx] = []
-					commands[tx].append([journal.payload_i0[i], journal.payload_i1[i]])
+			var commands := _event_commands(journal, handle, day)
+			for prior_day: int in published_events:
+				_expect("D%d preserves every event and transaction published for D%d" % [day, prior_day],
+					_event_commands(journal, handle, prior_day) == published_events[prior_day])
+			published_events[day] = commands
 			var expected := (host as TaxProbeHost).grant_event_count + 2
 			var technology_transactions := 0
 			var total := 0
@@ -220,6 +219,9 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, late_submission: b
 				_expect("D3 publishes the late request once",
 					technology_transactions == (1 if late_submission else 0)
 					and total == (2 if late_submission else 0) and tax_pair == late_submission)
+			elif day == 4:
+				_expect("D4 publishes the scheduled technology event once",
+					technology_transactions == 1 and total == 1 and not tax_pair)
 			print("LATE_EFFECT D%d future_fire=%s future_due=%s tax_due=%s events=%s" % [
 				day, future.get("fire_sequence"), future.get("next_due_day"), late.get("next_due_day"), commands])
 		if day == 2:
@@ -239,6 +241,16 @@ func _sample_world(host: WorldRuntimeHost, clock: WorldClock, late_submission: b
 					rates.size() == national.profession_ids.size() and rates.size() > 0 and rates.count(tax_basis_points) == rates.size())
 			clock.pause(false)
 	return {"day": 4, "d2_tax": d2_tax, "d2_paid": d2_paid}
+
+func _event_commands(journal: Dictionary, handle: int, day: int) -> Dictionary:
+	var commands := {}
+	for i in journal.get("tick", PackedInt64Array()).size():
+		if journal.tick[i] == day and journal.entity_handle[i] == handle:
+			var tx: int = journal.value_i64[i]
+			if not commands.has(tx):
+				commands[tx] = []
+			commands[tx].append([journal.payload_i0[i], journal.payload_i1[i]])
+	return commands
 
 func _submit_instance(ext: Object, id: int, recipe: String, handle: int, due: int, level: int) -> void:
 	var result: Dictionary = ext.submit_effect_instances({

@@ -110,7 +110,6 @@
     // Apply queued instance/metric/remove/ACK transport without planning a day.
     // Soft-skip and climate-park paths must call this so main-thread ENSURE
     // registrations are not stranded in `_effect_instance_queue`.
-    bool effect_has_daily_input_fence() const noexcept;
     RuntimeCommandAdmission admit_effect_input(int64_t &admitted_day);
     bool append_effect_instance_locked(const RuntimeEffectPodInstanceInput &input,
                                        int64_t admitted_day, std::string &error);
@@ -144,6 +143,7 @@
             RuntimeModifierPodCommand &command);
     // Rebuild day-local Effect intents for COMMITTED transactions still missing
     // ACKs (day-lane retry soft-skip must not drop the Modifier handoff).
+    bool effect_input_order_self_test(const RuntimeEffectPodCatalog &catalog, std::string &error);
     bool modifier_effect_redelivery_self_test(const RuntimeModifierPodCatalog &catalog, std::string *error);
     void collect_day_modifier_intents();
     // PUBLISH_EVENT intents do not go through Modifier; ACK them in-worker so

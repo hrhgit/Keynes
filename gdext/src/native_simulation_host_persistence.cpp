@@ -139,7 +139,8 @@ bool NativeSimulationHost::restore_bundle(const uint8_t *bytes, size_t size,
         return true;
     };
     uint32_t version = 0;
-    if (!read_u32(4u, version) || version != RUNTIME_SAVE_BUNDLE_VERSION) {
+    if (!read_u32(4u, version) || (version != RUNTIME_SAVE_BUNDLE_VERSION &&
+            version != RUNTIME_SAVE_BUNDLE_LEGACY_V5)) {
         error = "runtime_bundle_version_incompatible";
         return false;
     }

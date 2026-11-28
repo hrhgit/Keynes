@@ -229,7 +229,12 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
     if (!read_count(data, payload_end, cursor, count, _instance_capacity)) {
         error = "effect_pod_instance_count_invalid"; return false;
     }
+    const size_t metric_width = _catalog.metric_key_hashes.size();
+    if (static_cast<uint64_t>(count) * metric_width != restored.metric_values.size()) {
+        error = "effect_pod_metric_slab_shape_invalid"; return false;
+    }
     restored.instances.resize(count);
+    size_t expected_base = 0;
     for (auto &instance : restored.instances) {
         if (!read_le(data,payload_end,cursor,instance.instance_id) ||
             !read_le(data,payload_end,cursor,instance.generation) ||
@@ -287,10 +292,10 @@ bool RuntimeEffectPodAuthority::restore(const uint8_t *data, size_t size,
             instance.latched > 1) {
             error = "effect_pod_instance_truncated_or_invalid"; return false;
         }
-        if (instance.metric_base + _catalog.metric_key_hashes.size() >
-                restored.metric_values.size()) {
-            error = "effect_pod_instance_metric_range_invalid"; return false;
+        if (instance.metric_base != expected_base) {
+            error = "effect_pod_metric_slab_shape_invalid"; return false;
         }
+        expected_base += metric_width;
     }
     if (!read_count(data, payload_end, cursor, count, _command_capacity)) {
         error = "effect_pod_command_count_invalid"; return false;
