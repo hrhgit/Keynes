@@ -50,7 +50,7 @@ func _execute() -> void:
 	if country.is_empty() or original.is_empty():
 		return
 	var schema := original[0].decode_u16(4)
-	if not _check("fixture uses current PKEC66", schema == 66):
+	if not _check("fixture uses current PKEC67", schema == 67):
 		return
 	# PKEC65 extends expedition rows, and PKEC66 extends building rows.
 	# With neither present, conversion to PKEC62 only changes the signal layout.

@@ -26,19 +26,6 @@
         employee_owner_sources.clear();
         owner_job_group_used.assign(static_cast<size_t>(last - first), uint8_t{0});
         int64_t local_merchant_population = 0;
-        auto owner_slot_for_profession = [&](int32_t profession) -> int32_t {
-            if (profession < 0) return -1;
-            for (int32_t eth = 0; eth < n_eth; ++eth) {
-                const int32_t signature = signature_for_profession_ethnicity(
-                    profession, eth);
-                if (signature < 0) continue;
-                const int32_t slot = population_store().find_signature(
-                    cell, static_cast<uint32_t>(signature));
-                if (slot >= 0 && population_store().owner_employed[slot] > 0)
-                    return slot;
-            }
-            return -1;
-        };
         population_store().for_each_in_cell(cell, [&](int32_t slot) {
             if (is_merchant_slot(slot)) {
                 local_merchant_population = saturating_add(
@@ -70,8 +57,7 @@
             // A restart reservation is only worth protecting while its owners
             // can wait for it; starving owners of a lot that produced nothing
             // (e.g. a hunted-out camp) must be free to take another job.
-            const int32_t incumbent_owner_slot = owner_slot_for_profession(
-                _signatures[group.owner_signature_id].profession_id);
+            const int32_t incumbent_owner_slot = building_settlement_owner_slot(group);
             static const bool diag_no_starving_release = pk::runtime_switch_value(pk::RuntimeSwitch::PK_DIAG_NO_STARVING_RELEASE) != nullptr;
             const bool incumbent_owners_starving = !diag_no_starving_release && incumbent_owner_slot >= 0 &&
                 population_store().needs_satisfaction[incumbent_owner_slot] <
@@ -99,8 +85,7 @@
                     // Military v1: state-service owners never move (state
                     // buildings are owned by the reserved sentinel).
                 } else {
-                    const int32_t source_slot = owner_slot_for_profession(
-                        _signatures[group.owner_signature_id].profession_id);
+                    const int32_t source_slot = building_settlement_owner_slot(group);
                     if (source_slot >= 0 && population_store().owner_employed[
                             source_slot] > 0) {
                         const bool source_understaffed =
@@ -239,7 +224,7 @@
                         const int32_t source_signature =
                             signature_for_profession_ethnicity(
                                 source_profession, source_eth);
-                        if (source_signature < 0) continue;
+                        if (source_signature < 0 || building_owner_seats(source_group, source_signature) == 0) continue;
                         const int32_t slot = population_store().find_signature(
                             cell, static_cast<uint32_t>(source_signature));
                         if (slot < 0 || population_store().owner_employed[slot] <= 0)
@@ -284,6 +269,7 @@
                     source_group_index));
                 const int32_t source_profession =
                     _signatures[source_group.owner_signature_id].profession_id;
+                const int32_t departing = population_store().signature_id[source_slot];
                 const bool profession_change = source_profession !=
                     target.profession;
                 if (profession_change) {
@@ -318,6 +304,7 @@
                             population_store().employee_employed[source_slot],
                             1, _saturation_count), market_mutation_sink());
                 }
+                change_visiting_owner(source_group_index, departing, -1);
                 source_group.filled_owner = std::max<int64_t>(0,
                     source_group.filled_owner - 1);
                 _building_employee_filled.write_scalar(target.fill_index, saturating_add(
@@ -353,10 +340,7 @@
                 if (candidate == target_group_index ||
                     owner_job_group_used[candidate - first] != 0) continue;
                 const auto source_group = building_view(static_cast<size_t>(candidate));
-                const int32_t source_profile_profession =
-                    _signatures[source_group.owner_signature_id].profession_id;
-                const int32_t source_slot_candidate = owner_slot_for_profession(
-                    source_profile_profession);
+                const int32_t source_slot_candidate = building_settlement_owner_slot(source_group);
                 if (source_slot_candidate < 0) continue;
                 const int32_t source_signature_id = static_cast<int32_t>(
                     population_store().signature_id[source_slot_candidate]);
@@ -439,8 +423,8 @@
             }
             if (source_group_index >= 0) {
                 auto source_group = building_at(static_cast<size_t>(source_group_index));
-                const Signature &source_signature =
-                    _signatures[source_group.owner_signature_id];
+                const int32_t departing = population_store().signature_id[source_slot];
+                const Signature &source_signature = _signatures[departing];
                 if (source_signature.profession_id != target_owner_profession) {
                     bool source_drained = false;
                     const uint64_t preferred_family =
@@ -470,6 +454,8 @@
                     }
                     ++_building_owner_job_profession_changes;
                 }
+                change_visiting_owner(source_group_index, departing, -1);
+                change_visiting_owner(target_group_index, source_target_signature, 1);
                 source_group.filled_owner -= 1;
                 target_group.filled_owner = saturating_add(
                     target_group.filled_owner, 1, _saturation_count);
@@ -586,6 +572,7 @@
                         population_store().owner_employed[employee_slot], 1,
                         _saturation_count), market_mutation_sink());
                 }
+                change_visiting_owner(target_group_index, selected_employee_target_signature, 1);
                 _building_employee_filled.write_scalar(candidate.fill_index, _building_employee_filled[candidate.fill_index] - (1), market_mutation_sink());
                 target_group.filled_owner = saturating_add(
                     target_group.filled_owner, 1, _saturation_count);

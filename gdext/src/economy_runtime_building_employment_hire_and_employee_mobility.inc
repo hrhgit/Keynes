@@ -65,6 +65,7 @@
                                                 owner_family_first)) {
                         return false;
                     }
+                    change_visiting_owner(g, target_sig, capped_take);
                     group.filled_owner = saturating_add(group.filled_owner, capped_take,
                                                         _saturation_count);
                     owner_need = std::max<int64_t>(0, owner_need - capped_take);

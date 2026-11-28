@@ -345,6 +345,10 @@
                 return false;
             }
             if (_restore.schema_version >= 66) {
+                if (group.severe_loss_cycles > _building_severe_loss_cycles.get()) {
+                    error = "save_building_loss_history_invalid";
+                    return false;
+                }
                 if (!read_le(bytes, cursor, group.owner_vacancy_cycles) ||
                     !read_le(bytes, cursor, group.vacant_buildings) ||
                     group.owner_vacancy_cycles > _building_severe_loss_cycles.get() ||
@@ -357,6 +361,30 @@
                 // Old saves combined losses and vacancies. Neither history can
                 // be inferred from a closed group's released jobs.
                 group.severe_loss_cycles = 0;
+            }
+            RuntimeEconomyBuildingStore::OwnerSeats owners;
+            if (schema >= 67) {
+                uint32_t n = 0;
+                if (!read_le(bytes, cursor, n) || n > _signatures.size() ||
+                    group.owner_signature_id < 0 || static_cast<size_t>(group.owner_signature_id) >= _signatures.size()) {
+                    error = "save_building_owner_seats_invalid";
+                    return false;
+                }
+                int64_t remaining = group.filled_owner;
+                for (uint32_t i = 0; i < n; ++i) {
+                    int32_t sig;
+                    int64_t seats;
+                    if (!read_le(bytes, cursor, sig) || !read_le(bytes, cursor, seats) ||
+                        sig < 0 || static_cast<size_t>(sig) >= _signatures.size() ||
+                        (!owners.empty() && sig <= owners.back().first) ||
+                        sig == group.owner_signature_id || seats <= 0 || seats > remaining ||
+                        _signatures[sig].profession_id != _signatures[group.owner_signature_id].profession_id) {
+                        error = "save_building_owner_seats_invalid";
+                        return false;
+                    }
+                    remaining -= seats;
+                    owners.emplace_back(sig, seats);
+                }
             }
             // A collapsed lot stays in the store as count == 0 until the prune
             // pass drops its identity; the row itself still carries the cell,
@@ -447,7 +475,8 @@
             }
             group.last_maintenance_cost = maintenance_from_operating_cost(
                 group.last_operating_cost, group.last_input_cost, group.last_wages_due);
-            append_building_group(group);
+            const auto row = append_building_group(group);
+            buildings_store().visiting_owners[row] = std::move(owners);
             ++_restore.restored_buildings;
         }
         while (schema >= 64 && cursor < bytes.size()) {

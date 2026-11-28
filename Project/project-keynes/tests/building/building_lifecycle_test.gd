@@ -17,6 +17,7 @@ func _run() -> void:
 	_test_unfunded_recovery(8, 7)
 	_test_remaining_vacancy_after_failed_purchase()
 	_test_recovery_with_incumbent_move()
+	_test_recovery_with_incumbent_move(2)
 	_test_loss_suspension_without_vacancy()
 	_test_recovery_with_another_ethnicity()
 	print("building lifecycle: %d failures" % failures)
@@ -306,8 +307,8 @@ func _test_remaining_vacancy_after_failed_purchase() -> void:
 		and _snapshot_i64(lots, "vacant_buildings", 0) == 0)
 
 
-func _test_recovery_with_incumbent_move() -> void:
-	var fixture := _fixture_data(1, 1, 1, 2_000_000_000, "bast_fiber", 0)
+func _test_recovery_with_incumbent_move(seats: int = 1) -> void:
+	var fixture := _fixture_data(1, seats, 1, 2_000_000_000, "bast_fiber", 0)
 	var catalog: Dictionary = fixture.catalog
 	var source_type: int = catalog.building_type_ids.find("flint_quarry")
 	var forager: int = catalog.signature_keys.find("forager|default")
@@ -351,6 +352,11 @@ func _test_recovery_with_incumbent_move() -> void:
 		and _snapshot_i64(after, "filled_owner", target) == 1
 		and _snapshot_i64(after, "last_output", target) > 0
 		and int(review.get("recovery_liquidated_buildings", -1)) == 0)
+
+	if seats == 2:
+		_expect("D9: an incumbent filling one of two seats reduces the last confirmed vacancy to one",
+			_snapshot_i64(after, "vacant_buildings", target) == 1
+			and _snapshot_i64(after, "owner_vacancy_cycles", target) == 1)
 
 
 func _test_loss_suspension_without_vacancy() -> void:

@@ -184,6 +184,12 @@
     int32_t find_building_group(int32_t cell, int32_t type_id,
                                 int32_t owner_signature_id) const;
     int32_t find_cohort_slot(int32_t cell, int32_t signature_id) const;
+    int64_t building_owner_seats(BuildingGroupConstRef group, int32_t signature) const;
+    void change_visiting_owner(size_t row, int32_t signature, int64_t change);
+    void limit_building_owner_fill(size_t row, int64_t limit);
+    void retain_building_owners(int32_t cell, const std::vector<int32_t> &order,
+        std::vector<int64_t> &retained);
+    void migrate_building_owner_seats();
     int32_t building_settlement_owner_slot(BuildingGroupConstRef group) const;
     void merge_cohort_lookup_counts(const CohortLookupCounts &counts) const;
     int64_t credit_local_merchants(int32_t cell, int64_t amount,

@@ -35,7 +35,6 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
         std::string &error) {
     const int32_t professions = static_cast<int32_t>(_profession_ids.size());
     thread_local std::vector<int32_t> priority;
-    thread_local std::vector<int64_t> sig_population;
     thread_local std::vector<int64_t> sig_owner_filled;
     thread_local std::vector<int64_t> sig_owner_distributed;
     thread_local std::vector<int64_t> mobile_population_by_profession;
@@ -43,28 +42,15 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
     thread_local std::vector<int64_t> profession_filled;
     thread_local std::vector<int64_t> profession_prefix;
     thread_local std::vector<int64_t> profession_distributed;
-    thread_local std::vector<int64_t> owner_filled_by_profession;
-    thread_local std::vector<int64_t> owner_population_by_profession;
-    thread_local std::vector<int64_t> owner_prefix_by_profession;
-    thread_local std::vector<int64_t> owner_distributed_by_profession;
-    thread_local std::vector<uint32_t> signature_stamp;
     thread_local std::vector<uint32_t> profession_stamp;
     thread_local std::vector<int32_t> idle_source_slots;
     thread_local std::vector<int32_t> idle_destination_signatures;
     thread_local std::vector<int64_t> idle_populations;
     thread_local uint32_t scratch_generation = 0;
-    // 鏈牸瀹為檯鍑虹幇杩囩殑 signature銆傛憡娲惧惊鐜潬瀹冨彇浠ｅ鏁村紶 _signatures 琛ㄧ殑鎵弿銆?
-    thread_local std::vector<int32_t> touched_signatures;
-
     begin = std::clamp(begin, 0, static_cast<int32_t>(stable_cells.size()));
     end = std::clamp(end, begin, static_cast<int32_t>(stable_cells.size()));
 
-    if (sig_population.size() < _signatures.size()) {
-        sig_population.resize(_signatures.size(), 0);
-        sig_owner_filled.resize(_signatures.size(), 0);
-        sig_owner_distributed.resize(_signatures.size(), 0);
-        signature_stamp.resize(_signatures.size(), 0);
-    }
+    sig_owner_distributed.resize(_signatures.size());
     if (profession_capacity.size() < static_cast<size_t>(professions)) {
         profession_capacity.resize(professions, 0);
         profession_filled.resize(professions, 0);
@@ -73,41 +59,19 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
         profession_stamp.resize(professions, 0);
     }
     mobile_population_by_profession.assign(static_cast<size_t>(professions), 0);
-    owner_filled_by_profession.assign(static_cast<size_t>(professions), 0);
-    owner_population_by_profession.assign(static_cast<size_t>(professions), 0);
-    owner_prefix_by_profession.assign(static_cast<size_t>(professions), 0);
-    owner_distributed_by_profession.assign(static_cast<size_t>(professions), 0);
 
     for (int32_t ordinal = begin; ordinal < end; ++ordinal) {
         const int32_t cell = stable_cells[ordinal];
         ++scratch_generation;
         if (scratch_generation == 0) {
-            std::fill(signature_stamp.begin(), signature_stamp.end(), 0);
             std::fill(profession_stamp.begin(), profession_stamp.end(), 0);
             scratch_generation = 1;
         }
         std::fill(mobile_population_by_profession.begin(),
                   mobile_population_by_profession.end(), 0);
-        std::fill(owner_filled_by_profession.begin(),
-                  owner_filled_by_profession.end(), 0);
-        std::fill(owner_population_by_profession.begin(),
-                  owner_population_by_profession.end(), 0);
-        std::fill(owner_prefix_by_profession.begin(),
-                  owner_prefix_by_profession.end(), 0);
-        std::fill(owner_distributed_by_profession.begin(),
-                  owner_distributed_by_profession.end(), 0);
-        touched_signatures.clear();
         idle_source_slots.clear();
         idle_destination_signatures.clear();
         idle_populations.clear();
-        auto touch_signature = [&](int32_t signature) {
-            if (signature_stamp[signature] == scratch_generation) return;
-            signature_stamp[signature] = scratch_generation;
-            touched_signatures.push_back(signature);
-            sig_population[signature] = 0;
-            sig_owner_filled[signature] = 0;
-            sig_owner_distributed[signature] = 0;
-        };
         auto touch_profession = [&](int32_t profession) {
             if (profession_stamp[profession] == scratch_generation) return;
             profession_stamp[profession] = scratch_generation;
@@ -121,11 +85,9 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
         int64_t mobile_population_total = 0;
         population_store().for_each_in_cell(cell, [&](int32_t slot) {
             const uint32_t sig = population_store().signature_id[slot];
-            if (sig < sig_population.size()) {
-                touch_signature(static_cast<int32_t>(sig));
-                sig_population[sig] = saturating_add(sig_population[sig],
-                    std::max<int64_t>(0, population_store().population[slot]), _saturation_count);
-                if (!is_merchant_slot(slot) && sig < _signatures.size()) {
+            if (sig < _signatures.size()) {
+                sig_owner_distributed[sig] = 0;
+                if (!is_merchant_slot(slot)) {
                     const int32_t profession = _signatures[sig].profession_id;
                     if (profession >= 0 && profession < professions) {
                         const int64_t pop = std::max<int64_t>(0, population_store().population[slot]);
@@ -176,7 +138,7 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
                     }
                     if (!already_zero) {
                         auto group = building_at(static_cast<size_t>(g));
-                        group.filled_owner = 0;
+                        limit_building_owner_fill(g, 0);
                         if (group.type_id >= 0 && group.type_id <
                                 static_cast<int32_t>(_building_types.size())) {
                             const BuildingType &type =
@@ -243,79 +205,7 @@ bool NativeEconomyRuntime::reconcile_building_employment_cells_range(
             return a < b;
         });
 
-        // Clamp owner fills by profession rather than canonical signature. The
-        // latter would silently evict owners whose ethnicity differs from the
-        // building profile during this reconciliation pass.
-        //
-        // 涓嬮潰涓夊鎽婃淳寰幆鍘熸潵鍚勬壂涓€閬嶆暣寮?_signatures 琛紙闅忓瓨妗ｅ崟璋冨闀夸笖姘镐笉
-        // 鏀剁缉锛夛紝鍙负鎸戝嚭鏈牸瀹為檯鍑虹幇鐨勯偅鍑犱釜 signature銆傛敼鎴愰亶鍘?touched 鍒楄〃锛?
-        // 鎺掑簭涓€娆″嵆鍙繚鎸佸悓涓€涓?signature id 鍗囧簭锛屽墠缂€鍜屾憡娲鹃€愪綅涓嶅彉銆?
-        std::sort(touched_signatures.begin(), touched_signatures.end());
-        for (const int32_t sig : touched_signatures) {
-            if (sig_population[sig] <= 0) continue;
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) continue;
-            owner_population_by_profession[profession] = saturating_add(
-                owner_population_by_profession[profession], sig_population[sig],
-                _saturation_count);
-        }
-        for (int32_t g : priority) {
-            auto group = building_at(static_cast<size_t>(g));
-            const int32_t sig = group.owner_signature_id;
-            if (sig < 0 || sig >= static_cast<int32_t>(sig_population.size())) {
-                error = "building_owner_signature_invalid_after_population_change";
-                return false;
-            }
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) {
-                group.filled_owner = 0;
-                continue;
-            }
-            int64_t &remaining = owner_population_by_profession[profession];
-            group.filled_owner = std::min(
-                std::max<int64_t>(0, group.filled_owner), remaining);
-            remaining -= group.filled_owner;
-            owner_filled_by_profession[profession] = saturating_add(
-                owner_filled_by_profession[profession], group.filled_owner,
-                _saturation_count);
-        }
-
-        // Distribute each profession's owner jobs over the live local
-        // profession|ethnicity cohorts in stable signature order.
-        for (const int32_t sig : touched_signatures) sig_owner_filled[sig] = 0;
-        std::fill(owner_population_by_profession.begin(),
-                  owner_population_by_profession.end(), 0);
-        for (const int32_t sig : touched_signatures) {
-            if (sig_population[sig] <= 0) continue;
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) continue;
-            owner_population_by_profession[profession] = saturating_add(
-                owner_population_by_profession[profession], sig_population[sig],
-                _saturation_count);
-        }
-        std::fill(owner_prefix_by_profession.begin(), owner_prefix_by_profession.end(), 0);
-        std::fill(owner_distributed_by_profession.begin(),
-                  owner_distributed_by_profession.end(), 0);
-        for (const int32_t sig : touched_signatures) {
-            if (sig_population[sig] <= 0) continue;
-            const int32_t profession = _signatures[sig].profession_id;
-            if (profession < 0 || profession >= professions ||
-                profession == _unemployed_profession_id) continue;
-            owner_prefix_by_profession[profession] = saturating_add(
-                owner_prefix_by_profession[profession], sig_population[sig],
-                _saturation_count);
-            const int64_t next = owner_population_by_profession[profession] > 0
-                ? mul_div_sat(owner_filled_by_profession[profession],
-                    owner_prefix_by_profession[profession],
-                    owner_population_by_profession[profession], _saturation_count)
-                : 0;
-            sig_owner_filled[sig] = std::max<int64_t>(0,
-                next - owner_distributed_by_profession[profession]);
-            owner_distributed_by_profession[profession] = next;
-        }
+        retain_building_owners(cell, priority, sig_owner_filled);
 
         population_store().for_each_in_cell(cell, [&](int32_t slot) {
             if (is_merchant_slot(slot)) return;

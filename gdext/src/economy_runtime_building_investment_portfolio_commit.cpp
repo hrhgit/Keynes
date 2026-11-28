@@ -36,7 +36,7 @@ bool NativeEconomyRuntime::quote_investment_portfolio(
         const int64_t funding = saturating_add(
             plan.funding_capital, plan.merchant_credit, saturation);
         if (!plan_construction_materials(ctx.cell, plan.type_id, plan.allocated_count,
-                ctx.commit_cost_factor, invoices[i], nullptr, &stock) ||
+                ctx.commit_cost_factor, invoices[i], nullptr, &stock, false, false, &ctx.material_quotes) ||
             invoices[i].total_cost > saturating_mul(plan.allocated_count, funding, saturation)) {
             if (rejected_invoice) *rejected_invoice = i;
             return false;

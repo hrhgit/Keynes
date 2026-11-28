@@ -96,9 +96,13 @@
                                      ConstructionMaterialPlan &plan,
                                      const std::vector<int64_t> *additional_stock = nullptr,
                                      std::vector<int64_t> *stock_inout = nullptr,
-        bool split_candidates = false, bool forecast_missing = false) const;
-    int64_t construction_material_capacity(int32_t type_id, int32_t cost_factor_q16,
-        const std::vector<int64_t> &stock, int64_t ceiling) const;
+        bool split_candidates = false, bool forecast_missing = false,
+        uint64_t *unit_quotes = nullptr) const;
+    int64_t construction_material_capacity(int32_t market, int32_t type_id, int32_t cost_factor_q16,
+        const std::vector<int64_t> &stock, int64_t ceiling, int64_t funding) const;
+    int64_t quote_construction_lots(int32_t market, int32_t type_id, int32_t factor,
+        std::vector<int64_t> &stock, int64_t count, int64_t funding,
+        ConstructionMaterialPlan &plan, uint64_t *unit_quotes) const;
     static int64_t construction_material_required(
         int64_t quantity, int32_t cost_factor_q16, int64_t &saturation);
     static int64_t construction_material_physical(

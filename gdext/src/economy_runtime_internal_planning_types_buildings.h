@@ -190,6 +190,7 @@
         std::vector<int32_t> good_ids;
         std::vector<int64_t> quantities;
         int64_t total_cost = 0;
+        int64_t quoted_count = 0;
         int32_t failed_group = -1;
         bool feasible = false;
     };

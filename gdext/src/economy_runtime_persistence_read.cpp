@@ -33,7 +33,7 @@ bool NativeEconomyRuntime::decode_restore_chunk(const std::vector<uint8_t> &byte
     // Version 66 splits owner vacancy from operating losses. Version 65
     // archives migrate both ambiguous histories to zero. Structural 62/63
     // imports still require the current catalog and compatible record shapes.
-    if (schema != SCHEMA_VERSION && schema != 65 && schema != 62 && schema != 63) {
+    if (schema != SCHEMA_VERSION && schema != 66 && schema != 65 && schema != 62 && schema != 63) {
         error = "economy_save_price_v6_requires_new_game";
         return false;
     }

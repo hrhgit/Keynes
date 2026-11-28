@@ -436,6 +436,12 @@
                     static_cast<uint32_t>(_save.building_cursor - begin),
                     group.last_maintenance_cost);
             }
+            const auto &owners = buildings_store().visiting_owners[group.index];
+            append_le<uint32_t>(payload, static_cast<uint32_t>(owners.size()));
+            for (const auto &[signature, seats] : owners) {
+                append_le<int32_t>(payload, signature);
+                append_le<int64_t>(payload, seats);
+            }
             const int32_t roles = _building_types[group.type_id].employee_count;
             append_le<int32_t>(payload, roles);
             for (int32_t r = 0; r < roles; ++r) {

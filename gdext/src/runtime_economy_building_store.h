@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 #include "economy_tracked_column.h"
 
@@ -22,6 +23,10 @@ struct RuntimeEconomyBuildingStore {
     EconomyTrackedColumn<int32_t> last_input_selection_begin;
     EconomyTrackedColumn<int64_t> group_units;
     EconomyTrackedColumn<int64_t> filled_owner;
+    // Non-registered cohorts actually seated on each lot, ordered by signature.
+    // The remaining seats belong to the registered cohort.
+    using OwnerSeats = std::vector<std::pair<int32_t, int64_t>>;
+    std::vector<OwnerSeats> visiting_owners;
     EconomyTrackedColumn<int64_t> last_capacity_q16;
     EconomyTrackedColumn<int64_t> last_temperature_fit_q16;
     EconomyTrackedColumn<int64_t> last_water_fit_q16;

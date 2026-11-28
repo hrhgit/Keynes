@@ -36,6 +36,7 @@ void gather_column(EconomyTrackedColumn<T> &column, const std::vector<int32_t> &
 size_t NativeEconomyRuntime::append_building_group(const BuildingGroup &group) {
     RuntimeEconomyBuildingStore &store = buildings_store();
     const size_t row = store.cell.size();
+    store.visiting_owners.resize(row + 1);
 #define PK_BUILDING_GROUP_PUSH(TYPE, NAME, COLUMN) \
     store.COLUMN.push_back(group.NAME);
     PK_BUILDING_GROUP_COLUMNS(PK_BUILDING_GROUP_PUSH)
@@ -83,6 +84,7 @@ void NativeEconomyRuntime::clear_building_groups() {
 #define PK_BUILDING_GROUP_CLEAR(TYPE, NAME, COLUMN) store.COLUMN.clear();
     PK_BUILDING_GROUP_COLUMNS(PK_BUILDING_GROUP_CLEAR)
 #undef PK_BUILDING_GROUP_CLEAR
+    store.visiting_owners.clear();
     store.role_count.clear();
     store.role_begin.clear();
     store.role_filled.clear();
@@ -198,6 +200,7 @@ void NativeEconomyRuntime::permute_building_group_columns(
     remap_lanes(_building_working_capital_allocated, int64_t{0});
     remap_lanes(_building_owner_livelihood_credit, int64_t{0});
     remap_lanes(_building_lifecycle, BuildingLifecycleReview{});
+    remap_lanes(store.visiting_owners, RuntimeEconomyBuildingStore::OwnerSeats{});
 
 #define PK_BUILDING_GROUP_GATHER(TYPE, NAME, COLUMN) \
     gather_column(store.COLUMN, order);

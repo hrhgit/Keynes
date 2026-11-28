@@ -435,6 +435,11 @@ int64_t NativeEconomyRuntime::state_hash_internal(bool paged) const {
         mix_u64(static_cast<uint64_t>(group.purchase_intent_capacity_q16));
         mix_u64(static_cast<uint32_t>(group.realized_profit_margin_q16));
         mix_u64(group.severe_loss_cycles);
+        for (const auto &[signature, seats] : buildings_store().visiting_owners[pk_row]) {
+            mix_u64(0x53454154); // SEAT
+            mix_u64(signature);
+            mix_u64(seats);
+        }
         mix_u64(group.owner_vacancy_cycles);
         mix_u64(static_cast<uint64_t>(group.vacant_buildings));
         mix_u64(group.recovery_cycles);

@@ -225,7 +225,7 @@ public:
     // observations drive the next input purchase and owner opportunity quotes.
     // 65: colonization parties carry unaffiliated colonists (anonymous lanes)
     // next to the family headcount, so the party size is family + anonymous.
-    static constexpr int32_t SCHEMA_VERSION = 66;
+    static constexpr int32_t SCHEMA_VERSION = 67;
     // Dense order of the compiled `building_economic_sectors` column. It mirrors
     // `BUILDING_SECTOR_IDS` in economy_catalog.gd: agriculture, extractive,
     // manufacturing, energy, knowledge, then the appended `military` sector. The

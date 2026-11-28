@@ -39,8 +39,9 @@
             market_store().stock[market_store().index(ctx.market, good)]);
     }
     const auto material_cap = [&](int32_t i, const auto &stock, int64_t cap) {
-        return construction_material_capacity(
-            portfolio[i].plan.type_id, investment_cost_factor, stock, cap);
+        const auto &plan = portfolio[i].plan;
+        return construction_material_capacity(ctx.market, plan.type_id, investment_cost_factor,
+            stock, cap, saturating_add(plan.funding_capital, plan.merchant_credit, search_saturation));
     };
     auto &invoices = ctx.commit_material_plans;
     std::array<const InvestmentCandidatePlan *, 4> plans{};
@@ -93,12 +94,21 @@
             const int64_t required_seats = std::max<int64_t>(0, required_total - other_max);
             const int64_t minimum = std::max<int64_t>(1, required_seats / owner_slots[i] +
                 (required_seats % owner_slots[i] != 0));
+            if (minimum > limit) return false;
+            // Earlier types can consume the preferred shelves. Bound this prefix
+            // against its actual fixed stock before enumerating any counts.
+            auto &remaining_stock = stock_by_depth[depth + 1];
+            remaining_stock = stock;
+            const int64_t funding = saturating_add(plans[i]->funding_capital,
+                plans[i]->merchant_credit, search_saturation);
+            ConstructionMaterialPlan prefix;
+            limit = quote_construction_lots(ctx.market, plans[i]->type_id, investment_cost_factor,
+                remaining_stock, limit, funding, prefix, &ctx.material_quotes);
             for (int64_t count = minimum; count <= limit; ++count) {
                 ++ctx.search_trials;
-                auto &remaining_stock = stock_by_depth[depth + 1];
                 remaining_stock = stock;
                 if (!plan_construction_materials(cell, plans[i]->type_id, count,
-                        investment_cost_factor, invoices[i], nullptr, &remaining_stock)) {
+                        investment_cost_factor, invoices[i], nullptr, &remaining_stock, false, false, &ctx.material_quotes)) {
                     // The same greedy per-building prefix must fit at any larger count.
                     break;
                 }

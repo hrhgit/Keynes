@@ -82,7 +82,10 @@
                 group_view.merchant_debt_premium <= 0) continue;
         }
         auto group = building_at(static_cast<size_t>(g));
-        const int32_t owner_slot = settlement_owner_slots[g - begin];
+        // Losing operating technology stops output. The registered borrower
+        // still owes the instalment even when no production wallet was opened.
+        const int32_t owner_slot = settlement_owner_slots[g - begin] >= 0
+            ? settlement_owner_slots[g - begin] : find_cohort_slot(cell, group.owner_signature_id);
         int64_t due_sat = 0;
         const int64_t due = building_debt_due(group, due_sat);
         _saturation_count = saturating_add(

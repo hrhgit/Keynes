@@ -143,9 +143,18 @@ func _mobility_payload(wire: PackedByteArray) -> PackedByteArray:
 func _test_corrupt_vacancy_history(ext: Object, wire: PackedByteArray) -> void:
 	var buildings := _domain_offset(wire, BUILDINGS_DOMAIN) + 8
 	_expect("vacancy archive uses versioned building records",
-		buildings >= 8 and wire.decode_u16(buildings + 4) == 66)
-	if buildings < 8 or wire.decode_u16(buildings + 4) != 66:
+		buildings >= 8 and wire.decode_u16(buildings + 4) == 67)
+	if buildings < 8 or wire.decode_u16(buildings + 4) != 67:
 		return
+	var corrupt_loss := wire.duplicate()
+	corrupt_loss.encode_u16(buildings + 16 + 217, 65535)
+	corrupt_loss.encode_s64(16, _wire_hash(corrupt_loss.slice(24)))
+	var original: int = ext.get_economy_state_hash()
+	var loss: Dictionary = ext.restore_economy_ecp2(corrupt_loss)
+	_expect("excessive financial loss history is rejected atomically",
+		not bool(loss.get("ok", true))
+		and loss.get("reason") == "save_building_loss_history_invalid;rolled_back"
+		and ext.get_economy_state_hash() == original)
 	var vacancy := buildings + 16 + PKEC_BUILDING_VACANCY_OFFSET
 	for values in [Vector2i(1, 2), Vector2i(65535, 1), Vector2i(1, 0)]:
 		var invalid := wire.duplicate()

@@ -96,6 +96,11 @@ void NativeEconomyRuntime::observe_building_employment(
             continue;
         }
         if (reopening && !mobility_due) {
+            // Keep the measured shortage current without starting a new hiring
+            // failure on a rest day. A financially suspended group has no
+            // confirmed vacancy history until it gets a full hiring round.
+            if (group.owner_vacancy_cycles > 0)
+                group.vacant_buildings = std::min<int64_t>(group.vacant_buildings, vacancy);
             // An incumbent can take a seat today. Wait for the unemployment
             // hiring window before treating any remaining seats as unfilled.
             continue;
@@ -133,7 +138,7 @@ void NativeEconomyRuntime::finish_building_reopenings(
         // Finish the period's cash and goods settlement before moving people
         // out of these jobs. Structural commit reconciles the changed cell.
         result.released_reopening_jobs |= group.filled_owner > 0;
-        group.filled_owner = 0;
+        limit_building_owner_fill(g, 0);
         const BuildingType &type = _building_types[group.type_id];
         for (int32_t r = 0; r < type.employee_count; ++r) {
             const int32_t role = group.employee_fill_begin + r;
@@ -237,7 +242,7 @@ void NativeEconomyRuntime::review_recovery_building_group(int32_t g) {
     if (group.vacant_buildings == 0) group.owner_vacancy_cycles = 0;
     const int64_t owner_capacity = saturating_mul(
         group.count, type.owner_slots_per_building, _saturation_count);
-    group.filled_owner = std::min<int64_t>(group.filled_owner, owner_capacity);
+    limit_building_owner_fill(g, owner_capacity);
     _building_handle_index_clean = false;
     if (group.count <= 0) {
         group.count = 0;

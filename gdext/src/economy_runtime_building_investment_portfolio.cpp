@@ -315,7 +315,7 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
             ConstructionMaterialPlan reserved_plan;
             if (!plan_construction_materials(
                     cell, portfolio[j].plan.type_id, portfolio[j].plan.allocated_count,
-                    investment_cost_factor, reserved_plan, &adjustment)) {
+                    investment_cost_factor, reserved_plan, &adjustment, nullptr, false, false, &ctx.material_quotes)) {
                 adjustment.clear();
                 return adjustment;
             }
@@ -428,34 +428,17 @@ void NativeEconomyRuntime::investment_allocate_portfolio(
                 ++_building_investment_material_limited;
                 return int64_t{0};
             }
-            int64_t material_lo = 0;
-            int64_t material_hi = cap;
-            // 建材凑得齐还不够：同格其它类型先占走便宜的首选材料后，剩下的
-            // 替代品会把单价推高，重算出的这批建材总价必须仍在候选自己冻结
-            // 的资金包络（自筹 + 商人信贷）之内，否则批量在这里就要收窄。
-            const int64_t funded_per_building = saturating_add(
-                candidate.plan.funding_capital, candidate.plan.merchant_credit,
-                _saturation_count);
-            bool cost_envelope_limited = false;
-            while (material_lo < material_hi) {
-                const int64_t mid = material_lo +
-                    (material_hi - material_lo + 1) / 2;
-                ConstructionMaterialPlan candidate_plan;
-                if (!plan_construction_materials(cell, candidate.plan.type_id, mid,
-                        investment_cost_factor, candidate_plan, &adjustment)) {
-                    material_hi = mid - 1;
-                    continue;
-                }
-                if (candidate_plan.total_cost > saturating_mul(
-                        mid, funded_per_building, _saturation_count)) {
-                    cost_envelope_limited = true;
-                    material_hi = mid - 1;
-                    continue;
-                }
-                material_lo = mid;
-            }
+            std::vector<int64_t> stock(_good_ids.size());
+            for (int32_t good = 0; good < static_cast<int32_t>(stock.size()); ++good)
+                stock[good] = std::max<int64_t>(0, market_store().stock[
+                    market_store().index(ctx.market, good)] + adjustment[good]);
+            ConstructionMaterialPlan invoice;
+            const int64_t funding = saturating_add(candidate.plan.funding_capital,
+                candidate.plan.merchant_credit, _saturation_count);
+            const int64_t material_lo = quote_construction_lots(ctx.market, candidate.plan.type_id,
+                investment_cost_factor, stock, cap, funding, invoice, &ctx.material_quotes);
             if (material_lo < cap) {
-                if (cost_envelope_limited) ++_building_investment_capital_limited;
+                if (invoice.feasible || material_lo < invoice.quoted_count) ++_building_investment_capital_limited;
                 else {
                     ++_building_investment_material_limited;
                     record_investment_material_demand(cell, candidate.plan.type_id,

@@ -344,6 +344,42 @@
             return out;
         }
     }
+    if (_restore.schema_version >= 67) {
+        // Only sums with cross-cohort seats need the extra audit. Historical
+        // same-cohort jobs can still be pending their ordinary reconciliation.
+        std::unordered_map<uint64_t, int64_t> remaining_seats;
+        for (size_t row = 0; row < building_count(); ++row) {
+            const auto group = building_view(row);
+            for (const auto &[sig, seats] : buildings_store().visiting_owners[row]) {
+                const auto key = trade_key(group.cell, sig);
+                auto [it, fresh] = remaining_seats.emplace(key, 0);
+                if (fresh) {
+                    const int32_t slot = population_store().find_signature(group.cell, sig);
+                    if (slot >= 0) it->second = population_store().owner_employed[slot];
+                }
+                if (seats > it->second) {
+                    out["ok"] = false;
+                    out["reason"] = "save_building_owner_seats_invalid";
+                    return out;
+                }
+                it->second -= seats;
+            }
+        }
+        if (!remaining_seats.empty()) {
+            for (size_t row = 0; row < building_count(); ++row) {
+                const auto g = building_view(row);
+                const auto it = remaining_seats.find(trade_key(g.cell, g.owner_signature_id));
+                if (it == remaining_seats.end()) continue;
+                const auto registered = building_owner_seats(g, g.owner_signature_id);
+                if (registered > it->second) {
+                    out["ok"] = false;
+                    out["reason"] = "save_building_owner_seats_invalid";
+                    return out;
+                }
+                it->second -= registered;
+            }
+        }
+    }
     // Some older saves retained a zero-count row until the next structural
     // commit. Normalize the table before any cell range indexes it. The
     // decoded cooldown pairs still refer to this layout and move with it.
@@ -359,6 +395,7 @@
         // The archived market and labor signals are installed below as-is.
         rebuild_building_group_storage();
     }
+    if (_restore.schema_version < 67) migrate_building_owner_seats();
     _pending_building_topology_rebuild = false;
     if (_auto_slice_by_scale)
         _cells_per_slice = std::clamp(market_store().market_count.get(), 1, 128);

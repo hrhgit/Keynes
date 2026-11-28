@@ -309,6 +309,97 @@ bool EconomyInvariantProbe::run_building_portfolio_share(std::string &error) {
             return false;
         }
     }
+    // Each lot needs both materials. Only three complete affordable recipes exist.
+    // The other stocks can supply the entire nominal batch at unaffordable prices.
+    constexpr int goods = 18;
+    economy->_good_ids.resize(goods);
+    market.good_count = goods;
+    market.stock.assign(goods, 1'000'000);
+    market.price.assign(goods, 100'000);
+    economy->_building_construction_goods = {{0, 1000}, {1, 1000}};
+    economy->_building_construction_candidates.clear();
+    for (int group = 0; group < 2; ++group) {
+        market.stock.write_scalar(group, 3000);
+        market.price.write_scalar(group, 1);
+        for (int good = group; good < goods; good += 2)
+            economy->_building_construction_candidates.push_back({good, NativeEconomyRuntime::Q16_ONE});
+    }
+    economy->_building_construction_candidate_offsets = {0, goods / 2, goods};
+    for (const int batch : {32, 256}) {
+        NativeEconomyRuntime::BuildingInvestmentCellContext review(0);
+        review.market = 0;
+        review.cell_population = 2000;
+        review.employment_gap = 2000;
+        review.portfolio_size = 2;
+        for (int i = 0; i < 2; ++i) {
+            const int slots = i == 0 ? 1 : 3;
+            auto &type = economy->_building_types[i];
+            type.owner_slots_per_building = slots;
+            type.construction_count = 2;
+            auto &candidate = review.portfolio[i];
+            candidate.plan.type_id = i;
+            candidate.plan.sponsor = large_sponsors[i];
+            candidate.plan.owner_signature_id = i;
+            candidate.plan.max_batch_count = batch;
+            candidate.plan.funding_capital = 2;
+            candidate.transferable_capital = 100000;
+            candidate.willing_population = slots * batch;
+            population.population.write_scalar(large_sponsors[i], slots * batch);
+            candidate.jobs_per_building = slots;
+            candidate.desired_count = batch;
+            candidate.score_q16 = 2 - i;
+        }
+        economy->investment_allocate_portfolio(review);
+        std::printf("tight material budget: batch=%d trials=%llu quotes=%llu allocation=%lld,%lld\n",
+            batch, (unsigned long long)review.search_trials, (unsigned long long)review.material_quotes,
+            (long long)review.portfolio[0].plan.allocated_count, (long long)review.portfolio[1].plan.allocated_count);
+        if (review.active_types != 1 || review.portfolio[0].plan.allocated_count != 2 ||
+                review.portfolio[1].plan.allocated_count != 0 || market.stock[0] != 3000 ||
+                market.stock[1] != 3000 || population.funds[large_sponsors[0]] != 100000) {
+            error = "investment_tight_budget_changed_selection";
+            return false;
+        }
+        if (review.material_quotes > 80) {
+            error = "investment_tight_budget_requoted_unaffordable_buildings";
+            return false;
+        }
+    }
+    // Shared shelves and equal rounded prices can change the next recipe.
+    // Compare every affordable prefix with individual lots and one closing bill.
+    market.good_count = 3;
+    economy->_good_ids.resize(3);
+    economy->_building_construction_goods = {{0, 140}, {1, 300}};
+    economy->_building_construction_candidates = {{0, 65536}, {1, 65536},
+        {2, 32768}, {1, 65536}, {0, 32768}};
+    economy->_building_construction_candidate_offsets = {0, 3, 5};
+    for (int price : {1, 4, 7}) {
+        market.price.assign(std::vector<int32_t>{price, 3, 1});
+        for (int cheap : {0, 280, 2460}) {
+            const std::vector<int64_t> opening{cheap, 2210, 3210};
+            for (int funding : {0, 1, 2, 4}) {
+                int64_t sat = 0, expected = 0;
+                auto per_lot = opening;
+                NativeEconomyRuntime::GoodsBill bill;
+                for (int n = 1; n <= 16; ++n) {
+                    NativeEconomyRuntime::ConstructionMaterialPlan unit;
+                    if (!economy->plan_construction_materials(0, 0, 1, 65536,
+                            unit, nullptr, &per_lot)) break;
+                    for (size_t j = 0; j < unit.good_ids.size(); ++j)
+                        bill.add(unit.quantities[j], market.price[unit.good_ids[j]], sat);
+                    if (bill.charged <= n * funding) expected = n;
+                }
+                auto batch = opening;
+                NativeEconomyRuntime::ConstructionMaterialPlan material;
+                const auto result = economy->quote_construction_lots(0, 0, 65536, batch, 16,
+                    funding, material, nullptr);
+                if (result != expected || batch != per_lot || material.total_cost != bill.charged ||
+                    economy->construction_material_capacity(0, 0, 65536, opening, 16, funding) < expected) {
+                    error = "batched_material_quote_differs_from_single_lots";
+                    return false;
+                }
+            }
+        }
+    }
     return true;
 }
 
@@ -345,11 +436,14 @@ bool EconomyInvariantProbe::run_building_row_references(std::string &error) {
     runtime._building_funded_capacity_q16 = {1, 2, 3, 4};
     const int32_t first_live_role = runtime.building_view(1).employee_fill_begin;
     runtime._building_employee_filled.write_scalar(first_live_role, 7);
+    runtime.building_at(1).filled_owner = 1;
+    runtime.change_visiting_owner(1, 2, 1);
     runtime.building_at(0).count = 0;
     std::vector<int32_t> changed_cells;
     if (!runtime.commit_ready_construction(changed_cells) ||
         runtime._building_cell_offsets != std::vector<int32_t>{0, 2, 3} ||
         runtime.building_view(0).type_id != 1 ||
+        runtime.building_owner_seats(runtime.building_view(0), 2) != 1 ||
         runtime.building_view(0).employee_fill_begin != first_live_role ||
         runtime._building_employee_filled[first_live_role] != 7) {
         error = "building_compaction_moved_or_lost_the_wrong_role";
@@ -379,10 +473,55 @@ bool EconomyInvariantProbe::run_building_row_references(std::string &error) {
     if (runtime._building_cell_offsets != std::vector<int32_t>{0, 3, 4} ||
         runtime.building_view(0).type_id != 0 ||
         runtime._building_employee_filled[runtime.building_view(0).employee_fill_begin] != 0 ||
+        runtime.building_owner_seats(runtime.building_view(1), 2) != 1 ||
         runtime.building_view(1).employee_fill_begin != first_live_role ||
         cooldowns.size() != 1 || cooldowns[0].source_group != 1 ||
         cooldowns[0].target_group != 2 || cooldowns[0].until_day != 40) {
         error = "building_insert_rebound_an_existing_owner_mobility_row";
+        return false;
+    }
+    // Rest-day employment fills seven of eight previously confirmed empty
+    // units. A failed purchase releases the seven without changing that fact.
+    auto lot = runtime.building_at(1);
+    lot.count = 8;
+    lot.filled_owner = 7;
+    lot.owner_vacancy_cycles = 1;
+    lot.vacant_buildings = 8;
+    lot.operating_state = 0;
+    runtime._building_types[lot.type_id].owner_profession_id = 1;
+    runtime._building_severe_loss_cycles = 1;
+    runtime._building_lifecycle[1].employment = Review::Employment::Reopen;
+    runtime.observe_building_employment(1, 2, false, {8});
+    NativeEconomyRuntime::ProductionResult stalled;
+    runtime.finish_building_reopenings(1, 2, stalled);
+    runtime.review_expired_building_vacancy(1);
+    runtime.review_recovery_building_group(1);
+    if (!stalled.released_reopening_jobs || runtime.building_view(1).count != 7 ||
+            runtime.building_view(1).filled_owner != 0 || runtime.building_view(1).vacant_buildings != 0) {
+        error = "building_retired_more_than_latest_confirmed_rest_day_vacancy";
+        return false;
+    }
+    // A registered family's member works elsewhere. Holding title does not
+    // let the family claim the seat of an actual visiting proprietor.
+    runtime._signatures.resize(3);
+    runtime.population_store().clear(2);
+    const int registered = runtime.population_store().allocate_slot(0, 0);
+    const int visitor = runtime.population_store().allocate_slot(0, 2);
+    for (int slot : {registered, visitor}) runtime.population_store().population.write_scalar(slot, 1);
+    runtime.building_at(1).filled_owner = 1;
+    runtime.change_visiting_owner(1, 2, 1);
+    runtime._building_types[runtime.building_view(1).type_id].owner_slots_per_building = 1;
+    runtime._family_runtime_mode = 2;
+    runtime._family_building_offsets = {0, 0, 1, 1, 1};
+    runtime._family_building_edge_indices = {0};
+    runtime._family_cohort_offsets.assign(runtime.population_store().active.size() + 1, 1);
+    std::fill_n(runtime._family_cohort_offsets.begin(), registered + 1, 0);
+    runtime._family_cohort_edge_indices = {0};
+    runtime.family_memberships().push_back({1, runtime.population_store().handle_for_slot(registered), 1});
+    runtime.family_ownerships().push_back({1, 1, 1, 0});
+    runtime.attribute_family_owner_employment_for_cell(0);
+    if (runtime.family_ownerships()[0].filled_owner != 0 || runtime.building_view(1).filled_owner != 1) {
+        error = "unseated_registered_family_claimed_a_visiting_owner";
         return false;
     }
     return true;
