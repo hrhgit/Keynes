@@ -12,12 +12,12 @@
 | 域对要登记并标明状态 | module-boundaries.md | 护栏：`check_cross_domain_inventory.py` |
 | 每日模块的 reads/writes 与描述符一致 | development-guide.md | 护栏：`check_module_contracts.py` |
 | 环境开关经 registry 读取，不直接 `getenv` | development-guide.md | 护栏：`check_runtime_switches.py` |
-| 存档段有契约（版本、依赖、旧版拒绝） | development-guide.md | 护栏：`check_save_contracts.py`，包含叙事和阶层动荡续存的版本与字段检查；Qodo：continuation state |
+| 存档段有契约（版本、依赖、旧版拒绝） | development-guide.md | 护栏：`check_save_contracts.py` 核对叙事和阶层动乱续存的版本与字段；运行测试：`runtime_narrative_checkpoint_test.gd` 检查非空档往返和坏档拒绝，`runtime_events_pod_test.gd` 检查原对象拒绝后保留状态；Qodo：continuation state |
 | 新继续态冻结、校验、完整解码后才安装 | development-guide.md | 测试：`check_replay_matrix.py`；Qodo：continuation state |
 | 只在已提交边界保存，超容量明确失败 | development-guide.md | 测试：`runtime_inline_save_restore_test.gd` 等；Qodo：committed boundary |
 | 不靠删除断言、放宽容差、加长超时、加重试或换种子修测试 | AGENTS.md | 护栏：`check_test_strictness.py` 检查 PR 差异中的常见写法并要求就地说明；Qodo：root cause；工厂提示词 |
-| 经济税表缓存键保留各字段的完整值 | AGENTS.md 规则 1、3 | 护栏：`check_tax_row_keys.py` 检查税相关缓存的标量键；已有错误逐项登记，基线只收紧 |
-| 生成清单与绑定和资源内容一致 | development-guide.md | 护栏：`check_generated_manifests.py` 对原生绑定清单和加载目录源指纹做重建比对；旧指纹差异逐项登记，基线只收紧 |
+| 经济税表缓存键保留各字段的完整值 | AGENTS.md 规则 1、3 | 护栏：`check_tax_row_keys.py` 检查税表的整数拼接键，旧键指纹只收紧；运行测试：`cell_tax_row_settlement_test.gd` 核对不同地块组合与顺序的实扣税款和缓存条数 |
+| 生成清单与绑定和资源内容一致 | development-guide.md | 护栏：`check_generated_manifests.py` 对原生绑定清单和加载目录源指纹做重建比对，旧指纹差异只收紧；运行测试：`native_loading_tasks_test.gd` 核对实际预烘的路径、指纹和清单字节 |
 | 仓库 Markdown 的相对链接和锚点可解析 | development-guide.md | 护栏：`check_markdown_links.py`；既有断链逐项登记，基线只收紧 |
 | 拒绝启动时执行器仍停止，模拟权限已释放 | AGENTS.md 规则 3、5 | 运行测试：`modifier_opening_rejection_test.gd` 检查两种执行方式的停机、权限释放，以及重启后保留已提交日期和待处理命令 |
 | 单个显示帧被拒绝后，同批日记录与回执仍发布一次 | AGENTS.md 规则 2、3 | 运行测试：`modifier_tax_frame_rejection_test.gd` 检查保留上一份有效税率，并交付同批逐日记录及命令回执 |

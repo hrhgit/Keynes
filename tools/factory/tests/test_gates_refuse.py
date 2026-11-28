@@ -22,6 +22,13 @@ sys.path.insert(1, str(CI))
 import agent
 import checks
 import check_cpp_deps
+import check_committed_views
+import check_cross_domain_inventory
+import check_module_map
+import check_module_contracts
+import check_save_contracts
+import check_save_section_contracts
+import check_size_ratchet
 import check_fault_taxonomy
 import check_generated_manifests
 import check_large_blobs
@@ -39,9 +46,9 @@ from check_day_stage_reuse import stage_reuse_violations
 from check_tax_row_keys import tax_row_key_violations, validate_tax_row_baseline
 from check_test_strictness import validate_test_diff
 from common import Result, legacy_lane_gate, load_config
+import test_architecture_guards
 import test_frontend_and_save_guards as continued_state_inputs
 from test_day_stage_reuse import WITHOUT_REUSE, gameplay_sources
-from test_generated_manifests import CATALOG_BAKE, skip_data_subdirectories
 from test_tax_row_keys import MASTER_ENTRY, PACKED_ROWS, TAX_ROWS
 from test_test_strictness import SEED_AFTER, SEED_BEFORE
 
@@ -155,32 +162,116 @@ def refuses_unrelated_cpp_baseline():
     return False
 
 
-def refuses_changed_catalog_collector():
+def refuses_invalid_catalog_input():
     try:
-        check_generated_manifests.validate_catalog_collector(skip_data_subdirectories(CATALOG_BAKE))
-    except ValueError:
-        return True
+        check_generated_manifests.parse_catalog_inputs('{\n"directories": ["res://data"],\n"extensions": [1]}')
+    except ValueError as error:
+        return "loading_catalog_sources.json:3" in str(error)
     return False
 
 
-def refuses_wrong_narrative_field_type():
-    root = FACTORY.parents[1]
-    source = (root / narrative_layout.SOURCE).read_text(encoding="utf-8")
-    checkpoint = (root / "gdext/src/runtime_narrative_checkpoint.cpp").read_text(encoding="utf-8")
-    changed = source.replace('out["world_seed"] = static_cast<int64_t>(_seed);',
-                             'out["world_seed"] = String::num_int64(_seed);')
-    return any("world_seed" in error for error in narrative_layout._roundtrip_violations(changed, checkpoint))
+def architecture_case(name):
+    # Reuse the existing mutation fixture, including its assertion on the refusal.
+    def exercise():
+        case = test_architecture_guards.GuardsTest(name)
+        getattr(case, name)()
+        return True
+    return exercise
 
 
-def refuses_narrative_state_write_before_validation():
-    source = (FACTORY.parents[1] / "gdext/src/runtime_narrative.cpp").read_text(encoding="utf-8")
-    old = "    const String error = checkpoint_error(archive);"
-    changed = source.replace(old, "    ++_seed;\n" + old, 1)
-    return changed != source and bool(narrative_layout._install_violations(changed))
+def refuses_files(check, files, reason):
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        for filename, content in files.items():
+            path = root / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        return any(reason in message for message in check(root))
 
 
 # name -> list of (description, callable returning True when the gate refused the input)
 GATES = {
+    "tools/ci/check_committed_views.py:violations": [
+        ("the Economy stage reads the Climate store directly",
+         architecture_case("test_committed_view_rejects_real_bypass_and_missing_version_check")),
+    ],
+    "tools/ci/check_committed_views.py:published_view_violations": [
+        ("an Ideology snapshot bypasses the committed annual view",
+         lambda: "Ideology -> annual report bypasses owned committed view" in
+                 check_committed_views.published_view_violations("", "ideology_pod_snapshot")),
+    ],
+    "tools/ci/check_committed_views.py:country_ai_violations": [
+        ("Country AI reads the Economy digest directly", lambda: "Country AI bypasses Economy committed view" in
+         check_committed_views.country_ai_violations("country_ai_digest")),
+    ],
+    "tools/ci/check_committed_views.py:annual_country_violations": [
+        ("the annual report reads Country's snapshot directly", lambda: "annual report bypasses Country view" in
+         check_committed_views.annual_country_violations("country_asset_snapshot()")),
+    ],
+    "tools/ci/check_committed_views.py:lineage_opinion_violations": [
+        ("family metrics read Economy's mutable buffers", lambda: "Family metrics bypass Economy committed opinion" in
+         check_committed_views.lineage_opinion_violations("_class_opinion_buffers")),
+    ],
+    "tools/ci/check_committed_views.py:tax_display_violations": [
+        ("a tax panel with no published-frame query", lambda: "country panel bypasses the national tax query" in
+         check_committed_views.tax_display_violations("", "")),
+    ],
+    "tools/ci/check_cpp_deps.py:violations": [
+        ("a new cross-module include", lambda: bool(check_cpp_deps.violations({"country->economy": 1}, {}))),
+    ],
+    "tools/ci/check_cross_domain_inventory.py:violations": [
+        ("a dependency pair is missing from inventory", lambda: refuses_files(check_cross_domain_inventory.violations,
+         {"tools/ci/cpp_deps_baseline.json": '{"references":{"source|a->b|type":1}}',
+          "tools/ci/cross_domain_inventory.json": '{}'}, "pair missing from inventory: a->b")),
+    ],
+    "tools/ci/check_fault_taxonomy.py:fatal_field_violations": [
+        ("a fatal without replay evidence", lambda: bool(check_fault_taxonomy.fatal_field_violations(
+            [{"id": "fatal", "kind": "fatal"}]))),
+    ],
+    "tools/ci/check_module_contracts.py:freeze_read_violations": [
+        ("the Economy stage omits the frozen read", lambda: refuses_files(check_module_contracts.freeze_read_violations,
+         {check_module_contracts.FREEZE_READS["economy"]: ""}, "economy missing frozen input registration")),
+    ],
+    "tools/ci/check_module_contracts.py:stage_order_violations": [
+        ("a stage reads a later stage", lambda: bool(check_module_contracts.stage_order_violations(
+            {"modules": [{"id": "a", "reads": "b"}, {"id": "b", "reads": ""}]}))),
+    ],
+    "tools/ci/check_module_contracts.py:violations": [
+        ("the generated header loses the module declarations", lambda: refuses_files(
+            lambda root: check_module_contracts.violations(root, {"modules": [], "reviewed_reads": []}),
+            {check_module_contracts.HEADER: ""}, "generated module contracts differ")),
+    ],
+    "tools/ci/check_module_map.py:violations": [
+        ("the module map points to a missing file", lambda: refuses_files(check_module_map.violations,
+         {check_module_map.MAP: "`gdext/missing.h`"}, "does not exist")),
+    ],
+    "tools/ci/check_resolve_apply.py:violations": [
+        ("a resolve entry uses a raw queue", architecture_case("test_resolve_apply_actual_source_negatives")),
+    ],
+    "tools/ci/check_runtime_advancers.py:violations": [
+        ("the host gains an unregistered date cursor",
+         architecture_case("test_advancer_inventory_rejects_missing_fields_methods_and_header")),
+    ],
+    "tools/ci/check_save_contracts.py:violations": [
+        ("Country reads Economy-owned bytes", lambda: refuses_files(check_save_contracts.violations,
+         {check_save_contracts.BASE + "save_modules/country_state.gd": "extends Node\nfunc write(): return ecp2",
+          check_save_contracts.BASE + "save_modules/economy_state.gd": "",
+          check_save_contracts.BASE + "world_state_modules.gd": ""}, "foreign section byte access ecp2")),
+    ],
+    "tools/ci/check_save_section_contracts.py:violations": [
+        ("the section directory omits all owners", lambda: refuses_files(check_save_section_contracts.violations,
+         {check_save_section_contracts.REGISTRY: '{}'}, "12 unique domains")),
+    ],
+    "tools/ci/check_script_native_access.py:violations": [
+        ("UI gains an unregistered native call", lambda: bool(script_access.violations({"ui.gd": {"economy": 1}}, {}))),
+    ],
+    "tools/ci/check_size_ratchet.py:violations": [
+        ("a new file reaches 800 lines", lambda: bool(check_size_ratchet.violations(
+            {"new.cpp": {"limit": 799, "lines": 800}}, {}))),
+    ],
+    "tools/ci/check_world_ext_bindings.py:violations": [
+        ("a binding lives in the wrong module", architecture_case("test_world_ext_binding_guard_rejects_misplaced_and_entry_bindings")),
+    ],
     "tools/ci/check_cpp_deps.py:reclassify_family_baseline": [
         ("unrelated content cannot be treated as the reviewed dependency baseline", refuses_unrelated_cpp_baseline),
     ],
@@ -244,12 +335,12 @@ GATES = {
                 narrative_layout.archive_shapes(continued_state_inputs.unversioned_last_city_capture()),
                 continued_state_inputs.SAVE_BASELINE))),
     ],
-    "tools/ci/narrative_save_layout.py:_roundtrip_violations": [
-        ("write a string to a saved seed that must restore as an integer", refuses_wrong_narrative_field_type),
-    ],
-    "tools/ci/narrative_save_layout.py:_install_violations": [
-        ("increment the live seed before rejecting an invalid archive",
-         refuses_narrative_state_write_before_validation),
+    "tools/ci/narrative_save_layout.py:narrative_violations": [
+        ("an unversioned last-city queue reaches the repository entry point", lambda: refuses_files(
+            narrative_layout.narrative_violations,
+            {narrative_layout.SOURCE: continued_state_inputs.unversioned_last_city_capture(),
+             narrative_layout.BASELINE: json.dumps(continued_state_inputs.SAVE_BASELINE)},
+            "pending_independence_clears")),
     ],
     "tools/ci/narrative_save_layout.py:drained_state_violations": [
         ("the last-city state queued for the next day is absent from the archive", lambda: bool(
@@ -261,9 +352,8 @@ GATES = {
             check_generated_manifests.validate_binding_manifest_bytes(
                 b'{"class":"DCWorldExt","count":0,"methods":[]}', [{"name": "poll_runtime_commit"}]))),
     ],
-    "tools/ci/check_generated_manifests.py:validate_catalog_collector": [
-        ("the producer skips data subdirectories while retaining the source suffixes",
-         refuses_changed_catalog_collector),
+    "tools/ci/check_generated_manifests.py:parse_catalog_inputs": [
+        ("the recipe contains a non-string file extension", refuses_invalid_catalog_input),
     ],
     "tools/ci/check_generated_manifests.py:validate_catalog_manifest_bytes": [
         ("a hand-edited fingerprint disagrees with the source bytes", lambda: bool(
@@ -378,8 +468,10 @@ NAME_PARTS = ("matches", "touching", "scope", "gate", "parse", "classify", "vali
 
 
 def _is_gate_name(name: str) -> bool:
+    if name == "violations" or name.endswith("_violations"):
+        return True
     if name.startswith("_"):
-        return name.lstrip("_").startswith("validate_") or name.endswith("_violations")
+        return name.lstrip("_").startswith("validate_")
     return any(part in name for part in NAME_PARTS)
 
 
@@ -396,8 +488,8 @@ def _named_gates(node, prefix=()):
 
 def gate_functions():
     found = set()
-    for path in (*FACTORY.glob("*.py"), *CI.glob("*.py")):
-        if path.name.startswith("test_"):
+    for path in (*FACTORY.rglob("*.py"), *CI.rglob("*.py")):
+        if path.name.startswith("test_") or "tests" in path.relative_to(FACTORY.parent).parts:
             continue
         source = ast.parse(path.read_text(encoding="utf-8"))
         file = path.relative_to(FACTORY.parents[1]).as_posix()
@@ -435,6 +527,17 @@ class GatesRefuse(unittest.TestCase):
                            "def _scan_tokens(): pass\n")
         self.assertEqual(set(_named_gates(module)), {"_validate_archive", "_restore_violations"})
 
+    def test_unregistered_public_violations_in_a_new_checker_are_reported(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            factory, ci = root / "tools/factory", root / "tools/ci"
+            factory.mkdir(parents=True)
+            ci.mkdir()
+            (ci / "archive").mkdir()
+            (ci / "archive/check_archive.py").write_text("def archive_violations(data): return []\n")
+            with patch(f"{__name__}.FACTORY", factory), patch(f"{__name__}.CI", ci):
+                self.assertEqual(gate_functions() - GATES.keys(), {"tools/ci/archive/check_archive.py:archive_violations"})
+
     def test_rule_text_matches_the_evidence_and_names_this_test(self):
         rules = FACTORY.parents[1] / "AGENTS.md"
         if not rules.is_file():
@@ -448,6 +551,7 @@ class GatesRefuse(unittest.TestCase):
 
 # Functions whose names match but that are not gates; each needs a reason.
 KNOWN_UNLISTED = {
+    "tools/ci/check_fault_taxonomy.py:report_fatal_field_violations": "prints the results already checked by fatal_field_violations",
     "tools/factory/run.py:Run.scope_problems": "calls work.scope, whose refusals are in GATES; the stop is exercised in test_workflow.py",
     "tools/factory/watch_prs.py:Watcher.scope_problem": "calls Candidate.scope and reports its refusals",
     "tools/factory/watch_prs.py:Watcher.scope_blocked": "reports scope_problem's result; refusals are in GATES",

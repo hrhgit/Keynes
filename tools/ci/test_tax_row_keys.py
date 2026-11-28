@@ -1,6 +1,10 @@
 """Test the packed tax amount/mode collision and the exact master exception."""
 
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from check_tax_row_keys import LEGACY_PATH, tax_row_key_violations, validate_tax_row_baseline
 
@@ -109,6 +113,80 @@ class TaxRowKeyTests(unittest.TestCase):
         self.assertTrue(any("policy_by_id uses a scalar tax row key" in error for error in errors))
         self.assertEqual(retained, {})
 
+    def test_header_only_id_table_is_not_a_packed_key(self):
+        header = "gdext/src/economy_cell_tax_default_rows.h"
+        impl = "gdext/src/economy_cell_tax_default_rows.cpp"
+        self.assertEqual(tax_row_key_violations({
+            header: "std::unordered_map<uint64_t, Policy> policy_by_id;",
+            impl: "auto read(uint64_t id) { return policy_by_id.at(id); }",
+        }, {}), ([], {}))
+
+    def test_rejects_brace_initialized_and_hint_inserted_keys(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        declaration = "std::unordered_map<uint64_t, Policy> default_rows;\n"
+        for use in (
+            "const uint64_t row_id{(uint64_t(country_id) << 24) | amount};\n"
+            "default_rows.emplace(row_id, row);",
+            "auto it = default_rows.find(country_id);\n"
+            "default_rows.emplace_hint(it, (uint64_t(country_id) << 24) | amount, row);",
+        ):
+            with self.subTest(use=use):
+                errors, _ = tax_row_key_violations({path: declaration + use}, {})
+                self.assertTrue(errors, use)
+
+    def test_packed_outer_key_is_detected_across_blocks(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        src = """std::map<uint64_t, Row> rows;
+            void store() {
+                const uint64_t key{(country << 24) | amount};
+                Row defaults{}; if (active) { rows[key] = value; }
+            }"""
+        self.assertTrue(tax_row_key_violations({path: src}, {})[0])
+        # The same spelling in a different function is an ordinary handle.
+        sibling = src.replace("rows[key] = value;", "").replace(
+            "void store()", "void build()") + "void get(uint64_t key) { rows[key]; }"
+        self.assertEqual(tax_row_key_violations({path: sibling}, {}), ([], {}))
+
+    def test_structured_pair_key_can_hold_independent_fields(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        source = """std::map<std::pair<uint32_t, uint32_t>, Row> rows;
+                    rows.emplace(std::make_pair(country, flags << 4 | 1), row);"""
+        self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
+
+    def test_packed_key_into_a_map_declared_using_a_type_alias(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        source = """using Table = std::map<uint64_t, Policy>;
+                    Table rows;
+                    rows.emplace((country << 24) | amount, value);"""
+        self.assertTrue(tax_row_key_violations({path: source}, {})[0])
+
+    def test_row_value_can_be_calculated_by_a_lambda(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        source = """std::map<uint64_t, Policy> rows;
+                    rows.emplace(id, [&]{ return make_policy(); }());"""
+        self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
+
+    def test_invalid_baseline_exits_with_a_source_location(self):
+        script = Path(__file__).with_name("check_tax_row_keys.py")
+        for malformed, line in (("[]", 1), ('{\n  "a":', 2), ('{"a":[{}]}', 1)):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp, "tools/ci/tax_row_keys_baseline.json")
+                path.parent.mkdir(parents=True)
+                path.write_text(malformed, encoding="utf-8")
+                result = subprocess.run([sys.executable, script, "--root", tmp],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"tax_row_keys_baseline.json:{line}:", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_unfinished_cache_access_reports_file_and_line(self):
+        path = "gdext/src/economy_cell_tax_default_rows.cpp"
+        errors, _ = tax_row_key_violations({path:
+            "std::unordered_map<uint64_t, Policy> default_rows;\n"
+            "default_rows.emplace_hint(it, (country << 24) | amount"
+        }, {})
+        self.assertRegex(" ".join(errors), r"economy_cell_tax_default_rows.cpp:2:.*incomplete")
+
     def test_rejects_an_id_named_key_that_was_computed_by_packing(self):
         path = "gdext/src/economy_cell_tax_default_rows.h"
         source = """
@@ -150,12 +228,12 @@ class TaxRowKeyTests(unittest.TestCase):
         path = "gdext/src/economy_cell_tax_default_rows.h"
         self.assertEqual(tax_row_key_violations({path: source}, {}), ([], {}))
 
-    def test_rejects_scalar_key_moved_into_a_default_row_helper_alias(self):
+    def test_single_id_type_alias_is_legal_without_uses(self):
         path = "gdext/src/economy_cell_tax_default_rows.h"
         source = "using ByKey = std::unordered_map<std::uint64_t, int32_t>;"
-        errors, _ = tax_row_key_violations({path: source}, MASTER_ENTRY)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("ByKey uses a scalar tax row key", errors[0])
+        errors, _ = tax_row_key_violations({path: source}, {})
+        # test-guard[assertion]: 单凭别名看不出键是否拼接，实际拼接写入由同组反例验证。
+        self.assertEqual(errors, [])
 
     def test_baseline_only_keeps_the_exact_old_cache(self):
         self.assertEqual(tax_row_key_violations({TAX_ROWS: PACKED_ROWS}, MASTER_ENTRY), ([], MASTER_ENTRY))
@@ -165,20 +243,10 @@ class TaxRowKeyTests(unittest.TestCase):
                 self.assertTrue(errors)
         self.assertEqual(tax_row_key_violations({TAX_ROWS: FIXED_ROWS}, MASTER_ENTRY), ([], {}))
 
-    def test_legacy_cache_cannot_be_reused_for_display_rows(self):
-        for source in (
-            PACKED_ROWS.replace("row_number = display_only", "row_number = !display_only"),
-            PACKED_ROWS.replace("resolved_mode, display_only", "resolved_mode, false"),
-            PACKED_ROWS.replace("compile_cell_policy(cell, true)", "compile_cell_policy(cell, false)"),
-            PACKED_ROWS.replace("compile_cell_policy(cell, true)", "batch_display")
-                       .replace("compile_cell_policy(cell, false)", "compile_cell_policy(cell, true)", 1)
-                       .replace("batch_display", "compile_cell_policy(cell, false)"),
-        ):
-            with self.subTest(source=source):
-                errors, retained = tax_row_key_violations({TAX_ROWS: source}, MASTER_ENTRY)
-                self.assertTrue(any("settlement_default_rows uses a scalar tax row key" in error
-                                    for error in errors))
-                self.assertEqual(retained, {})
+    def test_settlement_routing_is_measured_by_the_runtime_regression(self):
+        source = PACKED_ROWS.replace("compile_cell_policy(cell, true)", "compile_cell_policy(cell, display_only)")
+        # test-guard[assertion]: cell_tax_row_settlement_test.gd 核对展示地块的实际缓存条数和扣款，允许等价改写调用。
+        self.assertEqual(tax_row_key_violations({TAX_ROWS: source}, MASTER_ENTRY), ([], MASTER_ENTRY))
 
     def test_refuses_added_or_increased_baseline_entries(self):
         self.assertEqual(validate_tax_row_baseline({}, MASTER_ENTRY), [])

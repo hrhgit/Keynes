@@ -6,12 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from check_generated_manifests import (
-    BAKE,
-    CACHE,
+    INPUTS,
     PROJECT,
     _catalog_fingerprints,
     _catalog_recipe,
-    _recipe_from_text,
+    parse_catalog_inputs,
     catalog_baseline_at,
     validate_binding_manifest_bytes,
     validate_catalog_manifest_bytes,
@@ -23,31 +22,10 @@ STALE_HASH = "6cff89dea05338d18a0d5324672b666262feea3bf77f970e5f51f68b570df554"
 UPSTREAM_LF_HASH = "27a934af7c1673f1f3be97b409badbb9930b8a2ac32aabcb24dca62a62a0f021"
 UPSTREAM_CRLF_HASH = "d81c18cf4529755fe4f8e12cb1a611a5ce74f92a13863de97bf2f1f5a923b5da"
 CANONICAL_BINDINGS = b'{\n  "class": "DCWorldExt",\n  "count": 1,\n  "methods": [\n    "take_day"\n  ]\n}\n'
-CATALOG_BAKE = """\
-static func write_sources(file: FileAccess, files: Dictionary) -> void:
-\tfor dir in ["res://data", "res://scripts/economy"]:
-\t\t_collect_sources(dir, files)
-\tfile.store_string(JSON.stringify(files,"\\t",true))
-
-static func _collect_sources(directory: String, files: Dictionary) -> void:
-\tif directory == Cache.DIRECTORY.trim_suffix("/"):
-\t\treturn
-\tvar dir := DirAccess.open(directory)
-\tif dir == null:
-\t\treturn
-\tfor name in dir.get_files():
-\t\tif name.get_extension() in ["gd","tres","json","csv"]:
-\t\t\tvar path := directory+"/"+name
-\t\t\tfiles[path] = FileAccess.get_sha256(path)
-\tfor name in dir.get_directories():
-\t\t_collect_sources(directory+"/"+name,files)
-"""
-CATALOG_CACHE = 'const DIRECTORY := "res://data/loading_catalog_v1/"\n'
-
-
-def skip_data_subdirectories(bake: str) -> str:
-    recurse = '\tfor name in dir.get_directories():\n\t\t_collect_sources(directory+"/"+name,files)'
-    return bake.replace(recurse, '\tif directory != "res://data":\n\t' + recurse.replace("\n", "\n\t"), 1)
+INPUT_JSON = json.dumps({
+    "directories": ["res://data", "res://scripts/economy"],
+    "extensions": ["gd", "tres", "json", "csv"],
+})
 
 
 def catalog(*entries: tuple[str, str]) -> bytes:
@@ -65,19 +43,28 @@ def stage_sources(root: Path, files: dict[str, bytes]) -> None:
 
 
 class GeneratedManifestTests(unittest.TestCase):
-    def test_refuses_collector_that_stops_at_data_subdirectories(self):
-        changed = skip_data_subdirectories(CATALOG_BAKE)
-        self.assertNotEqual(changed, CATALOG_BAKE)
-        self.assertIn("data/", _recipe_from_text(CATALOG_BAKE, CATALOG_CACHE)[0])
-        with self.assertRaisesRegex(ValueError, "_collect_sources"):
-            _recipe_from_text(changed, CATALOG_CACHE)
+    def test_independent_source_recipe_accepts_equivalent_path_join(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            # test-guard[assertion]: 目录递归和产物内容现由 native_loading_tasks_test 实际重烘后按字节比对。
+            stage_sources(root, {
+                f"{PROJECT}/tools/loading_catalog_bake.gd":
+                    b'var path := directory.path_join(name)\n',
+                INPUTS: INPUT_JSON.encode(),
+            })
+            self.assertEqual(_catalog_recipe(root), (("data/", "scripts/economy/"),
+                             {"gd", "tres", "json", "csv"}, "data/loading_catalog_v1"))
 
-    def test_collector_allows_formatting_local_names_and_extension_updates(self):
-        changed = CATALOG_BAKE.replace('directory+"/"+name', 'directory + "/" + entry')
-        changed = changed.replace("for name", "for entry").replace("if name.get_extension()", "if entry.get_extension()")
-        changed = changed.replace('"csv"]:', '"csv", "cfg"]: # Include game fixtures')
-        changed = changed.replace("var path :=", "var path: String =")
-        self.assertEqual(_recipe_from_text(changed, CATALOG_CACHE)[1], {"gd", "tres", "json", "csv", "cfg"})
+    def test_reads_changed_directories_and_extensions_from_the_bakers_inputs(self):
+        new = {"directories": ["res://data/new data"], "extensions": ["cfg"]}
+        self.assertEqual(parse_catalog_inputs(json.dumps(new)), (("data/new data/",), {"cfg"}))
+
+    def test_refuses_unreadable_catalog_inputs_with_location(self):
+        for value, line in [('{"directories": [\n}', 2), ('{"directories": ["res://../other"]}', 1),
+                            ('{"directories": ["res://data"],\n"extensions": [4]}', 2),
+                            ('null', 1)]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, f"{INPUTS}:{line}:"):
+                parse_catalog_inputs(value)
 
     def test_accepts_binding_generator_bytes(self):
         self.assertEqual(validate_binding_manifest_bytes(CANONICAL_BINDINGS, [{"name": "take_day"}]), [])
@@ -133,8 +120,7 @@ class GeneratedManifestTests(unittest.TestCase):
             root = Path(directory)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
             fixture = {
-                BAKE: CATALOG_BAKE,
-                CACHE: CATALOG_CACHE,
+                INPUTS: INPUT_JSON,
                 f"{PROJECT}/data/native_binding_manifest.json": "{}",
                 f"{PROJECT}/data/loading_catalog_v1/sources.json": "{}",
                 f"{PROJECT}/data/.hidden/ignored.tres": "",
@@ -185,8 +171,6 @@ class GeneratedManifestTests(unittest.TestCase):
             root = Path(directory)
             expected = hashlib.sha256(CANONICAL_BINDINGS).hexdigest()
             stage_sources(root, {
-                BAKE: CATALOG_BAKE.encode("utf-8"),
-                CACHE: CATALOG_CACHE.encode("utf-8"),
                 f"{PROJECT}/data/native_binding_manifest.json": CANONICAL_BINDINGS,
                 f"{PROJECT}/data/loading_catalog_v1/sources.json":
                     catalog((SOURCE, STALE_HASH), ("res://data/other.json", "a" * 64)),

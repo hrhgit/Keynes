@@ -1,133 +1,100 @@
+"""Static checks only describe the fields and versions written in capture()."""
 import copy
 import json
 from pathlib import Path
 import unittest
 
 import narrative_save_layout as layout
+from test_frontend_and_save_guards import SAVE_SOURCE, SAVE_BASELINE
 
 ROOT = Path(__file__).resolve().parents[2]
-CAPTURE = (ROOT / layout.SOURCE).read_text(encoding="utf-8")
-RUNTIME = (ROOT / layout.RUNTIME).read_text(encoding="utf-8")
-BASELINE = json.loads((ROOT / layout.BASELINE).read_text(encoding="utf-8"))
-FINAL_RETURN = "    return out.duplicate(true);"
-PULSE_FIELD = '    out["last_fact_event_id"] = _last_fact;'
-VALIDATION = "    const String error = checkpoint_error(archive);"
-
-
-def replace_once(source: str, before: str, after: str) -> str:
-    if source.count(before) != 1:
-        raise AssertionError(f"fixture must identify one source statement: {before}")
-    return source.replace(before, after, 1)
-
-
-def capture_refusals(source: str) -> list[str]:
-    try:
-        return layout.layout_violations(layout.archive_shapes(source), BASELINE, BASELINE)
-    except ValueError as error:
-        return [str(error)]
 
 
 class NarrativeCaptureContracts(unittest.TestCase):
-    def test_erased_key_is_absent_from_the_returned_archive(self):
-        source = replace_once(CAPTURE, FINAL_RETURN,
-                              '    out.erase("pending_choice");\n' + FINAL_RETURN)
-        errors = capture_refusals(source)
-        self.assertTrue(any("pending_choice" in error for error in errors), errors)
+    def test_equivalent_capture_forms_preserve_layout(self):
+        source = SAVE_SOURCE.replace('out["version"] = 1;', 'out["version"] = 1;\n    if (_country == 0) return out;')
+        expected = layout.archive_shapes(source)
+        for original, alternative in (
+            ("_country == 0", "!_country"),
+            ("Dictionary out;", "auto out = Dictionary{};"),
+            ('out["stratum_unrest"] = unrest;', 'out["stratum_unrest"] = unrest.duplicate(true);'),
+        ):
+            with self.subTest(alternative=alternative):
+                self.assertIn(original, source)
+                self.assertEqual(layout.archive_shapes(source.replace(original, alternative)), expected)
 
-    def test_erasing_a_key_while_using_the_result_is_still_a_write(self):
-        for statement in ('const bool removed = out.erase("pending_choice");',
-                          'if (out.erase("pending_choice")) { log_cleanup(); }'):
-            with self.subTest(statement=statement):
-                source = replace_once(CAPTURE, FINAL_RETURN, f"    {statement}\n" + FINAL_RETURN)
-                errors = capture_refusals(source)
-                self.assertTrue(any("pending_choice" in error for error in errors), errors)
+    def test_renamed_archive_still_requires_a_version_for_new_fields(self):
+        source = SAVE_SOURCE.replace("out", "archive").replace("unrest[", "disorder[").replace(
+            "Dictionary unrest;", "Dictionary disorder;").replace("= unrest;", "= disorder;")
+        changed = source.replace('disorder["schema"]', 'disorder["next_day_cleanup"] = clears;\n    disorder["schema"]')
+        errors = layout.layout_violations(layout.archive_shapes(changed), SAVE_BASELINE)
+        self.assertTrue(any("next_day_cleanup" in error for error in errors), errors)
 
-    def test_a_required_field_cannot_depend_on_a_branch(self):
-        for condition in ("_last_fact >= 0", "false"):
-            with self.subTest(condition=condition):
-                for punctuation in ("{", ""):
-                    statement = PULSE_FIELD.strip()
-                    if punctuation:
-                        statement = f"{{ {statement} }}"
-                    source = replace_once(CAPTURE, PULSE_FIELD, f"    if ({condition}) {statement}")
-                    errors = capture_refusals(source)
-                    self.assertTrue(any("last_fact_event_id" in error for error in errors), errors)
+    def test_incomplete_capture_reports_the_control_line(self):
+        source = SAVE_SOURCE.replace("return out.duplicate(true);", "if (_country)")
+        line = next(i for i, text in enumerate(source.splitlines(), 1) if "if (_country)" in text)
+        with self.assertRaisesRegex(ValueError, rf"{layout.SOURCE}:{line}:"):
+            layout.archive_shapes(source)
 
-    def test_nested_archive_returned_with_a_missing_field_is_rejected(self):
-        source = replace_once(CAPTURE, FINAL_RETURN,
-                              '    unrest.erase("sequence");\n' + FINAL_RETURN)
-        errors = capture_refusals(source)
-        self.assertTrue(any("sequence" in error for error in errors), errors)
+    def test_version_literal_forms_and_complete_initializer(self):
+        write = 'out["version"] = 1;'
+        for value in ("1U", "(1)", "((1ull))", "0x1L", "01", "0b1u", "kVersion"):
+            with self.subTest(value=value):
+                source = "constexpr unsigned kVersion = (1U);\n" + SAVE_SOURCE.replace(write, f'out["version"] = {value};')
+                self.assertEqual(layout.archive_shapes(source), layout.archive_shapes(SAVE_SOURCE))
+        for expression in ("1 + 2", "(1 + 2)", "1U << 1", "make_version()"):
+            with self.subTest(expression=expression):
+                source = SAVE_SOURCE.replace(write, f'out["version"] = {expression};')
+                line = next(i for i, text in enumerate(source.splitlines(), 1) if expression in text)
+                with self.assertRaisesRegex(ValueError, rf"{layout.SOURCE}:{line}:"):
+                    layout.archive_shapes(source)
+        source = SAVE_SOURCE.replace(write, 'out.set("version", (1UL));')
+        self.assertEqual(layout.archive_shapes(source), layout.archive_shapes(SAVE_SOURCE))
 
-    def test_a_record_erase_changes_the_stored_record_shape(self):
-        write = '        row["source_event_id"] = text(item.source);'
-        source = replace_once(CAPTURE, write, write + '\n        row.erase("source_event_id");')
-        self.assertTrue(any("source_event_id" in error for error in capture_refusals(source)))
-
-    def test_returning_a_different_dictionary_cannot_pass_on_old_writes(self):
-        source = replace_once(CAPTURE, FINAL_RETURN, "    return Dictionary();")
-        self.assertTrue(capture_refusals(source))
-
-    def test_returning_a_shadowed_dictionary_cannot_pass_on_outer_writes(self):
-        source = replace_once(CAPTURE, FINAL_RETURN, "    { Dictionary out;\n" + FINAL_RETURN + "\n    }")
-        self.assertTrue(capture_refusals(source))
-
-    def test_a_different_early_return_cannot_hide_required_fields(self):
-        source = replace_once(CAPTURE, PULSE_FIELD,
-                              "    if (_pending_choice.is_empty()) return out;\n" + PULSE_FIELD)
-        self.assertTrue(capture_refusals(source))
-
-    def test_both_branches_write_the_required_field(self):
-        source = replace_once(CAPTURE, PULSE_FIELD, """
-    if (_last_fact >= 0) {
-        out["last_fact_event_id"] = _last_fact;
-    } else {
-        out["last_fact_event_id"] = -1;
-    }""")
-        self.assertEqual(capture_refusals(source), [])
-
-
-class NarrativeInstallContracts(unittest.TestCase):
-    def test_cannot_write_live_state_before_archive_can_be_rejected(self):
-        for statement in ("++_seed;", "_seed++;", "--_seed;", "_seed += 1;", "_pool[0] = {};",
-                          "std::swap(_seed, replacement);", "auto old = std::move(_pool);",
-                          "this->_seed <<= 1;", "++_pool.at(0).id;"):
-            with self.subTest(statement=statement):
-                source = replace_once(RUNTIME, VALIDATION, f"    {statement}\n" + VALIDATION)
-                self.assertTrue(layout._install_violations(source))
-
-    def test_cannot_write_live_state_after_validation_while_candidate_can_be_rejected(self):
-        before = "    if (decoded._country == 0) return false;"
-        source = replace_once(RUNTIME, before, "    ++_seed;\n" + before)
-        self.assertTrue(layout._install_violations(source))
-
-    def test_can_read_live_fields_and_mutate_local_candidate(self):
-        before = "    if (decoded._country == 0) return false;"
-        source = replace_once(RUNTIME, before,
-                              "    if (_seed == 1) ++decoded._seed;\n" + before)
-        self.assertEqual(layout._install_violations(source), [])
-
-    def test_read_only_container_queries_and_exchange_source_are_allowed(self):
-        before = "    if (decoded._country == 0) return false;"
-        for statement in ("if (_pending_choice.is_empty()) ++decoded._seed;",
-                          "const auto total = 3 + +_seed;",
-                          "std::exchange(decoded._seed, _seed);"):
-            with self.subTest(statement=statement):
-                source = replace_once(RUNTIME, before, f"    {statement}\n" + before)
-                self.assertEqual(layout._install_violations(source), [])
-
-
-class NarrativeVersionContracts(unittest.TestCase):
     def test_only_currently_written_version_may_be_added_to_history(self):
+        # Fixed, independent historical inputs keep this valid after production upgrades.
         schema = "PKNarrativeRuntime"
-        source = replace_once(CAPTURE, '    out["version"] = 1;', '    out["version"] = 3;')
-        shapes = layout.archive_shapes(source)
-        baseline = copy.deepcopy(BASELINE)
-        baseline[schema]["3"] = shapes[schema][1]
-        self.assertEqual(layout.layout_violations(shapes, baseline, BASELINE), [])
+        for next_version in (2, 3):
+            source = SAVE_SOURCE.replace('out["version"] = 1;', f'out["version"] = {next_version};')
+            shapes = layout.archive_shapes(source)
+            baseline = copy.deepcopy(SAVE_BASELINE)
+            baseline[schema][str(next_version)] = shapes[schema][1]
+            self.assertEqual(layout.layout_violations(shapes, baseline, SAVE_BASELINE), [])
         baseline[schema]["2"] = ["invented_field", "schema"]
-        errors = layout.layout_violations(shapes, baseline, BASELINE)
+        errors = layout.layout_violations(shapes, baseline, SAVE_BASELINE)
         self.assertTrue(any("version 2" in error for error in errors), errors)
+
+    def test_moving_record_construction_between_section_headers_changes_no_archive_keys(self):
+        record = 'Dictionary row; row["def_dict"] = event; pool.push_back(row.duplicate(true));'
+        def before(declaration):
+            return SAVE_SOURCE.replace(declaration, record + "\n    " + declaration)
+        self.assertEqual(layout.archive_shapes(before("Dictionary unrest;")),
+                         layout.archive_shapes(before('unrest["needs_player_recovery"]')))
+
+    def test_old_record_metadata_is_frozen_but_new_versions_do_not_declare_it(self):
+        schema = "PKNarrativeRuntime"
+        old = copy.deepcopy(SAVE_BASELINE)
+        old[schema]["1"].insert(0, "record[archived]")
+        shapes = layout.archive_shapes(SAVE_SOURCE)
+        self.assertEqual(layout.layout_violations(shapes, old, old), [])
+        self.assertTrue(layout.layout_violations(shapes, SAVE_BASELINE, old))
+        shapes[schema] = (2, shapes[schema][1])
+        current = copy.deepcopy(old)
+        current[schema]["2"] = shapes[schema][1]
+        self.assertEqual(layout.layout_violations(shapes, current, old), [])
+        current[schema]["2"] = sorted([*shapes[schema][1], "record[inferred]"])
+        self.assertTrue(any("legacy record" in e for e in layout.layout_violations(shapes, current, old)))
+
+    def test_malformed_history_is_a_diagnostic(self):
+        shapes = layout.archive_shapes(SAVE_SOURCE)
+        errors = layout.layout_violations(shapes, SAVE_BASELINE, {"PKNarrativeRuntime": []})
+        self.assertTrue(any(layout.BASELINE + ":1:" in error for error in errors), errors)
+
+    def test_current_snapshot_matches_its_own_version(self):
+        source = (ROOT / layout.SOURCE).read_text(encoding="utf-8")
+        baseline = json.loads((ROOT / layout.BASELINE).read_text(encoding="utf-8"))
+        self.assertEqual(layout.layout_violations(layout.archive_shapes(source), baseline), [])
+        # test-guard[assertion]: 分支、复制和恢复后的值由运行时逐字段、逐字节核对，拒绝后的状态由原生自检核对。
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ extends RefCounted
 ## 因此导出插件不在此进程内编译，而是用 run_prebake_subprocess() 拉起一个独立的
 ## headless 子进程跑本文件的 CLI 入口 tools/prebake_loading_catalogs.gd。
 
+const SOURCE_INPUTS = preload("res://tools/loading_catalog_sources.json")
 const Snapshot = preload("res://scripts/game/loading_catalog_snapshot.gd")
 const Economy = preload("res://scripts/economy/economy_catalog.gd")
 const Effects = preload("res://scripts/effect/effect_domain_catalog.gd")
@@ -119,7 +120,7 @@ static func bake(directory: String = Cache.DIRECTORY) -> Error:
 
 	step = Time.get_ticks_msec()
 	var files: Dictionary = {}
-	for dir in ["res://scripts/research", "res://data", "res://scripts/economy", "res://scripts/family", "res://scripts/effect", "res://scripts/ideology", "res://scripts/modifier", "res://scripts/trigger", "res://scripts/data", "res://scripts/country"]:
+	for dir: String in SOURCE_INPUTS.data.directories:
 		_collect_sources(dir, files)
 	var manifest_path := directory.path_join("sources.json")
 	var file := FileAccess.open(manifest_path, FileAccess.WRITE)
@@ -236,8 +237,9 @@ static func _collect_sources(directory: String, files: Dictionary) -> void:
 	var dir := DirAccess.open(directory)
 	if dir == null:
 		return
+	var extensions: Array = SOURCE_INPUTS.data.extensions
 	for name in dir.get_files():
-		if name.get_extension() in ["gd","tres","json","csv"]:
+		if name.get_extension() in extensions:
 			var path := directory+"/"+name
 			files[path] = FileAccess.get_sha256(path)
 	for name in dir.get_directories():

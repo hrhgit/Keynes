@@ -1,0 +1,20 @@
+{
+  "directories": [
+    "res://scripts/research",
+    "res://data",
+    "res://scripts/economy",
+    "res://scripts/family",
+    "res://scripts/effect",
+    "res://scripts/ideology",
+    "res://scripts/modifier",
+    "res://scripts/trigger",
+    "res://scripts/data",
+    "res://scripts/country"
+  ],
+  "extensions": [
+    "gd",
+    "tres",
+    "json",
+    "csv"
+  ]
+}

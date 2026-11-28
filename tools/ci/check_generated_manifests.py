@@ -15,29 +15,12 @@ import world_ext_bindings as bindings
 from guard_baselines import historical_file, previous_baseline
 
 PROJECT = "Project/project-keynes"
-BAKE = f"{PROJECT}/tools/loading_catalog_bake.gd"
-CACHE = f"{PROJECT}/scripts/game/loading_catalog_cache.gd"
+INPUTS = f"{PROJECT}/tools/loading_catalog_sources.json"
+CATALOG_DIR = "data/loading_catalog_v1"
+CATALOG = f"{PROJECT}/{CATALOG_DIR}/sources.json"
 BASELINE = "tools/ci/generated_manifests_baseline.json"
 BAKE_COMMAND = "godot --headless --path Project/project-keynes --script res://tools/prebake_loading_catalogs.gd"
 NATIVE_BINDING_SOURCE = "res://data/native_binding_manifest.json"
-COLLECTOR = re.compile(r"^static\s+func\s+_collect_sources\s*\(")
-SOURCE_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|#.*|\w+|->|:=|==|[^\s]')
-# The Python walk below mirrors these steps. Accept formatting and local-name
-# changes and read the extension list from the collector itself.
-COLLECTOR_SHAPE = re.compile(
-    r'static func _collect_sources \( (?P<directory>\w+) : String , (?P<files>\w+) : Dictionary \) -> void :\n'
-    r'1 if (?P=directory) == Cache \. DIRECTORY \. trim_suffix \( "/" \) :\n'
-    r'2 return\n'
-    r'1 var (?P<access>\w+) (?:: DirAccess )?:?= DirAccess \. open \( (?P=directory) \)\n'
-    r'1 if (?P=access) == null :\n'
-    r'2 return\n'
-    r'1 for (?P<file>\w+) in (?P=access) \. get_files \( \) :\n'
-    r'2 if (?P=file) \. get_extension \( \) in (?P<extensions>\[ .* \]) :\n'
-    r'3 var (?P<path>\w+) (?:: String )?:?= (?P=directory) \+ "/" \+ (?P=file)\n'
-    r'3 (?P=files) \[ (?P=path) \] = FileAccess \. get_sha256 \( (?P=path) \)\n'
-    r'1 for (?P<child>\w+) in (?P=access) \. get_directories \( \) :\n'
-    r'2 _collect_sources \( (?P=directory) \+ "/" \+ (?P=child) , (?P=files) \)'
-)
 
 
 def validate_binding_manifest_bytes(actual: bytes, current_bindings: list[dict]) -> list[str]:
@@ -47,63 +30,35 @@ def validate_binding_manifest_bytes(actual: bytes, current_bindings: list[dict])
             "run python tools/ci/world_ext_bindings.py --write-manifest"]
 
 
+def parse_catalog_inputs(source: str) -> tuple[tuple[str, ...], set[str]]:
+    """Read the same declarative source list that the Godot baker loads."""
+    try:
+        inputs = json.loads(source)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{INPUTS}:{error.lineno}: {error.msg}") from error
+    if not isinstance(inputs, dict):
+        raise ValueError(f"{INPUTS}:1: expected a JSON object")
+    for key in ("directories", "extensions"):
+        values = inputs.get(key)
+        if key == "directories":
+            pattern = r"res://[^/]+(?:/[^/]+)*"
+        else:
+            pattern = r"[^./\s]+"
+        if not isinstance(values, list) or not values or any(
+            not isinstance(value, str) or not re.fullmatch(pattern, value)
+            or (key == "directories" and any(part in {".", ".."} for part in value[6:].split("/")))
+            for value in values
+        ):
+            key_offset = source.find(json.dumps(key))
+            line = source.count("\n", 0, max(0, key_offset)) + 1
+            raise ValueError(f"{INPUTS}:{line}: expected a nonempty list of source {key}")
+    directories = tuple(value[6:] + "/" for value in inputs["directories"])
+    return directories, set(inputs["extensions"])
+
+
 def _catalog_recipe(root: Path) -> tuple[tuple[str, ...], set[str], str]:
-    return _recipe_from_text((root / BAKE).read_text(encoding="utf-8"),
-                             (root / CACHE).read_text(encoding="utf-8"))
-
-
-def validate_catalog_collector(bake: str) -> set[str]:
-    """Read the extension set only after checking the actual collector body."""
-    collector = []
-    indentation = [0]
-    for line in bake.splitlines():
-        if not collector and not COLLECTOR.match(line):
-            continue
-        code = " ".join(token[0] for token in SOURCE_TOKEN.finditer(line)
-                        if not token[0].startswith("#"))
-        if not collector:
-            collector.append(code)
-            continue
-        if not code:
-            continue
-        expanded = line.expandtabs(4)
-        indent = len(expanded) - len(expanded.lstrip())
-        if not indent:
-            break
-        if indent > indentation[-1]:
-            indentation.append(indent)
-        while indent < indentation[-1]:
-            indentation.pop()
-        if indent != indentation[-1]:
-            break
-        collector.append(f"{len(indentation) - 1} {code}")
-    shape = COLLECTOR_SHAPE.fullmatch("\n".join(collector))
-    if not shape:
-        raise ValueError(f"{BAKE}: _collect_sources changed; keep the static catalog walk in sync")
-    extensions = json.loads(shape["extensions"])
-    if not extensions or any(
-        not isinstance(value, str) or not re.fullmatch(r"\w+", value) for value in extensions
-    ):
-        raise ValueError(f"{BAKE}: invalid source extensions")
-    return set(extensions)
-
-
-def _recipe_from_text(bake: str, cache: str) -> tuple[tuple[str, ...], set[str], str]:
-    # Read the producer's literal directory/extension lists so updating the
-    # bake's source set also updates the static check.
-    directories = re.search(r"(?m)^\tfor dir in (\[[^\n]+\]):\n\t\t_collect_sources\(dir, files\)$", bake)
-    output = re.search(r'(?m)^const DIRECTORY := "res://([\w/]+)/"$', cache)
-    encoding = re.search(r'file\.store_string\(JSON\.stringify\(files,\s*"\\t",\s*true\)\)', bake)
-    if not all((directories, output, encoding)):
-        raise ValueError(f"{BAKE}: unrecognized catalog source-list generator")
-    directories_list = json.loads(directories[1])
-    if not directories_list or any(
-        not isinstance(value, str) or not re.fullmatch(r"res://[\w/]+", value)
-        for value in directories_list
-    ):
-        raise ValueError(f"{BAKE}: invalid source directories")
-    directories = tuple(value[6:].rstrip("/") + "/" for value in directories_list)
-    return directories, validate_catalog_collector(bake), output[1]
+    directories, extensions = parse_catalog_inputs((root / INPUTS).read_text(encoding="utf-8"))
+    return directories, extensions, CATALOG_DIR
 
 
 def _catalog_fingerprints(root: Path, directories: tuple[str, ...], extensions: set[str],
@@ -138,16 +93,9 @@ def _catalog_fingerprints(root: Path, directories: tuple[str, ...], extensions: 
 
 def catalog_baseline_at(root: Path, ref: str) -> dict[str, list[str]]:
     """Recover only the original native-binding fingerprint mismatch from Git."""
-    bake = historical_file(root, ref, BAKE)
-    cache = historical_file(root, ref, CACHE)
     binding_manifest = historical_file(root, ref, bindings.MANIFEST)
-    if bake is None or cache is None or binding_manifest is None:
-        return {}
-    directories, extensions, output = _recipe_from_text(bake.decode("utf-8"), cache.decode("utf-8"))
-    if "data/" not in directories or "json" not in extensions:
-        return {}
-    catalog = historical_file(root, ref, f"{PROJECT}/{output}/sources.json")
-    if catalog is None:
+    catalog = historical_file(root, ref, CATALOG)
+    if binding_manifest is None or catalog is None:
         return {}
     recorded = json.loads(catalog)
     expected = hashlib.sha256(binding_manifest).hexdigest()

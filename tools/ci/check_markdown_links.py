@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cache, partial
 from html import unescape
 from html.parser import HTMLParser
 from io import BytesIO
@@ -73,26 +74,19 @@ class _HtmlLinks(HTMLParser):
             self.targets.append(values[attr])
 
 
-def _html_only(line: str) -> str:
-    """Mask raw HTML text while retaining explicit HTML links and anchors."""
-    visible = []
-    end = 0
-    for tag in HTML_TAG.finditer(line):
-        visible.extend((" " * (tag.start() - end), tag[0]))
+def _pre_links(lines: list[str], first: int, html: _HtmlLinks) -> list[tuple[int, str]]:
+    """Raw HTML preserves HTML tags across newlines and renders Markdown as text."""
+    text = "\n".join(lines)
+    links = []
+    line, end = first, 0
+    for tag in HTML_TAG.finditer(text):
+        line += text.count("\n", end, tag.start())
+        html.feed(tag[0])
+        links.extend((line, target) for target in html.targets)
+        html.targets.clear()
+        line += tag[0].count("\n")
         end = tag.end()
-    return "".join(visible)
-
-
-def _preformatted_line(line: str, header: str | None) -> tuple[str, str | None, bool]:
-    if header is not None:
-        joined = header + line
-        tag = HTML_TAG.match(joined, len(joined) - len(joined.lstrip()))
-        if tag is None:
-            return line, joined + "\n", True
-        start = tag.end() - len(header)
-    else:
-        start = 0
-    return line[:start] + _html_only(line[start:]), None, PRE_CLOSE.search(line[start:]) is None
+    return links
 
 
 def _paragraph_text(line: str) -> bool:
@@ -101,14 +95,14 @@ def _paragraph_text(line: str) -> bool:
     )
 
 
-def _visible_lines(text: str) -> list[str]:
+def _visible_lines(text: str, html: _HtmlLinks, links: list[tuple[int, str]]) -> list[str]:
     """Mask comments and code blocks without changing source line numbers."""
     lines = []
     fence = ""
     comment = False
     indent_code = False
     preformatted = False
-    pre_header = None
+    raw_html: list[str] = []
     block_scope = (0, 0)
     lists_by_quote: dict[int, list[int]] = {}
     previous_quote = 0
@@ -118,6 +112,12 @@ def _visible_lines(text: str) -> list[str]:
         while (not (fence or preformatted) or quote_depth < block_quote) and (
             quote := QUOTE_MARKER.match(source, quote_end)
         ):
+            if quote_depth >= previous_quote:
+                # A block quote outside a list terminates that list.
+                columns = lists_by_quote.get(quote_depth, [])
+                indent = quote[0].index(">")
+                while columns and indent < columns[-1]:
+                    columns.pop()
             quote_depth += 1
             quote_end = quote.end()
         line = source[quote_end:].expandtabs(4)
@@ -125,10 +125,14 @@ def _visible_lines(text: str) -> list[str]:
         if quote_depth < previous_quote:
             lists_by_quote = {depth: columns for depth, columns in lists_by_quote.items() if depth <= quote_depth}
         list_columns = lists_by_quote.setdefault(quote_depth, [])
-        lazy = (quote_depth == previous_quote and lines and _paragraph_text(lines[-1]) and _paragraph_text(line))
+        lazy = (list_columns and leading < list_columns[-1] and quote_depth == previous_quote
+                and lines and _paragraph_text(lines[-1]) and _paragraph_text(line))
         previous_quote = quote_depth
         if quote_depth < block_quote or (quote_depth == block_quote and leading < block_column and line.strip()):
-            fence, preformatted, pre_header = "", False, None
+            if raw_html:
+                links.extend(_pre_links(raw_html, len(lines) - len(raw_html) + 1, html))
+                raw_html.clear()
+            fence, preformatted = "", False
         if not fence and not preformatted and line.strip():
             while list_columns and leading < list_columns[-1] and not lazy:
                 list_columns.pop()
@@ -151,7 +155,7 @@ def _visible_lines(text: str) -> list[str]:
         if comment:
             _, end, line = line.partition("-->")
             comment = not end
-        while True:
+        while "<!--" in line:
             comment_text = line if preformatted else CODE_SPAN.sub(lambda match: "x" * len(match[0]), line)
             start = comment_text.find("<!--")
             if start == -1:
@@ -160,8 +164,12 @@ def _visible_lines(text: str) -> list[str]:
             comment = end == -1
             line = line[:start] if comment else line[:start] + line[end + 3:]
         if preformatted:
-            visible, pre_header, preformatted = _preformatted_line(line, pre_header)
-            lines.append(visible)
+            raw_html.append(line)
+            lines.append("")
+            if PRE_CLOSE.search(line):
+                links.extend(_pre_links(raw_html, len(lines) - len(raw_html) + 1, html))
+                raw_html.clear()
+                preformatted = False
             continue
         item = LIST_ITEM.match(line)
         if item and not THEMATIC_BREAK.fullmatch(line):
@@ -176,9 +184,16 @@ def _visible_lines(text: str) -> list[str]:
             lines.append("")
             continue
         if PRE_OPEN.match(line):
-            line, pre_header, preformatted = _preformatted_line(line, "")
+            if PRE_CLOSE.search(line):
+                links.extend(_pre_links([line], len(lines) + 1, html))
+            else:
+                preformatted = True
+                raw_html.append(line)
+            line = ""
             block_scope = quote_depth, column
         lines.append(line)
+    if raw_html:
+        links.extend(_pre_links(raw_html, len(lines) - len(raw_html) + 1, html))
     return lines
 
 
@@ -351,11 +366,12 @@ def _inline_blocks(lines: list[str], definitions: set[int]):
 
 
 def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
-    lines = _visible_lines(text)
-    references, definitions = _reference_definitions(lines)
     html = _HtmlLinks()
-    headings = set()
     links = []
+    # CommonMark replaces NUL in input. Internal heading placeholders use it.
+    lines = _visible_lines(text.replace("\0", "\ufffd"), html, links)
+    references, definitions = _reference_definitions(lines)
+    headings = set()
     paragraph = ""
     for index, line in enumerate(lines):
         if index in definitions:
@@ -379,7 +395,7 @@ def _document(text: str) -> tuple[set[str], list[tuple[int, str]]]:
             links.append((line, target))
             links.extend((line + text.count("\n", start + 1, start + 1 + inner), nested)
                          for inner, _, _, nested in _inline_links(text[start + 1:end], references, html))
-    return headings | html.anchors, links
+    return headings | html.anchors, sorted(links, key=lambda link: link[0])
 
 
 def _local_target(source: str, target: str) -> tuple[str, str] | None:
@@ -396,18 +412,18 @@ def _local_target(source: str, target: str) -> tuple[str, str] | None:
     return path, unquote(url.fragment)
 
 
-def validate_markdown_links(root: Path, tracked_paths: set[str]) -> list[LinkProblem]:
-    return _link_problems(tracked_paths, lambda path: (root / path).read_text(encoding="utf-8"))
+def validate_markdown_links(root: Path, tracked_paths: set[str], *, document=_document) -> list[LinkProblem]:
+    return _link_problems(tracked_paths, lambda path: (root / path).read_text(encoding="utf-8"), document)
 
 
-def _link_problems(tracked_paths: set[str], read_markdown: Callable[[str], str]) -> list[LinkProblem]:
+def _link_problems(tracked_paths: set[str], read_markdown: Callable[[str], str], document) -> list[LinkProblem]:
     markdown = {path for path in tracked_paths if PurePosixPath(path).suffix.lower() == ".md"}
     directories = {parent.as_posix() for path in tracked_paths for parent in PurePosixPath(path).parents}
     documents = {}
     problems = []
     for path in sorted(markdown):
         try:
-            documents[path] = _document(read_markdown(path))
+            documents[path] = document(read_markdown(path))
         except (OSError, UnicodeError):
             problems.append(LinkProblem(path, 1, path, "could not read tracked Markdown"))
     for source, (_, destinations) in documents.items():
@@ -415,7 +431,8 @@ def _link_problems(tracked_paths: set[str], read_markdown: Callable[[str], str])
             try:
                 local = _local_target(source, target)
             except ValueError:
-                continue  # This is not a recognizable relative URI.
+                problems.append(LinkProblem(source, line, target, "invalid link target"))
+                continue
             if local is None:
                 continue
             path, anchor = local
@@ -430,7 +447,7 @@ def _link_problems(tracked_paths: set[str], read_markdown: Callable[[str], str])
     return problems
 
 
-def markdown_baseline_at(root: Path, ref: str) -> dict[str, int]:
+def markdown_baseline_at(root: Path, ref: str, *, document=_document) -> dict[str, int]:
     """Reproduce existing broken links from the versioned base tree."""
     tree = subprocess.check_output(["git", "ls-tree", "-r", "-z", ref], cwd=root)
     paths = set()
@@ -456,7 +473,7 @@ def markdown_baseline_at(root: Path, ref: str) -> dict[str, int]:
         contents[expected] = stream.read(int(header[2]))
         if stream.read(1) != b"\n":
             raise ValueError(f"git cat-file: incomplete Markdown blob {expected.decode()}")
-    problems = _link_problems(paths, lambda path: contents[object_ids[path]].decode("utf-8"))
+    problems = _link_problems(paths, lambda path: contents[object_ids[path]].decode("utf-8"), document)
     return dict(Counter(problem.baseline_key for problem in problems))
 
 
@@ -467,11 +484,14 @@ def main() -> int:
     try:
         raw = subprocess.check_output(["git", "ls-files", "-z"], cwd=root)
         tracked = set(raw.decode("utf-8").split("\0")[:-1])
-        problems = validate_markdown_links(root, tracked)
+        # The comparison tree normally contains many identical documents. Share
+        # their parsed contents for this run, but resolve paths in each tree.
+        document = cache(_document)
+        problems = validate_markdown_links(root, tracked, document=document)
         baseline = json.loads((root / BASELINE).read_text(encoding="utf-8"))
         if not isinstance(baseline, dict) or any(type(count) is not int or count < 1 for count in baseline.values()):
             raise ValueError(f"{BASELINE}: expected positive occurrence counts")
-        previous = previous_baseline(root, BASELINE, markdown_baseline_at)
+        previous = previous_baseline(root, BASELINE, partial(markdown_baseline_at, document=document))
         errors = []
         if previous is not None:
             errors.extend(f"{BASELINE}: new or increased historical entry: {key}"

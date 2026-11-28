@@ -36,6 +36,22 @@ def markdown_fixture(files: dict[str, str]) -> list[LinkProblem]:
 
 
 class MarkdownLinkTests(unittest.TestCase):
+    def test_html_pre_checks_multiline_tags_at_the_opening_line(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": '<pre>\n[example](ignored.md)\n<a\n href="missing.md">文件</a>\n'
+                         '<a\n id="kept">anchor</a>\n</pre>\n[heading](#kept)\n',
+        }), [LinkProblem("README.md", 3, "missing.md", "missing repository path")])
+
+    def test_top_level_quote_ends_preceding_list_before_indented_code(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "- Item\n> Quote\n\n    [sample](missing.md)\n",
+        }), [])
+
+    def test_nul_in_heading_and_malformed_destination_have_defined_results(self):
+        self.assertEqual(markdown_fixture({
+            "README.md": "# A\x009\x00B\n\n[heading](#a9b)\n[malformed](http://[)\n",
+        }), [LinkProblem("README.md", 4, "http://[", "invalid link target")])
+
     def test_accepts_pr_11_link_when_split_index_keeps_its_alias(self):
         self.assertEqual(split_feature_status(f'<a id="{LEGACY_ANCHOR}"></a>'), [])
 

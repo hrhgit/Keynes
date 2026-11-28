@@ -158,7 +158,9 @@ skill 源文件统一放在仓库根目录的 `skills/`。各工具通过本机�
 
 默认静态护栏以 [CI 的 Static architecture guards 步骤](../../.github/workflows/runtime-checks.yml) 为准。工厂读取同一份清单。本地可从仓库根目录用 `python3 tools/ci/<脚本名>` 逐项运行。
 
-- `check_generated_manifests.py` 根据 C++ 绑定和资源文件重新构造清单，在内存中逐字节比对。基线中的旧指纹会触发 CI 警告。发布或验证预烘目录时用 `--require-clean-catalog` 核对全部指纹，编辑器会跳过指纹过时的预烘目录，改为现场编译。
+- `check_save_contracts.py` 核对叙事和阶层动乱存档的版本、字面量字段清单，以及次日取走的队列是否在保存和恢复两端出现。字段在哪个分支写入、数组里实际收到哪份副本、坏档是否改变原世界，由 `runtime_narrative_checkpoint_test.gd` 检查非空档往返和逐项拒绝，`runtime_events_pod_test.gd` 还在同一个原生叙事对象上检查拒绝前后的存档字节。
+- `check_tax_row_keys.py` 检查经济税表查找和插入时直接拼接整数键的写法。头文件可单独声明按 ID 查询的索引。进入结算的地块范围、缓存条目数和逐地块实扣税款由 `cell_tax_row_settlement_test.gd` 在真实结算中核对。两个活动地块的固定税额为 1 和 16777217 时，现有结算键会碰撞。常规用例会打印两种顺序的实际扣款，只有与已登记旧键完全相符的结果才列为已知问题。用 Godot 单独运行该用例并传入 `-- --strict`，即可把这次碰撞作为失败返回。
+- `check_generated_manifests.py` 根据 C++ 绑定和资源文件重新构造清单，在内存中逐字节比对。加载目录的输入目录和扩展名来自 `tools/loading_catalog_sources.json`（Godot 项目内）。`native_loading_tasks_test.gd` 运行实际预烘，并按提交清单的路径和磁盘文件的 SHA-256 核对产出字节。基线中的旧指纹会触发 CI 警告。发布或验证预烘目录时用 `--require-clean-catalog` 核对全部指纹，编辑器会跳过指纹过时的预烘目录，改为现场编译。
 - `check_markdown_links.py` 检查仓库 Markdown 的相对链接和锚点。拆文档时保留旧锚点，或一起更新引用它的位置。
 - `check_test_strictness.py` 比较 PR 基础提交和待检查内容，查找删除或停用断言、放宽简单比较和数值容差、加长超时、增加重试、改动固定种子等写法。它比较超时等设置中的常量及简单四则运算，也把重试次数和总尝试次数换算后再比较。本地默认对比与 `origin/master` 的共同提交，也可用 `--base <提交>` 指定。
 - 静态护栏覆盖日常编辑中容易漏掉的错误。评审仍需看分支和实际执行路径，例如用 `if (false)` 藏掉同日去重的 `continue`，用 `#if 0` 停用 C++ 断言，先把方法存成 `Callable` 再间接调用，或把断言右侧从 `5` 换成 `5 * 2`。

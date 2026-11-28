@@ -117,6 +117,8 @@ def receiver(tokens: list[Token], start: int, end: int) -> str | None:
     if not part or any(t.kind != ("id" if i % 2 == 0 else "punct")
                        or (i % 2 and t.value != ".") for i, t in enumerate(part)):
         return None
+    if len(part) == 3 and part[0].value == "self":
+        return f"self.{part[-1].value}"
     return part[-1].value if len(part) % 2 else None
 
 
@@ -191,18 +193,41 @@ def _parameter_names(tokens: list[Token]) -> set[str]:
     return names
 
 
-def _line_parents(source: str, tokens: list[Token]) -> dict[int, Token | None]:
+def _line_parents(file: str, source: str, tokens: list[Token]) -> dict[int, Token | None]:
+    """Track indentation on complete statements; continuation lines share their scope."""
     parents = {}
     indentation = []
+    openings: list[Token] = []
+    previous_line = -1
+    continued = False
+    parent = None
+    closing = {")": "(", "]": "[", "}": "{"}
     for token in tokens:
         line = source.rfind("\n", 0, token.offset) + 1
-        if line in parents:
-            continue
-        width = token.offset - line
-        while indentation and indentation[-1][0] >= width:
-            indentation.pop()
-        parents[line] = indentation[-1][1] if indentation else None
-        indentation.append((width, token))
+        if line != previous_line:
+            if not openings and not continued:
+                width = token.offset - line
+                while indentation and indentation[-1][0] >= width:
+                    indentation.pop()
+                parent = indentation[-1][1] if indentation else None
+                indentation.append((width, token))
+            parents[line] = parent
+            previous_line = line
+        continued = token.kind == "punct" and token.value == "\\"
+        if token.kind == "punct":
+            if token.value in {"'", '"'}:
+                number = source.count("\n", 0, token.offset) + 1
+                raise ValueError(f"{PROJECT}/{file}:{number}: unterminated string")
+            if token.value in {"(", "[", "{"}:
+                openings.append(token)
+            elif token.value in closing:
+                if not openings or openings.pop().value != closing[token.value]:
+                    number = source.count("\n", 0, token.offset) + 1
+                    raise ValueError(f"{PROJECT}/{file}:{number}: unexpected {token.value}")
+    if openings:
+        token = openings[-1]
+        number = source.count("\n", 0, token.offset) + 1
+        raise ValueError(f"{PROJECT}/{file}:{number}: unclosed {token.value}")
     return parents
 
 
@@ -293,15 +318,26 @@ def _owner_names(tokens: list[Token], inherited: dict, members: set[Token] | Non
     return names
 
 
-def _live_reads(tokens: list[Token], inherited: dict):
+def _live_reads(source: str, tokens: list[Token], inherited: dict, parents: dict):
     positions = {token.offset: i for i, token in enumerate(tokens)}
     for token, kind, target in candidates(tokens, {"report", "get_economy_report"}, probes=False):
         expected = {"facade"} if token.value == "report" else {"generator", "native"}
         i = positions[token.offset]
-        names = _owner_names(tokens[:i], inherited)
-        explicit_member = (kind == "call" and i >= 4
-                           and [t.value for t in tokens[i - 4:i - 2]] == ["self", "."])
-        if (inherited if explicit_member else names).get(target) in expected:
+        owner = None
+        if target and target.startswith("self."):
+            owner = inherited.get(target.removeprefix("self."))
+        elif target:
+            # Local declarations from completed sibling blocks are out of scope.
+            # Keep the statements of this block and its enclosing blocks.
+            ancestors = {None}
+            parent = parents[source.rfind("\n", 0, token.offset) + 1]
+            while parent is not None:
+                ancestors.add(parent)
+                parent = parents[source.rfind("\n", 0, parent.offset) + 1]
+            visible = [item for item in tokens[:i]
+                       if parents[source.rfind("\n", 0, item.offset) + 1] in ancestors]
+            owner = _owner_names(visible, inherited).get(target)
+        if owner in expected:
             yield token
         elif kind == "call":
             chain = [t.value for t in tokens[max(0, i - 4):i]]
@@ -362,7 +398,22 @@ def frontend_live_read_violations(
         return []
     tokens = tokenize(source) if tokens is None else tokens
     errors = []
-    parents = _line_parents(source, tokens)
+    for index, token in enumerate(tokens):
+        if token.kind != "id" or token.value != "var":
+            continue
+        if index + 1 < len(tokens):
+            following = tokens[index + 1]
+            if following.value == "\\" or (
+                    following.kind == "id" and "\n" not in source[token.offset:following.offset]):
+                continue
+        line = source.count("\n", 0, token.offset) + 1
+        errors.append(f"{PROJECT}/{file}:{line}: expected a variable name after var")
+    if errors or ("report" not in source and not legacy_probe):
+        return errors
+    try:
+        parents = _line_parents(file, source, tokens)
+    except ValueError as error:
+        return [str(error)]
     members = list(_member_initializers(source, tokens, parents))
     inherited = {name: "facade" for name in ECONOMY_FACADES}
     inherited.update({name: "native" for name in world_variables(tokens)})
@@ -392,7 +443,7 @@ def frontend_live_read_violations(
             if calls and not (file == PLAYER_GAME and _approved_consumer(source, name, function, calls)):
                 line = source.count("\n", 0, calls[0].offset) + 1
                 errors.append(f"{PROJECT}/{file}:{line}: {name} uses the live {PROBE} outside the unchanged heartbeat log")
-        reads = list(_live_reads(function, owner_names[parent])) if frontend else []
+        reads = list(_live_reads(source, function, owner_names[parent], parents)) if frontend else []
         if not reads:
             continue
         if baseline.get(file, {}).get(name) == _function_digest(source, function):
@@ -467,6 +518,8 @@ def inspect(root: Path) -> tuple[list[Reference], list[str], int]:
         problems.extend(frontend_live_read_violations(project_file, source, live_baseline, tokens, used=used))
         for token, kind, target in candidates(tokens, bindings):
             line = source.count("\n", 0, token.offset) + 1
+            if target is not None:
+                target = target.removeprefix("self.")
             a = target is not None and (target in world or bool(WORLD_NAME.search(target)))
             b = token.value not in functions
             refs.append(Reference(path.relative_to(root).as_posix(), line, token.value,
